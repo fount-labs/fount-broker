@@ -2,6 +2,8 @@ package broker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,7 +47,11 @@ func start(t *testing.T, rt route.Route) *session {
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	vault := NewVault()
-	b := New("test", map[string]route.Route{policy.RouteTinfoil: rt}, vault)
+	routes := map[string]route.Route{}
+	for _, name := range []string{policy.RouteTinfoil, policy.RouteFountAPI, policy.RouteFountProxy, policy.RouteModels} {
+		routes[name] = rt
+	}
+	b := New("test", routes, vault)
 	s := &session{t: t, in: frame.NewWriter(inW), inW: inW, out: outR, done: make(chan error, 1), vault: vault}
 	go func() {
 		s.done <- b.Serve(context.Background(), inR, outW)
@@ -251,3 +257,60 @@ func TestDuplicateInflightIDIsRefused(t *testing.T) {
 type errReader struct{ err error }
 
 func (e errReader) Read([]byte) (int, error) { return 0, e.err }
+
+func TestBodyIsCheckedBeforeSending(t *testing.T) {
+	s := start(t, &fakeRoute{do: func(context.Context, route.Request) (*http.Response, error) {
+		t.Error("a refused body reached the route")
+		return nil, errors.New("unreachable")
+	}})
+	for i, body := range []string{
+		`{"licenseKey":"FOUNT-AAAA","extra":1}`,
+		`{"licenseKey":"has spaces"}`,
+		`{}`,
+		`[1]`,
+	} {
+		s.send(fmt.Sprintf(`{"kind":"fetch","id":%d,"dest":"fount.license_validate"}`, i+1), body)
+		if r, _ := s.recv(); r.Kind != protocol.KindError || r.Code != protocol.CodePolicy {
+			t.Errorf("body %s: got %+v, want a policy error", body, r)
+		}
+	}
+}
+
+func TestPinnedDigestIsEnforced(t *testing.T) {
+	const name = "test.pinned"
+	content := "model bytes"
+	policy.Destinations[name] = policy.Destination{
+		Route: policy.RouteModels, Method: "GET", Path: "m/f", Accept: []string{""},
+		SHA256: "1f1f2dd2dbbd8e4f2b0e3b8c8bd9fc2cb0f2a1e3fd2c4b6b0c1b0a8f2b4e9a7c",
+	}
+	t.Cleanup(func() { delete(policy.Destinations, name) })
+
+	s := start(t, &fakeRoute{do: func(context.Context, route.Request) (*http.Response, error) {
+		return okResponse("application/octet-stream", content), nil
+	}})
+	s.send(`{"kind":"fetch","id":1,"dest":"test.pinned"}`, "")
+	if r, _ := s.recv(); r.Kind != protocol.KindHead {
+		t.Fatalf("got %+v, want head", r)
+	}
+	if r, body := s.recv(); r.Kind != protocol.KindData || string(body) != content {
+		t.Fatalf("got %+v %q, want the data", r, body)
+	}
+	if r, _ := s.recv(); r.Kind != protocol.KindError || r.Code != protocol.CodeIntegrity {
+		t.Fatalf("got %+v, want an integrity error", r)
+	}
+
+	sum := sha256.Sum256([]byte(content))
+	d := policy.Destinations[name]
+	d.SHA256 = hex.EncodeToString(sum[:])
+	policy.Destinations[name] = d
+	s.send(`{"kind":"fetch","id":2,"dest":"test.pinned"}`, "")
+	for {
+		r, _ := s.recv()
+		if r.Kind == protocol.KindEnd {
+			break
+		}
+		if r.Kind == protocol.KindError {
+			t.Fatalf("got %+v, want end", r)
+		}
+	}
+}

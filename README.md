@@ -14,9 +14,18 @@ broker holds the credentials, attests enclaves, and sends the request.
 Everything the broker can reach is in [`internal/policy`](internal/policy/policy.go).
 Nothing there can change at runtime.
 
-| Destination | Goes to | Credential |
-|---|---|---|
-| `tinfoil.chat_completions` | `POST https://api.fount.sh/proxy/v1/chat/completions`, sealed to an attested Tinfoil router | license |
+| Destination | Goes to | Credential | Body |
+|---|---|---|---|
+| `tinfoil.chat_completions` | `POST https://api.fount.sh/proxy/v1/chat/completions`, sealed to an attested Tinfoil router | license | chat request, encrypted |
+| `openrouter.chat_completions` | `POST https://api.fount.sh/proxy/openrouter/v1/chat/completions` | license | chat request |
+| `fount.license_validate` | `POST https://api.fount.sh/license/validate` | none | `licenseKey` only |
+| `fount.feedback_report` | `POST https://api.fount.sh/feedback/v1/report` | none | the report's fields only, 2 MiB at most |
+| `models.<model>/<file>` | `GET https://fount-embedding-models.s3.us-east-1.amazonaws.com/models/<model>/<file>` | none | none; the file must match its SHA-256 in [`models.go`](internal/policy/models.go) |
+
+A body that breaks its destination's rule is refused before anything is sent.
+Fount-hosted OpenRouter requests aren't sealed: OpenRouter and the model
+provider can read them. Only Tinfoil requests are private from everyone but
+the enclave.
 
 ### Tinfoil inference
 
@@ -46,8 +55,9 @@ go test -race ./...
 scripts/build-release.sh v0.0.0   # writes dist/
 ```
 
-`-tags dev` builds a binary that honours `FOUNT_BROKER_TINFOIL_PROXY`, an
-HTTPS origin for a staging proxy. Release builds don't contain that code.
+`-tags dev` builds a binary that honours `FOUNT_BROKER_PROXY`, the origin of a
+staging proxy, and `FOUNT_BROKER_FOUNT_API`, the base URL of a staging license
+API. Release builds don't contain that code.
 
 ## Releases
 

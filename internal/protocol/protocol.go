@@ -10,7 +10,7 @@
 // Broker to app:
 //
 //	{"kind":"ready","version":"…","protocol":1}
-//	{"kind":"head","id":N,"status":200,"contentType":"text/event-stream"}
+//	{"kind":"head","id":N,"status":200,"contentType":"text/event-stream","contentLength":N}
 //	{"kind":"data","id":N}  body: a chunk of the response
 //	{"kind":"end","id":N}
 //	{"kind":"result","id":N}  body: JSON
@@ -64,8 +64,10 @@ type Reply struct {
 	Protocol    int    `json:"protocol,omitempty"`
 	Status      int    `json:"status,omitempty"`
 	ContentType string `json:"contentType,omitempty"`
-	Code        Code   `json:"code,omitempty"`
-	Message     string `json:"message,omitempty"`
+	// ContentLength is the response size when the server states it.
+	ContentLength int64  `json:"contentLength,omitempty"`
+	Code          Code   `json:"code,omitempty"`
+	Message       string `json:"message,omitempty"`
 }
 
 // Code tells the app what failed without it parsing a message.
@@ -84,6 +86,9 @@ const (
 	CodeNetwork Code = "network"
 	// CodeCancelled: the app cancelled the request.
 	CodeCancelled Code = "cancelled"
+	// CodeIntegrity: the response didn't match the digest the policy pins.
+	// The app must discard everything it received.
+	CodeIntegrity Code = "integrity"
 )
 
 var ErrMalformed = errors.New("malformed request")

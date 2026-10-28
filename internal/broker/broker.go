@@ -3,9 +3,12 @@ package broker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"slices"
@@ -135,6 +138,10 @@ func (b *Broker) fetch(ctx context.Context, req protocol.Request, body []byte) {
 		b.fail(req.ID, protocol.CodePolicy, fmt.Errorf("accept %q is not allowed for %s", req.Accept, req.Dest))
 		return
 	}
+	if err := dest.Body.Check(body); err != nil {
+		b.fail(req.ID, protocol.CodePolicy, fmt.Errorf("%s: %w", req.Dest, err))
+		return
+	}
 	rt := b.routes[dest.Route]
 	if rt == nil {
 		b.fail(req.ID, protocol.CodePolicy, fmt.Errorf("route %q is not available", dest.Route))
@@ -153,21 +160,35 @@ func (b *Broker) fetch(ctx context.Context, req protocol.Request, body []byte) {
 		return
 	}
 	defer resp.Body.Close()
-	if err := b.reply(protocol.Reply{Kind: protocol.KindHead, ID: req.ID, Status: resp.StatusCode, ContentType: resp.Header.Get("Content-Type")}, nil); err != nil {
+	head := protocol.Reply{Kind: protocol.KindHead, ID: req.ID, Status: resp.StatusCode, ContentType: resp.Header.Get("Content-Type")}
+	if resp.ContentLength > 0 {
+		head.ContentLength = resp.ContentLength
+	}
+	if err := b.reply(head, nil); err != nil {
 		return
 	}
-	if err := b.stream(req.ID, resp); err != nil {
+	digest := sha256.New()
+	if err := b.stream(req.ID, resp, digest); err != nil {
 		b.failSend(ctx, req.ID, err)
 		return
+	}
+	// Only a successful response is the pinned file; an error page is passed
+	// through as it is, and its status already says it failed.
+	if dest.SHA256 != "" && resp.StatusCode == http.StatusOK {
+		if got := hex.EncodeToString(digest.Sum(nil)); got != dest.SHA256 {
+			b.fail(req.ID, protocol.CodeIntegrity, fmt.Errorf("%s has digest %s, want %s", req.Dest, got, dest.SHA256))
+			return
+		}
 	}
 	_ = b.reply(protocol.Reply{Kind: protocol.KindEnd, ID: req.ID}, nil)
 }
 
-func (b *Broker) stream(id uint64, resp *http.Response) error {
+func (b *Broker) stream(id uint64, resp *http.Response, digest hash.Hash) error {
 	buf := make([]byte, chunkSize)
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
+			digest.Write(buf[:n])
 			if werr := b.reply(protocol.Reply{Kind: protocol.KindData, ID: id}, buf[:n]); werr != nil {
 				return werr
 			}

@@ -37,7 +37,13 @@ func main() {
 	})
 	vault.OnChange(policy.CredentialTinfoilCacheSecret, tinfoil.Reset)
 
-	b := broker.New(version, map[string]route.Route{policy.RouteTinfoil: tinfoil}, vault)
+	routes := map[string]route.Route{
+		policy.RouteTinfoil:    tinfoil,
+		policy.RouteFountAPI:   route.NewHTTPS(policy.FountAPIBase(), nil),
+		policy.RouteFountProxy: route.NewHTTPS(policy.FountProxyBase(), nil),
+		policy.RouteModels:     route.NewHTTPS(policy.ModelsBase, func() any { return policy.ModelFiles }),
+	}
+	b := broker.New(version, routes, vault)
 	if err := b.Serve(ctx, os.Stdin, os.Stdout); err != nil {
 		log.Fatal(err)
 	}

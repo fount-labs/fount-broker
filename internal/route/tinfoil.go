@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -94,7 +93,7 @@ func (t *Tinfoil) Reset() {
 // Do sends r, and when the router can't be reached, discovers again and
 // retries once. The body is held in memory, so the retry resends it exactly.
 func (t *Tinfoil) Do(ctx context.Context, r Request) (*http.Response, error) {
-	if strings.Contains(r.Dest.Path, "..") || strings.HasPrefix(r.Dest.Path, "/") {
+	if escapes(r.Dest.Path) {
 		return nil, fmt.Errorf("destination path %q escapes the base URL", r.Dest.Path)
 	}
 	c, err := t.current(ctx)
