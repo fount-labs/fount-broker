@@ -93,6 +93,32 @@ proxy's password is made at each launch and sent to the app in the `ready`
 frame, so other local programs can't use it. On macOS Fount runs uv in a
 sandbox where loopback is its only network, so the tunnel is its only way out.
 
+## What the app could still send
+
+The broker limits where requests go. It can't tell whether you asked for a
+request, and some destinations carry content the app chooses to a party that
+can read it. If the closed app were malicious, these are the channels it could
+use:
+
+| Channel | Who can read it | What the app chooses |
+|---|---|---|
+| `tinfoil.webfetch` | Exa and each site | Up to 20 `https` URLs per call; a path or query can carry anything |
+| `tinfoil.websearch` | Exa, after the PII filter | The search arguments, up to 16 KiB |
+| `openrouter.chat_completions`, `openrouter_byok.chat_completions` | OpenRouter and the model provider | The whole request. The broker can't tell whether you chose that model, and the app can store an OpenRouter key itself |
+| `fount.feedback_report` | Fount | Up to 2 MiB, including free-text `comment` and `conversation` fields. The app shows you the report first, but the app draws that preview |
+| Python package tunnel | PyPI, GitHub | Paths on those hosts. `github.com` serves any repository, so a request path can carry data |
+| `fount.license_validate` | Fount | 64 characters of key per request |
+
+Everything else either is sealed to an attested enclave or carries no content
+the app chooses (downloads are pinned by hash).
+
+So the broker's guarantee is: **your documents reach only an attested Tinfoil
+enclave, unless they leave through one of the channels above.** Web fetch,
+web search, OpenRouter models and feedback are features you use on purpose;
+the table says what each one exposes when you do. Checking that the app uses
+them only when you ask needs the app's source, which an audit covers, or an
+operating system sandbox around the app, which is planned.
+
 ## Protocol
 
 Each frame is a JSON header and an opaque body, and each part is prefixed by
