@@ -18,10 +18,12 @@ const (
 	// CredentialTinfoilCacheSecret scopes Tinfoil's prompt cache to this
 	// user. It is sealed into each request body, so the proxy never sees it.
 	CredentialTinfoilCacheSecret Credential = "tinfoil_cache_secret"
+	// CredentialOpenRouterKey is the user's own OpenRouter API key.
+	CredentialOpenRouterKey Credential = "openrouter_api_key"
 )
 
 // Credentials is every credential the app may hand the broker.
-var Credentials = []Credential{CredentialLicense, CredentialTinfoilCacheSecret}
+var Credentials = []Credential{CredentialLicense, CredentialTinfoilCacheSecret, CredentialOpenRouterKey}
 
 func KnownCredential(name string) bool {
 	return slices.Contains(Credentials, Credential(name))
@@ -34,10 +36,15 @@ type Destination struct {
 	// Method and Path are fixed; Path is relative to the route's base URL.
 	Method string
 	Path   string
+	// PathPattern, when set, lets the app complete Path with a suffix that
+	// matches it in full. Without it the app can't add to Path.
+	PathPattern *regexp.Regexp
 	// Accept lists the Accept values the app may send.
 	Accept []string
 	// ContentType is sent with the body.
 	ContentType string
+	// Headers are sent as they are, after any the app's request sets.
+	Headers map[string]string
 	// Body is what the request body may hold.
 	Body Body
 	// Credential is sent as a bearer token.
@@ -52,6 +59,9 @@ type Destination struct {
 
 const (
 	RouteTinfoil = "tinfoil"
+	// RouteTinfoilWebSearch is Tinfoil's web-search enclave, reached through
+	// Fount's proxy like the router.
+	RouteTinfoilWebSearch = "tinfoil_websearch"
 	// RouteFountAPI is Fount's license and feedback API.
 	RouteFountAPI = "fount_api"
 	// RouteFountProxy is Fount's model proxy, which adds Fount's provider key
@@ -59,6 +69,12 @@ const (
 	RouteFountProxy = "fount_proxy"
 	// RouteModels serves embedding model files.
 	RouteModels = "models"
+	// RouteOpenRouter is OpenRouter itself, for users with their own key.
+	RouteOpenRouter = "openrouter"
+	// RouteHuggingFace serves vision model files.
+	RouteHuggingFace = "huggingface"
+	// RouteUpdates serves Fount's own releases from GitHub.
+	RouteUpdates = "updates"
 )
 
 var chatAccept = []string{"", "application/json", "text/event-stream"}
@@ -73,6 +89,47 @@ var Destinations = map[string]Destination{
 		Body:        Body{Kind: BodyOpaque},
 		Credential:  CredentialLicense,
 	},
+	// Tinfoil's web-search MCP server. The body is sealed to the enclave,
+	// which sends the search query, after removing what its PII filter
+	// detects, to Exa. Exa can read that query; Fount's proxy and Tinfoil
+	// can't. The MCP server is stateless, so each call is one tools/call.
+	"tinfoil.websearch": {
+		Route:       RouteTinfoilWebSearch,
+		Method:      "POST",
+		Path:        "mcp",
+		Accept:      []string{""},
+		ContentType: "application/json",
+		Headers: map[string]string{
+			"Accept":                   "application/json, text/event-stream",
+			"X-Tinfoil-Tool-PII-Check": "true",
+		},
+		Body:       toolCall(16<<10, "search", Field{Types: []string{"object"}, Required: true}),
+		Credential: CredentialLicense,
+	},
+	// The same enclave's fetch tool: it asks Exa for the text of up to 20
+	// public HTTPS pages. Exa's crawler visits them, or Exa serves a copy up
+	// to two hours old, so the sites never see the user's address. The
+	// enclave doesn't run its PII filter on fetches, so Exa and each site see
+	// the URL as it is. It does check each page for prompt injection, which
+	// the broker always asks for.
+	"tinfoil.webfetch": {
+		Route:       RouteTinfoilWebSearch,
+		Method:      "POST",
+		Path:        "mcp",
+		Accept:      []string{""},
+		ContentType: "application/json",
+		Headers: map[string]string{
+			"Accept":                         "application/json, text/event-stream",
+			"X-Tinfoil-Tool-Injection-Check": "true",
+		},
+		Body: toolCall(64<<10, "fetch", Field{Types: []string{"object"}, Required: true, Fields: map[string]Field{
+			"urls": {
+				Types: []string{"array"}, Required: true, MinItems: 1, MaxItems: 20,
+				Items: &Field{Types: []string{"string"}, Pattern: fetchURLPattern},
+			},
+		}}),
+		Credential: CredentialLicense,
+	},
 	// Fount-hosted OpenRouter models. Unlike Tinfoil, OpenRouter and the
 	// model provider can read these requests.
 	"openrouter.chat_completions": {
@@ -83,6 +140,17 @@ var Destinations = map[string]Destination{
 		ContentType: "application/json",
 		Body:        Body{Kind: BodyOpaque},
 		Credential:  CredentialLicense,
+	},
+	// OpenRouter with the user's own key. The request goes straight to
+	// OpenRouter; Fount's servers don't see it.
+	"openrouter_byok.chat_completions": {
+		Route:       RouteOpenRouter,
+		Method:      "POST",
+		Path:        "chat/completions",
+		Accept:      chatAccept,
+		ContentType: "application/json",
+		Body:        Body{Kind: BodyOpaque},
+		Credential:  CredentialOpenRouterKey,
 	},
 	// Checks a license key and returns a signed certificate of its access.
 	"fount.license_validate": {
@@ -125,13 +193,36 @@ var Destinations = map[string]Destination{
 
 var licenseKeyPattern = regexp.MustCompile(`^[A-Z0-9-]{1,64}$`)
 
+// fetchURLPattern is an https URL with no user info or whitespace.
+var fetchURLPattern = regexp.MustCompile(`^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/\S*)?$`)
+
+// toolCall is the body of one MCP tools/call naming tool, with arguments
+// checked by args.
+func toolCall(maxBytes int, tool string, args Field) Body {
+	return Body{Kind: BodyObject, MaxBytes: maxBytes, Fields: map[string]Field{
+		"jsonrpc": {Types: []string{"string"}, Required: true, Pattern: regexp.MustCompile(`^2\.0$`)},
+		"id":      {Types: []string{"number", "string"}, Required: true},
+		"method":  {Types: []string{"string"}, Required: true, Pattern: regexp.MustCompile(`^tools/call$`)},
+		"params": {Types: []string{"object"}, Required: true, Fields: map[string]Field{
+			"name":      {Types: []string{"string"}, Required: true, Pattern: regexp.MustCompile(`^` + regexp.QuoteMeta(tool) + `$`)},
+			"arguments": args,
+		}},
+	}}
+}
+
 // Routes is every route a status request may name.
-var Routes = []string{RouteTinfoil, RouteModels}
+var Routes = []string{RouteTinfoil, RouteTinfoilWebSearch, RouteModels, RouteHuggingFace}
 
 // Tinfoil inference goes through Fount's proxy, which attaches Fount's Tinfoil
 // key and meters usage. The proxy sees only ciphertext: bodies are sealed to
 // a router the broker attested itself.
 const TinfoilRouterRepo = "tinfoilsh/confidential-model-router"
+
+// The web-search enclave, attested against its own repository.
+const (
+	TinfoilWebSearchHost = "websearch.tinfoil.sh"
+	TinfoilWebSearchRepo = "tinfoilsh/confidential-websearch"
+)
 
 // Release endpoints. A dev build can override the first two; see
 // endpoints_dev.go.
@@ -139,6 +230,7 @@ const (
 	fountAPIBase   = "https://api.fount.sh/"
 	fountProxyBase = "https://api.fount.sh/proxy/"
 	ModelsBase     = "https://fount-embedding-models.s3.us-east-1.amazonaws.com/models/"
+	OpenRouterBase = "https://openrouter.ai/api/v1/"
 )
 
 // TinfoilProxyBase is where sealed Tinfoil requests go.

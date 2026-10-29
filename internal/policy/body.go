@@ -41,6 +41,13 @@ type Field struct {
 	Required bool
 	// Pattern, when set, must match a string value in full.
 	Pattern *regexp.Regexp
+	// Fields, when set, is the rule for an object value: only these keys,
+	// each checked like a top-level field.
+	Fields map[string]Field
+	// Items, when set, is the rule for each element of an array value, which
+	// must have between MinItems and MaxItems elements.
+	Items              *Field
+	MinItems, MaxItems int
 }
 
 // Check reports why body breaks the rule, or nil.
@@ -75,8 +82,12 @@ func (b Body) checkObject(body []byte) error {
 	if dec.More() {
 		return errors.New("trailing data after the JSON body")
 	}
+	return checkFields(obj, b.Fields)
+}
+
+func checkFields(obj map[string]json.RawMessage, fields map[string]Field) error {
 	for key, raw := range obj {
-		field, ok := b.Fields[key]
+		field, ok := fields[key]
 		if !ok {
 			return fmt.Errorf("field %q is not allowed", key)
 		}
@@ -85,7 +96,7 @@ func (b Body) checkObject(body []byte) error {
 		}
 	}
 	required := make([]string, 0)
-	for key, field := range b.Fields {
+	for key, field := range fields {
 		if _, ok := obj[key]; field.Required && !ok {
 			required = append(required, key)
 		}
@@ -109,6 +120,27 @@ func (f Field) check(raw json.RawMessage) error {
 		}
 		if !f.Pattern.MatchString(s) {
 			return fmt.Errorf("value doesn't match %s", f.Pattern)
+		}
+	}
+	if f.Fields != nil && t == "object" {
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			return err
+		}
+		return checkFields(obj, f.Fields)
+	}
+	if f.Items != nil && t == "array" {
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return err
+		}
+		if len(items) < f.MinItems || (f.MaxItems > 0 && len(items) > f.MaxItems) {
+			return fmt.Errorf("has %d items, want %d to %d", len(items), f.MinItems, f.MaxItems)
+		}
+		for i, item := range items {
+			if err := f.Items.check(item); err != nil {
+				return fmt.Errorf("item %d: %w", i, err)
+			}
 		}
 	}
 	return nil

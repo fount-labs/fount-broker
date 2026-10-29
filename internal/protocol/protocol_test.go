@@ -9,6 +9,7 @@ func TestDecodeRequest(t *testing.T) {
 	valid := []string{
 		`{"kind":"fetch","id":1,"dest":"tinfoil.chat_completions"}`,
 		`{"kind":"fetch","id":2,"dest":"tinfoil.chat_completions","accept":"text/event-stream"}`,
+		`{"kind":"fetch","id":6,"dest":"updates.package","path":"v1.2.3/Fount_1.2.3_x64-setup.exe"}`,
 		`{"kind":"cancel","id":3}`,
 		`{"kind":"credential","id":4,"name":"license"}`,
 		`{"kind":"status","id":5,"route":"tinfoil"}`,
@@ -27,6 +28,7 @@ func TestDecodeRequest(t *testing.T) {
 		"fetch without dest": `{"kind":"fetch","id":1}`,
 		"fetch with route":   `{"kind":"fetch","id":1,"dest":"x","route":"tinfoil"}`,
 		"cancel with dest":   `{"kind":"cancel","id":1,"dest":"x"}`,
+		"status with path":   `{"kind":"status","id":1,"route":"models","path":"x"}`,
 		"credential no name": `{"kind":"credential","id":1}`,
 		"status no route":    `{"kind":"status","id":1}`,
 		"not json":           `kind=fetch`,

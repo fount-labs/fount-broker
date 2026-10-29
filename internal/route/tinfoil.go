@@ -15,12 +15,12 @@ import (
 	"github.com/fount-labs/fount-broker/internal/policy"
 )
 
-// Tinfoil seals each request to an attested Tinfoil router and sends it
+// Tinfoil seals each request to an attested Tinfoil enclave and sends it
 // through Fount's proxy. The proxy sees the method, path and headers, never
 // the body.
 type Tinfoil struct {
 	base string
-	// discover returns a client bound to a verified router.
+	// discover returns a client bound to a verified enclave.
 	discover func(ctx context.Context) (enclave, error)
 
 	mu     sync.Mutex
@@ -44,19 +44,36 @@ func NewTinfoil(base string, cacheSecret func() string) *Tinfoil {
 				TransportMode:     tinfoil.TransportModeEHBP,
 				BaseURL:           base,
 				UserCacheSecret:   cacheSecret(),
-				VerificationCheck: checkRouterRepo,
+				VerificationCheck: checkRepo(policy.TinfoilRouterRepo),
 			})
 		},
 	}
 }
 
-// checkRouterRepo restates the router pin here so the policy file shows it.
-// tinfoil-go already pins discovery to the same repository.
-func checkRouterRepo(v *verify.Verification) error {
-	if repo := v.ConfigRepo(); repo != policy.TinfoilRouterRepo {
-		return fmt.Errorf("router is built from %q, want %q", repo, policy.TinfoilRouterRepo)
+// NewTinfoilEnclave returns a route to the one enclave at host, which must be
+// built from repo, through the proxy at base.
+func NewTinfoilEnclave(host, repo, base string) *Tinfoil {
+	return &Tinfoil{
+		base: base,
+		discover: func(context.Context) (enclave, error) {
+			return tinfoil.NewEnclaveHTTPClient(host, repo, &tinfoil.EnclaveOptions{
+				TransportMode:     tinfoil.TransportModeEHBP,
+				BaseURL:           base,
+				VerificationCheck: checkRepo(repo),
+			})
+		},
 	}
-	return nil
+}
+
+// checkRepo restates a pin here so the policy file shows it. tinfoil-go
+// already verifies against the same repository.
+func checkRepo(want string) func(*verify.Verification) error {
+	return func(v *verify.Verification) error {
+		if repo := v.ConfigRepo(); repo != want {
+			return fmt.Errorf("enclave is built from %q, want %q", repo, want)
+		}
+		return nil
+	}
 }
 
 func (t *Tinfoil) current(ctx context.Context) (enclave, error) {
@@ -122,6 +139,9 @@ func (t *Tinfoil) send(ctx context.Context, c enclave, r Request) (*http.Respons
 	}
 	if r.Credential != "" {
 		req.Header.Set("Authorization", "Bearer "+r.Credential)
+	}
+	for k, v := range r.Dest.Headers {
+		req.Header.Set(k, v)
 	}
 	resp, err := c.Do(req)
 	if err != nil {

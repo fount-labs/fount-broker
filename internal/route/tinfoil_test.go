@@ -115,3 +115,29 @@ func TestTinfoilRefusesEscapingPath(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestTinfoilSendsDestinationHeaders(t *testing.T) {
+	var got *http.Request
+	tf := &Tinfoil{base: "https://proxy.example/proxy/", discover: func(context.Context) (enclave, error) {
+		return &fakeEnclave{host: policy.TinfoilWebSearchHost, do: func(r *http.Request) (*http.Response, error) {
+			got = r
+			return &http.Response{StatusCode: 200, Body: http.NoBody}, nil
+		}}, nil
+	}}
+	search := Request{Dest: policy.Destinations["tinfoil.websearch"], Body: []byte(`{}`), Credential: "LIC"}
+	if _, err := tf.Do(context.Background(), search); err != nil {
+		t.Fatal(err)
+	}
+	if got.URL.String() != "https://proxy.example/proxy/mcp" {
+		t.Fatalf("url: %s", got.URL)
+	}
+	if got.Header.Get("Accept") != "application/json, text/event-stream" || got.Header.Get("X-Tinfoil-Tool-PII-Check") != "true" {
+		t.Fatalf("headers: %v", got.Header)
+	}
+}
+
+func TestCheckRepoRefusesAnotherRepo(t *testing.T) {
+	if err := checkRepo(policy.TinfoilWebSearchRepo)(&verify.Verification{}); err == nil {
+		t.Fatal("an unpinned repo passed")
+	}
+}

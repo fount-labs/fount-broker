@@ -30,6 +30,8 @@ type Broker struct {
 	version string
 	routes  map[string]route.Route
 	vault   *Vault
+	// ProxyURL is announced in the ready frame; see package proxy.
+	ProxyURL string
 
 	out *frame.Writer
 
@@ -53,7 +55,7 @@ func (b *Broker) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 		cancel()
 		b.wg.Wait()
 	}()
-	if err := b.reply(protocol.Reply{Kind: protocol.KindReady, Version: b.version, Protocol: protocol.Version}, nil); err != nil {
+	if err := b.reply(protocol.Reply{Kind: protocol.KindReady, Version: b.version, Protocol: protocol.Version, Proxy: b.ProxyURL}, nil); err != nil {
 		return err
 	}
 	for {
@@ -137,6 +139,13 @@ func (b *Broker) fetch(ctx context.Context, req protocol.Request, body []byte) {
 	if !slices.Contains(dest.Accept, req.Accept) {
 		b.fail(req.ID, protocol.CodePolicy, fmt.Errorf("accept %q is not allowed for %s", req.Accept, req.Dest))
 		return
+	}
+	if req.Path != "" || dest.PathPattern != nil {
+		if dest.PathPattern == nil || !dest.PathPattern.MatchString(req.Path) {
+			b.fail(req.ID, protocol.CodePolicy, fmt.Errorf("path %q is not allowed for %s", req.Path, req.Dest))
+			return
+		}
+		dest.Path += req.Path
 	}
 	if err := dest.Body.Check(body); err != nil {
 		b.fail(req.ID, protocol.CodePolicy, fmt.Errorf("%s: %w", req.Dest, err))

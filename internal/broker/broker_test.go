@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -48,7 +49,7 @@ func start(t *testing.T, rt route.Route) *session {
 	outR, outW := io.Pipe()
 	vault := NewVault()
 	routes := map[string]route.Route{}
-	for _, name := range []string{policy.RouteTinfoil, policy.RouteFountAPI, policy.RouteFountProxy, policy.RouteModels} {
+	for _, name := range []string{policy.RouteTinfoil, policy.RouteFountAPI, policy.RouteFountProxy, policy.RouteModels, policy.RouteOpenRouter, policy.RouteHuggingFace, policy.RouteUpdates} {
 		routes[name] = rt
 	}
 	b := New("test", routes, vault)
@@ -312,5 +313,34 @@ func TestPinnedDigestIsEnforced(t *testing.T) {
 		if r.Kind == protocol.KindError {
 			t.Fatalf("got %+v, want end", r)
 		}
+	}
+}
+
+func TestPathMustMatchTheDestinationPattern(t *testing.T) {
+	var got []string
+	s := start(t, &fakeRoute{do: func(_ context.Context, r route.Request) (*http.Response, error) {
+		got = append(got, r.Dest.Path)
+		return okResponse("application/octet-stream", ""), nil
+	}})
+	refused := []string{
+		`{"kind":"fetch","id":1,"dest":"updates.package","path":"v1.2.3/../../evil"}`,
+		`{"kind":"fetch","id":2,"dest":"updates.package","path":"v1.2.3/Fount_1.2.3_aarch64.app.tar.gz?x=1"}`,
+		`{"kind":"fetch","id":3,"dest":"updates.package"}`,
+		`{"kind":"fetch","id":4,"dest":"updates.manifest","path":"latest.json"}`,
+	}
+	for _, h := range refused {
+		s.send(h, "")
+		if r, _ := s.recv(); r.Kind != protocol.KindError || r.Code != protocol.CodePolicy {
+			t.Errorf("%s: got %+v, want a policy error", h, r)
+		}
+	}
+	s.send(`{"kind":"fetch","id":5,"dest":"updates.package","path":"v1.2.3/Fount_1.2.3_aarch64.app.tar.gz"}`, "")
+	for r, _ := s.recv(); r.Kind != protocol.KindEnd; r, _ = s.recv() {
+		if r.Kind == protocol.KindError {
+			t.Fatalf("got %+v, want the package", r)
+		}
+	}
+	if want := []string{"download/v1.2.3/Fount_1.2.3_aarch64.app.tar.gz"}; !slices.Equal(got, want) {
+		t.Fatalf("route saw paths %q, want %q", got, want)
 	}
 }

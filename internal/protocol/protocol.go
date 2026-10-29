@@ -3,13 +3,14 @@
 // App to broker:
 //
 //	{"kind":"fetch","id":N,"dest":"tinfoil.chat_completions","accept":"text/event-stream"}  body: opaque request
+//	{"kind":"fetch","id":N,"dest":"updates.package","path":"v1.2.3/Fount_1.2.3_aarch64.app.tar.gz"}
 //	{"kind":"cancel","id":N}
 //	{"kind":"credential","id":N,"name":"license"}  body: the secret
 //	{"kind":"status","id":N,"route":"tinfoil"}
 //
 // Broker to app:
 //
-//	{"kind":"ready","version":"…","protocol":1}
+//	{"kind":"ready","version":"…","protocol":1,"proxy":"http://fount:…@127.0.0.1:N"}
 //	{"kind":"head","id":N,"status":200,"contentType":"text/event-stream","contentLength":N}
 //	{"kind":"data","id":N}  body: a chunk of the response
 //	{"kind":"end","id":N}
@@ -52,16 +53,22 @@ type Request struct {
 	ID     uint64 `json:"id"`
 	Dest   string `json:"dest,omitempty"`
 	Accept string `json:"accept,omitempty"`
-	Name   string `json:"name,omitempty"`
-	Route  string `json:"route,omitempty"`
+	// Path completes the path of a destination that takes one. The policy
+	// says which paths each such destination accepts.
+	Path  string `json:"path,omitempty"`
+	Name  string `json:"name,omitempty"`
+	Route string `json:"route,omitempty"`
 }
 
 // Reply is every header the broker sends.
 type Reply struct {
-	Kind        Kind   `json:"kind"`
-	ID          uint64 `json:"id,omitempty"`
-	Version     string `json:"version,omitempty"`
-	Protocol    int    `json:"protocol,omitempty"`
+	Kind     Kind   `json:"kind"`
+	ID       uint64 `json:"id,omitempty"`
+	Version  string `json:"version,omitempty"`
+	Protocol int    `json:"protocol,omitempty"`
+	// Proxy is the package tunnel's URL, password included, for uv's
+	// HTTPS_PROXY. Empty when the tunnel couldn't open.
+	Proxy       string `json:"proxy,omitempty"`
 	Status      int    `json:"status,omitempty"`
 	ContentType string `json:"contentType,omitempty"`
 	// ContentLength is the response size when the server states it.
@@ -113,11 +120,11 @@ func DecodeRequest(header []byte) (Request, error) {
 	case KindFetch:
 		extra = r.Name != "" || r.Route != "" || r.Dest == ""
 	case KindCancel:
-		extra = r.Dest != "" || r.Accept != "" || r.Name != "" || r.Route != ""
+		extra = r.Dest != "" || r.Accept != "" || r.Path != "" || r.Name != "" || r.Route != ""
 	case KindCredential:
-		extra = r.Dest != "" || r.Accept != "" || r.Route != "" || r.Name == ""
+		extra = r.Dest != "" || r.Accept != "" || r.Path != "" || r.Route != "" || r.Name == ""
 	case KindStatus:
-		extra = r.Dest != "" || r.Accept != "" || r.Name != "" || r.Route == ""
+		extra = r.Dest != "" || r.Accept != "" || r.Path != "" || r.Name != "" || r.Route == ""
 	default:
 		return Request{}, fmt.Errorf("%w: unknown kind %q", ErrMalformed, r.Kind)
 	}
