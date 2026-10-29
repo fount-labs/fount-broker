@@ -49,7 +49,7 @@ func start(t *testing.T, rt route.Route) *session {
 	outR, outW := io.Pipe()
 	vault := NewVault()
 	routes := map[string]route.Route{}
-	for _, name := range []string{policy.RouteTinfoil, policy.RouteFountAPI, policy.RouteFountProxy, policy.RouteModels, policy.RouteOpenRouter, policy.RouteHuggingFace, policy.RouteUpdates} {
+	for _, name := range []string{policy.RouteTinfoil, policy.RouteFountAPI, policy.RouteFountProxy, policy.RouteModels, policy.RouteOpenRouter, policy.RouteHuggingFace, policy.RouteUpdates, policy.RouteLatex} {
 		routes[name] = rt
 	}
 	b := New("test", routes, vault)
@@ -342,5 +342,51 @@ func TestPathMustMatchTheDestinationPattern(t *testing.T) {
 	}
 	if want := []string{"download/v1.2.3/Fount_1.2.3_aarch64.app.tar.gz"}; !slices.Equal(got, want) {
 		t.Fatalf("route saw paths %q, want %q", got, want)
+	}
+}
+
+func TestLatexFileIsARangeOfTheBundle(t *testing.T) {
+	var got []route.Request
+	s := start(t, &fakeRoute{do: func(_ context.Context, r route.Request) (*http.Response, error) {
+		got = append(got, r)
+		resp := okResponse("application/octet-stream", "x")
+		resp.StatusCode = http.StatusPartialContent
+		return resp, nil
+	}})
+	refused := []string{
+		`{"kind":"fetch","id":1,"dest":"latex.file","path":"not-in-the-bundle.sty"}`,
+		`{"kind":"fetch","id":2,"dest":"latex.file"}`,
+		`{"kind":"fetch","id":3,"dest":"latex.file","path":"../evil"}`,
+	}
+	for _, h := range refused {
+		s.send(h, "")
+		if r, _ := s.recv(); r.Kind != protocol.KindError || r.Code != protocol.CodePolicy {
+			t.Errorf("%s: got %+v, want a policy error", h, r)
+		}
+	}
+	s.send(`{"kind":"fetch","id":4,"dest":"latex.file","path":"aasjournal.bst"}`, "")
+	for r, _ := s.recv(); r.Kind != protocol.KindEnd; r, _ = s.recv() {
+		if r.Kind == protocol.KindError {
+			t.Fatalf("got %+v, want the file", r)
+		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("route saw %d requests, want 1", len(got))
+	}
+	if got[0].Dest.Path != policy.LatexBundle || got[0].Dest.Headers["Range"] != "bytes=2560-40489" {
+		t.Fatalf("route saw %q with Range %q", got[0].Dest.Path, got[0].Dest.Headers["Range"])
+	}
+	if policy.Destinations["latex.file"].Headers != nil {
+		t.Fatal("the request's Range leaked into the shared destination")
+	}
+}
+
+func TestLatexFileRefusesAWholeBundleReply(t *testing.T) {
+	s := start(t, &fakeRoute{do: func(context.Context, route.Request) (*http.Response, error) {
+		return okResponse("application/octet-stream", "the whole tar"), nil
+	}})
+	s.send(`{"kind":"fetch","id":1,"dest":"latex.file","path":"aasjournal.bst"}`, "")
+	if r, _ := s.recv(); r.Kind != protocol.KindError || r.Code != protocol.CodeNetwork {
+		t.Fatalf("got %+v, want a network error before any data", r)
 	}
 }

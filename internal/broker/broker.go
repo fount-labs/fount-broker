@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"maps"
 	"net/http"
 	"slices"
 	"sync"
@@ -140,7 +141,20 @@ func (b *Broker) fetch(ctx context.Context, req protocol.Request, body []byte) {
 		b.fail(req.ID, protocol.CodePolicy, fmt.Errorf("accept %q is not allowed for %s", req.Accept, req.Dest))
 		return
 	}
-	if req.Path != "" || dest.PathPattern != nil {
+	switch {
+	case dest.Range != nil:
+		r, ok := dest.Range(req.Path)
+		if !ok {
+			b.fail(req.ID, protocol.CodePolicy, fmt.Errorf("path %q is not allowed for %s", req.Path, req.Dest))
+			return
+		}
+		headers := maps.Clone(dest.Headers)
+		if headers == nil {
+			headers = map[string]string{}
+		}
+		headers["Range"] = r
+		dest.Headers = headers
+	case req.Path != "" || dest.PathPattern != nil:
 		if dest.PathPattern == nil || !dest.PathPattern.MatchString(req.Path) {
 			b.fail(req.ID, protocol.CodePolicy, fmt.Errorf("path %q is not allowed for %s", req.Path, req.Dest))
 			return
@@ -169,6 +183,12 @@ func (b *Broker) fetch(ctx context.Context, req protocol.Request, body []byte) {
 		return
 	}
 	defer resp.Body.Close()
+	// A server that ignores Range sends the whole resource; for the LaTeX
+	// bundle that's 2.9 GB.
+	if dest.Range != nil && resp.StatusCode != http.StatusPartialContent {
+		b.fail(req.ID, protocol.CodeNetwork, fmt.Errorf("%s answered %d to a range request", req.Dest, resp.StatusCode))
+		return
+	}
 	head := protocol.Reply{Kind: protocol.KindHead, ID: req.ID, Status: resp.StatusCode, ContentType: resp.Header.Get("Content-Type")}
 	if resp.ContentLength > 0 {
 		head.ContentLength = resp.ContentLength

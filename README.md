@@ -26,6 +26,8 @@ Nothing there can change at runtime.
 | `models.<model>/<file>` | `GET https://fount-embedding-models.s3.us-east-1.amazonaws.com/models/<model>/<file>` | none | none; the file must match its SHA-256 in [`models.go`](internal/policy/models.go) |
 | `vision.<repo>/<file>` | `GET https://huggingface.co/<repo>/resolve/<revision>/<file>` | none | none; the revision and the file's SHA-256 are pinned in [`vision.go`](internal/policy/vision.go) |
 | `updates.manifest` | `GET https://github.com/fount-labs/fount/releases/latest/download/latest.json` | none | none |
+| `latex.index` | `GET https://data1b.fullyjustified.net/tlextras-2022.0r0.tar.index.gz` | none | none; the index must match its SHA-256 in [`latex.go`](internal/policy/latex.go) |
+| `latex.file` | `GET https://data1b.fullyjustified.net/tlextras-2022.0r0.tar`, one file's byte range | none | none; the app names a file, and the broker sends the range the embedded index lists for it |
 | `updates.package` | `GET https://github.com/fount-labs/fount/releases/download/v<version>/Fount_<version>_<package>`, the package for macOS or Windows | none | none |
 
 A body that breaks its destination's rule is refused before anything is sent.
@@ -93,6 +95,21 @@ proxy's password is made at each launch and sent to the app in the `ready`
 frame, so other local programs can't use it. On macOS Fount runs uv in a
 sandbox where loopback is its only network, so the tunnel is its only way out.
 
+### LaTeX files
+
+Fount compiles LaTeX with [Tectonic](https://tectonic-typesetting.github.io),
+which doesn't ship TeX Live. It reads packages, fonts and its format from the
+Tectonic project's TeX Live 2022 bundle, a 2.9 GB tar file, one file at a time,
+and caches each one. The broker holds a copy of the bundle's index. The app
+names a file, and the broker asks for that file's byte range and nothing else;
+a name that isn't in the index is refused. The host is named directly, so the
+relay that Tectonic normally starts from can't redirect it. A reply that isn't
+the requested range ends in an error before any data reaches the app.
+
+The host sees which files are fetched, so it can tell which packages and
+fonts a document uses, but not the document. Files aren't pinned one by one:
+only the index is.
+
 ## What the app could still send
 
 The broker limits where requests go. It can't tell whether you asked for a
@@ -108,6 +125,7 @@ use:
 | `fount.feedback_report` | Fount | Up to 2 MiB, including free-text `comment` and `conversation` fields. The app shows you the report first, but the app draws that preview |
 | Python package tunnel | PyPI, GitHub | Paths on those hosts. `github.com` serves any repository, so a request path can carry data |
 | `fount.license_validate` | Fount | 64 characters of key per request |
+| `latex.file` | the bundle's host | Which of about 130,000 files it asks for, and in what order |
 
 Everything else either is sealed to an attested enclave or carries no content
 the app chooses (downloads are pinned by hash).

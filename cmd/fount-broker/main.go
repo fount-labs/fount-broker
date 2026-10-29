@@ -49,6 +49,7 @@ func main() {
 		policy.RouteOpenRouter:  route.NewHTTPS(policy.OpenRouterBase, nil),
 		policy.RouteHuggingFace: route.NewHTTPS(policy.HuggingFaceBase, func() any { return policy.VisionModels }, policy.HuggingFaceRedirectHosts...),
 		policy.RouteUpdates:     route.NewHTTPS(policy.UpdatesBase, nil, policy.UpdatesRedirectHosts...),
+		policy.RouteLatex:       route.NewHTTPS(policy.LatexBase, nil),
 	}
 	b := broker.New(version, routes, vault)
 	// Chat and the rest work without the tunnel, so failing to open it only

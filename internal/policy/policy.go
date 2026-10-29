@@ -55,6 +55,10 @@ type Destination struct {
 	// SHA256, when set, is the hex digest the response body must have. A
 	// mismatch ends the reply with an integrity error instead of end.
 	SHA256 string
+	// Range, when set, takes the app's path and returns the Range header to
+	// send, or false to refuse it. The path then names a part of the
+	// resource; it doesn't extend the URL.
+	Range func(path string) (string, bool)
 }
 
 const (
@@ -75,6 +79,8 @@ const (
 	RouteHuggingFace = "huggingface"
 	// RouteUpdates serves Fount's own releases from GitHub.
 	RouteUpdates = "updates"
+	// RouteLatex serves TeX support files from the Tectonic bundle.
+	RouteLatex = "latex"
 )
 
 var chatAccept = []string{"", "application/json", "text/event-stream"}
