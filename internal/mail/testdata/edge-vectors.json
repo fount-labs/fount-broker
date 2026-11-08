@@ -1,0 +1,56 @@
+{
+  "comment": "Generated from fount-mail-edge 861c109 by testdata/edge-vectors-gen.go.txt. Test keys only.",
+  "mailbox_id": "03a68f38c5c328ca9537820a5630570de40a03572cc9c2f535b00e50d22c32af",
+  "signing_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+  "decryption_key": "AgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fICE=",
+  "messages": [
+    {
+      "edge_id": "c343fdbb68e0672ca8669feb66719800",
+      "sequence": 1,
+      "boot": "0a0b0c0d0e0f10111213141516171819",
+      "object": "Rk1FMQEAIAABAAHDQ/27aOBnLKhmn+tmcZgAA6aPOMXDKMqVN4IKVjBXDeQKA1csycL1NbAOUNIsMq9P6tLvMt6fRYPL50+c5vhjlYbw3tORpjHOKzopNKx3fQAAAaG9VC2fAAAAAAAAAAEKCwwNDg8QERITFBUWFxgZACB9xNYsAkIcDmAjcH85j5JUPy8Z+eX6oqV43U9SkCumTAAAAKwiPmputUAj96XSRGOhvuarbdTmTP+XUtN9qrFge/vwZWS/awnyiFlu7zpJm+rEvIJ+a4rGJIbMLt/J2KlXGVmwbP/iu8Vhc70IgnxshBASo7AgIPznUU4v4w3P1j2yM8l3aom0yq+tKXAWzVGtYYhfoyB7psfo1IBK3d6aCekeNRdCD9+qx9Hiq4O9r9YRkr501ZZlPka8xSMOIELE79UJFb2fd2Z33B+/NrmFCB+LepgKOmXNjQJQGk/3rPd1NN8gdcGFPzEaMmIY8fl6Iqp+G1+0pHTNIXT+g6hYtiuksk5uQ60qjRPjhIfGBA==",
+      "sender": "owner@example.com",
+      "recipient": "worker@fountbox.com",
+      "raw": "RnJvbTogT3duZXIgPG93bmVyQGV4YW1wbGUuY29tPg0KVG86IHdvcmtlckBmb3VudGJveC5jb20NClN1YmplY3Q6IHZlY3RvciAxDQpNZXNzYWdlLUlEOiA8MUBleGFtcGxlLmNvbT4NCg0KQm9keSAxDQo="
+    },
+    {
+      "edge_id": "94ee055aa986a2b6b1dff7aea8273635",
+      "sequence": 4,
+      "boot": "1415161718191a1b1c1d1e1f20212223",
+      "object": "Rk1FMQEAIAABAAGU7gVaqYaitrHf966oJzY1A6aPOMXDKMqVN4IKVjBXDeQKA1csycL1NbAOUNIsMq9P6tLvMt6fRYPL50+c5vhjlYbw3tORpjHOKzopNKx3fQAAAaG9VC2gAAAAAAAAAAQUFRYXGBkaGxwdHh8gISIjACB+Ildle4dx9mvebjM27eO3bZnVyzeg1FV3eqSbDSpdegAAAKwyT0NEItkg9/CI/iNXOaW9uEiK35oC6EcvgyoSZp6wUCyehRHSclU1P0ufR+YwX+c52c/xu9LfgCN6k3D6flyTfe2EjfJ7V30PNtR+gPR3al7g++l1tT2kbmUch87jhHjaJkuzt4nkt1sDYy9Ze2t2JRNX1KHyarJOhAlRWiZDWxRqJANwrap+IBCsldqUAvKm5b0mQDww/39cGjgMJGfSivb2NFeFIEIYyrAioafG5xHXPYjg5bWduQC4lglE1GUCgzAnL2v5iKG+zaLAc9sauTzU8dwfvyvON81FBr5h/daUkq6+KrJ5GhvcCQ==",
+      "sender": "owner@example.com",
+      "recipient": "worker@fountbox.com",
+      "raw": "RnJvbTogT3duZXIgPG93bmVyQGV4YW1wbGUuY29tPg0KVG86IHdvcmtlckBmb3VudGJveC5jb20NClN1YmplY3Q6IHZlY3RvciA0DQpNZXNzYWdlLUlEOiA8NEBleGFtcGxlLmNvbT4NCg0KQm9keSA0DQo="
+    },
+    {
+      "edge_id": "efd333a3a763be6b50d737aa40457bc5",
+      "sequence": 6,
+      "boot": "1415161718191a1b1c1d1e1f20212223",
+      "object": "Rk1FMQEAIAABAAHv0zOjp2O+a1DXN6pARXvFA6aPOMXDKMqVN4IKVjBXDeQKA1csycL1NbAOUNIsMq9P6tLvMt6fRYPL50+c5vhjlYbw3tORpjHOKzopNKx3fQAAAaG9VC2hAAAAAAAAAAYUFRYXGBkaGxwdHh8gISIjACCo8N3FW47ahm2LvlnY7G/zZv5GNxus1t01T6H5GEg/TwAAAKxwef8jy7OPfz+Ab5nhi/o90NEhBfZ8b0WOwnjlcgyMC//zLUmWVSNBa3CfdXvCgXTILMCB4MpW3Y6zQ69oLGKvmKDMHowzD8RcrAE5HdgkC+PrOZuoTG2AWtL4wBOPSGLx06NMnvdzsdq1Qom81fVpBXf11PmxFNulq5fyu7R8S5OsedE0jjESt0hUUg+nLmrPqSJBrOsN0Y6gKF2qtJ+BZP3sj8KJEy3oxca7d4dZ4uIp1Cc3NJN1dbYZXZvgwxDxfoY4NVlreOZOK5JqePmHi1uIHK8uoBX5q9MbXZ0POiwCka7R4Rpj2mFxBw==",
+      "sender": "owner@example.com",
+      "recipient": "worker@fountbox.com",
+      "raw": "RnJvbTogT3duZXIgPG93bmVyQGV4YW1wbGUuY29tPg0KVG86IHdvcmtlckBmb3VudGJveC5jb20NClN1YmplY3Q6IHZlY3RvciA2DQpNZXNzYWdlLUlEOiA8NkBleGFtcGxlLmNvbT4NCg0KQm9keSA2DQo="
+    }
+  ],
+  "withheld": [
+    5
+  ],
+  "list_response": "{\"messages\":[{\"id\":\"94ee055aa986a2b6b1dff7aea8273635\",\"size\":397},{\"id\":\"efd333a3a763be6b50d737aa40457bc5\",\"size\":397},{\"id\":\"c343fdbb68e0672ca8669feb66719800\",\"size\":397}]}\n",
+  "gaps_response": "{\"records\":[\"eyJtYWlsYm94X2lkIjoiMDNhNjhmMzhjNWMzMjhjYTk1Mzc4MjBhNTYzMDU3MGRlNDBhMDM1NzJjYzljMmY1MzViMDBlNTBkMjJjMzJhZiIsImVkZ2VfaWQiOiI3Y2YxZWQ3YzI0YmQzZTBmZmM0MDk1OGYwNTBhMjQyYSIsInNlcXVlbmNlIjoyLCJyZWNlaXZlZF9hdCI6MTc5NDE3Nzc3Mjk1OSwiZXhwaXJlZF9hdCI6MTc5NDE3Nzc3MiwiYm9vdF9pZCI6IjBhMGIwYzBkMGUwZjEwMTExMjEzMTQxNTE2MTcxODE5IiwibWVzc2FnZV9ib290IjoiMGEwYjBjMGQwZTBmMTAxMTEyMTMxNDE1MTYxNzE4MTkiLCJyZWFzb24iOiJleHBpcmVkIn0.SkoUkI1-FUEMxfptZPxVyhmVRR5_UfvbRMX0ZjnyOvcC9Bwvp-hxfpJoSf7hMrqr-TAikjVJK32J1SYpaPBdDQ\",\"eyJtYWlsYm94X2lkIjoiMDNhNjhmMzhjNWMzMjhjYTk1Mzc4MjBhNTYzMDU3MGRlNDBhMDM1NzJjYzljMmY1MzViMDBlNTBkMjJjMzJhZiIsImVkZ2VfaWQiOiJlMGU2NmM3NjZjZjgwOGE3YTU1YjIxNjM3ZmQ3YTNlMCIsInNlcXVlbmNlIjozLCJyZWNlaXZlZF9hdCI6MTc5NDE3Nzc3Mjk2MCwiZXhwaXJlZF9hdCI6MTc5NDE3Nzc3MiwiYm9vdF9pZCI6IjBhMGIwYzBkMGUwZjEwMTExMjEzMTQxNTE2MTcxODE5IiwibWVzc2FnZV9ib290IjoiMGEwYjBjMGQwZTBmMTAxMTEyMTMxNDE1MTYxNzE4MTkiLCJyZWFzb24iOiJ2b2lkIn0.gALVrZ6DXfxnDI16eVx44GH45n-hgHuCntYzIYAjiPYPJUxMvLqJqfBp8RxH16g0emUBikRCZSY1UhpkMJvxBA\"]}\n",
+  "boots": {
+    "0a0b0c0d0e0f10111213141516171819": "{\"boot_id\":\"0a0b0c0d0e0f10111213141516171819\",\"signing_key\":\"VCgh6VKd0a0kO/3/XGQKZRlLSBaYemUN6GHXzp5BemM=\",\"started_at\":1794177772}\n",
+    "1415161718191a1b1c1d1e1f20212223": "{\"boot_id\":\"1415161718191a1b1c1d1e1f20212223\",\"signing_key\":\"bcadRy9/QPR2nq2xWbMu2uabBymjMneYDQdDZTEfTXc=\",\"started_at\":1794177772}\n"
+  },
+  "boot_keys": {
+    "0a0b0c0d0e0f10111213141516171819": "542821e9529dd1ad243bfdff5c640a65194b4816987a650de861d7ce9e417a63",
+    "1415161718191a1b1c1d1e1f20212223": "6dc69d472f7f40f4769eadb159b32edae69b0729a33277980d074365311f4d77"
+  },
+  "request": {
+    "method": "DELETE",
+    "path": "/mail/c343fdbb68e0672ca8669feb66719800",
+    "body": "",
+    "timestamp": 1794177772,
+    "nonce": "vector-delete",
+    "signature": "i8+ZV91oDVcEG5fMWeJHx4/2gPUPWiurAO6/JtQsno8ogfqr+009JhVejA1nqkd4hBlI5pBuDuEc/I7fl9BSCw=="
+  }
+}

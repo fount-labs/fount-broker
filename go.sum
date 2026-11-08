@@ -1,3 +1,5 @@
+blitiri.com.ar/go/spf v1.6.0 h1:TK91HOya1R2J5b+x+NZfdYTqDqbr+Q+hil5gy8WzLDQ=
+blitiri.com.ar/go/spf v1.6.0/go.mod h1:x9HYT28jEB65YMJOIVWSx0p88YCJ2h1N0fDFEhhWFBc=
 cloud.google.com/go v0.123.0 h1:2NAUJwPR47q+E35uaJeYoNhuNEM9kM8SjgRgdeOJUSE=
 cloud.google.com/go v0.123.0/go.mod h1:xBoMV08QcqUGuPW65Qfm1o9Y4zKZBpGS+7bImXLTAZU=
 cloud.google.com/go/auth v0.20.0 h1:kXTssoVb4azsVDoUiF8KvxAqrsQcQtB53DcSgta74CA=
@@ -89,6 +91,8 @@ github.com/digitorus/pkcs7 v0.0.0-20250730155240-ffadbf3f398c h1:g349iS+CtAvba7i
 github.com/digitorus/pkcs7 v0.0.0-20250730155240-ffadbf3f398c/go.mod h1:mCGGmWkOQvEuLdIRfPIpXViBfpWto4AhwtJlAvo62SQ=
 github.com/digitorus/timestamp v0.0.0-20250524132541-c45532741eea h1:ALRwvjsSP53QmnN3Bcj0NpR8SsFLnskny/EIMebAk1c=
 github.com/digitorus/timestamp v0.0.0-20250524132541-c45532741eea/go.mod h1:GvWntX9qiTlOud0WkQ6ewFm0LPy5JUR1Xo0Ngbd1w6Y=
+github.com/emersion/go-msgauth v0.7.0 h1:vj2hMn6KhFtW41kshIBTXvp6KgYSqpA/ZN9Pv4g1INc=
+github.com/emersion/go-msgauth v0.7.0/go.mod h1:mmS9I6HkSovrNgq0HNXTeu8l3sRAAuQ9RMvbM4KU7Ck=
 github.com/felixge/httpsnoop v1.0.4 h1:NFTV2Zj1bL4mc9sqWACXbQFVBBg2W3GPvqp8/ESS2Wg=
 github.com/felixge/httpsnoop v1.0.4/go.mod h1:m8KPJKqk1gH5J9DgRY2ASl2lWCfGKXixSwevea8zH2U=
 github.com/go-chi/chi/v5 v5.3.0 h1:halUjDxhshgXHMrao5bB8eNBXo/rnzwr8m5m36glehM=

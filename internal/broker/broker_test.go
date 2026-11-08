@@ -43,7 +43,7 @@ type session struct {
 	vault *Vault
 }
 
-func start(t *testing.T, rt route.Route) *session {
+func start(t *testing.T, rt route.Route, opts ...func(*Broker)) *session {
 	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -53,6 +53,9 @@ func start(t *testing.T, rt route.Route) *session {
 		routes[name] = rt
 	}
 	b := New("test", routes, vault)
+	for _, o := range opts {
+		o(b)
+	}
 	s := &session{t: t, in: frame.NewWriter(inW), inW: inW, out: outR, done: make(chan error, 1), vault: vault}
 	go func() {
 		s.done <- b.Serve(context.Background(), inR, outW)

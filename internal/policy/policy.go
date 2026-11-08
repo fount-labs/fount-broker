@@ -22,6 +22,11 @@ const (
 	CredentialOpenRouterKey Credential = "openrouter_api_key"
 )
 
+// CredentialMailKeys is the mail_keys credential: each mail address's
+// request-signing and decryption keys (package mail). The mail service holds
+// it, not the vault, and nothing reads it back.
+const CredentialMailKeys = "mail_keys"
+
 // Credentials is every credential the app may hand the broker.
 var Credentials = []Credential{CredentialLicense, CredentialTinfoilCacheSecret, CredentialOpenRouterKey}
 

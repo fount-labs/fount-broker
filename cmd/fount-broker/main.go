@@ -2,6 +2,9 @@
 // as a child process and speaks frames over its stdin and stdout; see package
 // protocol. It exits when stdin closes, so it never outlives the app. It also
 // runs a loopback tunnel for Python's package manager; see package proxy.
+//
+// Run as "fount-broker mail-verify", it is the offline mail sender verifier the
+// broker starts for each message; see package verify.
 package main
 
 import (
@@ -13,6 +16,7 @@ import (
 	"syscall"
 
 	"github.com/fount-labs/fount-broker/internal/broker"
+	"github.com/fount-labs/fount-broker/internal/mail/verify"
 	"github.com/fount-labs/fount-broker/internal/policy"
 	"github.com/fount-labs/fount-broker/internal/proxy"
 	"github.com/fount-labs/fount-broker/internal/route"
@@ -26,6 +30,13 @@ func main() {
 	log.SetPrefix("fount-broker: ")
 	if len(os.Args) > 1 && os.Args[1] == "--version" {
 		fmt.Println(version)
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == verify.Subcommand {
+		log.SetPrefix("fount-broker mail-verify: ")
+		if err := verify.Run(os.Stdin, os.Stdout); err != nil {
+			log.Fatal(err)
+		}
 		return
 	}
 
@@ -52,6 +63,11 @@ func main() {
 		policy.RouteLatex:       route.NewHTTPS(policy.LatexBase, nil),
 	}
 	b := broker.New(version, routes, vault)
+	if m, err := newMail(); err != nil {
+		log.Printf("mail unavailable: %v", err)
+	} else {
+		b.Mail = m
+	}
 	// Chat and the rest work without the tunnel, so failing to open it only
 	// leaves uv without a way out.
 	if tunnel, err := proxy.Listen(policy.PythonPackageHosts); err != nil {
