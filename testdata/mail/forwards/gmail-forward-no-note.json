@@ -1,0 +1,38 @@
+{
+  "fixture": "gmail-forward-no-note",
+  "provenance": "constructed",
+  "client": "gmail-web",
+  "kind": "forward-inline",
+  "replace_with_capture": true,
+  "covers": [
+    "Gmail forward with no note: standing instructions apply"
+  ],
+  "envelope": {
+    "sender": "dana@example.com",
+    "recipient": "ap.whitlockcpa@example.net"
+  },
+  "edge_id": "59f7ef3086dc1a28e6588a4c8deb05f6",
+  "received_at": "2026-11-03T17:24:53Z",
+  "assume_verdict": "request",
+  "thread_headers": {
+    "message_id": "<CAFq3XkS4p0W6y-Ar7Nt2Ye8Au9Lf3Jp1Wd5Cg0Mk6Qs@mail.example.com>",
+    "in_reply_to": [
+      "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+    ],
+    "references": [
+      "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+    ]
+  },
+  "expect": {
+    "note": {
+      "status": "none",
+      "marker": "gmail-forward",
+      "text": null,
+      "reason": null
+    },
+    "body_source": "plain",
+    "flags": [],
+    "attachments": []
+  },
+  "message_md": "gmail-forward-no-note.message.md"
+}

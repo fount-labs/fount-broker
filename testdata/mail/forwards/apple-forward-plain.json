@@ -1,0 +1,36 @@
+{
+  "fixture": "apple-forward-plain",
+  "provenance": "constructed",
+  "client": "apple-mail-macos",
+  "kind": "forward-inline",
+  "replace_with_capture": true,
+  "covers": [
+    "Apple Mail forward: 'Begin forwarded message:' inside the quote, so the plain text has '> ' on the marker",
+    "Header order From/Subject/Date/To, with U+202F before PM in the date",
+    "No References or In-Reply-To on the forward (unconfirmed for Apple Mail)"
+  ],
+  "envelope": {
+    "sender": "dana@example.com",
+    "recipient": "ap.whitlockcpa@example.net"
+  },
+  "edge_id": "dc2f5f01fc6ed681df35de9abddad77f",
+  "received_at": "2026-11-04T16:12:43Z",
+  "assume_verdict": "request",
+  "thread_headers": {
+    "message_id": "<3B9F6C1E-5D2A-4F7B-9E8C-0A1D2C3B4E5F@example.com>",
+    "in_reply_to": [],
+    "references": []
+  },
+  "expect": {
+    "note": {
+      "status": "certain",
+      "marker": "apple-forward",
+      "text": "Reconcile this against the October AP ledger in the Halvorsen folder. Flag anything over $500.",
+      "reason": null
+    },
+    "body_source": "plain",
+    "flags": [],
+    "attachments": []
+  },
+  "message_md": "apple-forward-plain.message.md"
+}

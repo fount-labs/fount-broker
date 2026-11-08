@@ -1,0 +1,64 @@
+{
+  "fixture": "apple-reply-attachment",
+  "provenance": "constructed",
+  "client": "apple-mail-macos",
+  "kind": "reply",
+  "replace_with_capture": true,
+  "covers": [
+    "Apple Mail reply: 'On <date>, at <time>, <name> wrote:' with U+202F before PM, '> ' quotes",
+    "A CSV attached to the reply, inline and 7bit, between two HTML fragments",
+    "Quoted text is exactly what Fount sent, so it's trimmed"
+  ],
+  "envelope": {
+    "sender": "dana@example.com",
+    "recipient": "ap.whitlockcpa+q7m2x4k9v3t8n6p1r5w0z2y4ha@example.net"
+  },
+  "edge_id": "00460eddb5f2c0a4d87cc5946d9238bb",
+  "received_at": "2026-11-04T18:30:15Z",
+  "assume_verdict": "thread_reply",
+  "thread_headers": {
+    "message_id": "<F04C2B91-6E3A-4D58-B7A2-9C1E8D5F3B60@example.com>",
+    "in_reply_to": [
+      "<fm.2c7q9x4m1v8k3b6n0z5r7t2w@example.net>"
+    ],
+    "references": [
+      "<20261102165107.4F2A91C3@mailer.northwind.example.org>",
+      "<CAFq3XkQ9m2T7v-Zp1Lr8Wc4Ys6Jd0Hn5Ub2Ae7Ki3Oq@mail.example.com>",
+      "<fm.2c7q9x4m1v8k3b6n0z5r7t2w@example.net>"
+    ]
+  },
+  "expect": {
+    "note": {
+      "status": "certain",
+      "marker": "attribution-line",
+      "text": "Here's the September remittance. It shows NW-88412 paid on 9/29, so flag it for Marcus as a duplicate.",
+      "reason": null
+    },
+    "body_source": "plain",
+    "flags": [],
+    "attachments": [
+      {
+        "path": "attachments/01-halvorsen_remittance_sep2026.csv",
+        "raw_name": "halvorsen_remittance_sep2026.csv",
+        "content_type": "text/csv",
+        "size": 108,
+        "sha256": "7844871c9c17c5578d873cf09c2e7f41fe040b6c2d0b5358d6a13e6901b40aaa",
+        "found_in": "the email (shown inline)",
+        "inline": true
+      }
+    ]
+  },
+  "message_md": "apple-reply-attachment.message.md",
+  "context": {
+    "thread": [
+      "forwards/gmail-forward-attachments.eml",
+      "replies/fount-question.eml"
+    ],
+    "answers": "<fm.2c7q9x4m1v8k3b6n0z5r7t2w@example.net>",
+    "session_holds": [
+      "<CAFq3XkQ9m2T7v-Zp1Lr8Wc4Ys6Jd0Hn5Ub2Ae7Ki3Oq@mail.example.com>",
+      "<fm.2c7q9x4m1v8k3b6n0z5r7t2w@example.net>"
+    ],
+    "token_resolves_to_thread": true
+  }
+}

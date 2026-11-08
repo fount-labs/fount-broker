@@ -1,0 +1,53 @@
+{
+  "fixture": "outlook-reply",
+  "provenance": "constructed",
+  "client": "outlook-new-exchange-online",
+  "kind": "reply",
+  "replace_with_capture": true,
+  "covers": [
+    "New Outlook reply: 'RE:' subject, underscore rule and From/Sent/To/Subject, quote not '>'-prefixed",
+    "Quoted text matches what Fount sent once the Outlook header block is removed, so it's trimmed"
+  ],
+  "envelope": {
+    "sender": "dana@example.com",
+    "recipient": "ap.whitlockcpa+q7m2x4k9v3t8n6p1r5w0z2y4ha@example.net"
+  },
+  "edge_id": "9f2b69ff391d26ffb4b5482062009911",
+  "received_at": "2026-11-04T18:21:33Z",
+  "assume_verdict": "thread_reply",
+  "thread_headers": {
+    "message_id": "<SA1PR04MB81237C1E3A5B7D9F0B2D4F6A8C0E2@SA1PR04MB8123.namprd04.prod.example.com>",
+    "in_reply_to": [
+      "<fm.2c7q9x4m1v8k3b6n0z5r7t2w@example.net>"
+    ],
+    "references": [
+      "<20261102165107.4F2A91C3@mailer.northwind.example.org>",
+      "<CAFq3XkQ9m2T7v-Zp1Lr8Wc4Ys6Jd0Hn5Ub2Ae7Ki3Oq@mail.example.com>",
+      "<fm.2c7q9x4m1v8k3b6n0z5r7t2w@example.net>"
+    ]
+  },
+  "expect": {
+    "note": {
+      "status": "certain",
+      "marker": "outlook-separator",
+      "text": "Flag it for Marcus. Don't book anything yet.\n\nDana Whitlock, CPA\nWhitlock & Reyes",
+      "reason": null
+    },
+    "body_source": "plain",
+    "flags": [],
+    "attachments": []
+  },
+  "message_md": "outlook-reply.message.md",
+  "context": {
+    "thread": [
+      "forwards/gmail-forward-attachments.eml",
+      "replies/fount-question.eml"
+    ],
+    "answers": "<fm.2c7q9x4m1v8k3b6n0z5r7t2w@example.net>",
+    "session_holds": [
+      "<CAFq3XkQ9m2T7v-Zp1Lr8Wc4Ys6Jd0Hn5Ub2Ae7Ki3Oq@mail.example.com>",
+      "<fm.2c7q9x4m1v8k3b6n0z5r7t2w@example.net>"
+    ],
+    "token_resolves_to_thread": true
+  }
+}

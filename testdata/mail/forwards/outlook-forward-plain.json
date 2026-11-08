@@ -1,0 +1,41 @@
+{
+  "fixture": "outlook-forward-plain",
+  "provenance": "constructed",
+  "client": "outlook-new-exchange-online",
+  "kind": "forward-inline",
+  "replace_with_capture": true,
+  "covers": [
+    "New Outlook / Outlook on the web forward: underscore rule, then From/Sent/To/Subject",
+    "Signature sits inside the note, above the marker",
+    "Exchange Thread-Index and Thread-Topic, which threading ignores",
+    "A <style style=\"display:none\"> element that isn't hidden text"
+  ],
+  "envelope": {
+    "sender": "dana@example.com",
+    "recipient": "ap.whitlockcpa@example.net"
+  },
+  "edge_id": "c6ae79e8d20793c5f65a09f73850a810",
+  "received_at": "2026-11-03T18:05:15Z",
+  "assume_verdict": "request",
+  "thread_headers": {
+    "message_id": "<SA1PR04MB8123B3C0D9F84E7A1C2BB5D2E1A92@SA1PR04MB8123.namprd04.prod.example.com>",
+    "in_reply_to": [
+      "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+    ],
+    "references": [
+      "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+    ]
+  },
+  "expect": {
+    "note": {
+      "status": "certain",
+      "marker": "outlook-separator",
+      "text": "Reconcile this against the October AP ledger in the Halvorsen folder. Flag anything over $500.\n\nDana Whitlock, CPA\nWhitlock & Reyes",
+      "reason": null
+    },
+    "body_source": "plain",
+    "flags": [],
+    "attachments": []
+  },
+  "message_md": "outlook-forward-plain.message.md"
+}

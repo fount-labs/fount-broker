@@ -1,0 +1,41 @@
+{
+  "fixture": "hostile-hidden-html",
+  "provenance": "constructed",
+  "client": "gmail-web",
+  "kind": "forward-inline",
+  "replace_with_capture": true,
+  "covers": [
+    "Hidden HTML text in the note (display:none) and in the forwarded part (font-size:0, mso-hide:all, hidden attribute)",
+    "After dropping it, HTML and plain text match, so the note is still certain"
+  ],
+  "envelope": {
+    "sender": "dana@example.com",
+    "recipient": "ap.whitlockcpa@example.net"
+  },
+  "edge_id": "5d6f062c8ccaa787be35ef7663f1248d",
+  "received_at": "2026-11-04T19:40:05Z",
+  "assume_verdict": "request",
+  "thread_headers": {
+    "message_id": "<CAFq3XkW6x2E8g-Iz9Va4Gl0Hb1Rl5Pv3Ci7Im2Sq8Wy@mail.example.com>",
+    "in_reply_to": [
+      "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+    ],
+    "references": [
+      "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+    ]
+  },
+  "expect": {
+    "note": {
+      "status": "certain",
+      "marker": "gmail-forward",
+      "text": "Reconcile this against the October AP ledger in the Halvorsen folder. Flag anything over $500.",
+      "reason": null
+    },
+    "body_source": "plain",
+    "flags": [
+      "hidden_html_dropped"
+    ],
+    "attachments": []
+  },
+  "message_md": "hostile-hidden-html.message.md"
+}

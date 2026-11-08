@@ -1,0 +1,81 @@
+{
+  "case": "11-missing-message-id",
+  "provenance": "constructed",
+  "covers": [
+    "The owner's forward has no Message-ID: its key is the edge id, and the thread still works"
+  ],
+  "messages": [
+    {
+      "key": "F",
+      "file": "01-in-F.eml",
+      "direction": "in",
+      "edge_id": "29f97e2e6336094ddce9778e7b88f559",
+      "received_at": "2026-11-03T18:18:05Z",
+      "assume_verdict": "request",
+      "token_thread": null,
+      "expect": {
+        "message_key": "edge:29f97e2e6336094ddce9778e7b88f559",
+        "in_reply_to": [
+          "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+        ],
+        "references": [
+          "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+        ],
+        "parent": "<20261102165107.4F2A91C3@mailer.northwind.example.org>",
+        "thread": "T1",
+        "new_thread": true,
+        "answers": null,
+        "links": [],
+        "candidate_thread": null,
+        "message_id_conflict": false
+      }
+    },
+    {
+      "key": "Q1",
+      "file": "02-out-Q1.eml",
+      "direction": "out",
+      "sent_id": "be7d42d7e1475b54fc074623f9a3cbcf",
+      "note": "Fount can't name F, so it sends References with F's ancestors only; the thread record still says Q1 answers F",
+      "expect": {
+        "message_key": "<fm.2c7q9x4m1v8k3b6n0z5r7t2w@example.net>",
+        "in_reply_to": [],
+        "references": [
+          "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+        ],
+        "parent": "<20261102165107.4F2A91C3@mailer.northwind.example.org>",
+        "thread": "T1",
+        "new_thread": false,
+        "answers": "edge:29f97e2e6336094ddce9778e7b88f559",
+        "links": [],
+        "candidate_thread": null,
+        "message_id_conflict": false
+      }
+    },
+    {
+      "key": "R",
+      "file": "03-in-R.eml",
+      "direction": "in",
+      "edge_id": "233433aa88b281fd693cc36302a73ab4",
+      "received_at": "2026-11-03T19:52:05Z",
+      "assume_verdict": "thread_reply",
+      "token_thread": "T1",
+      "expect": {
+        "message_key": "<CAFq3XkZ5d1K7m-Of8Ab3Mr9Nh0Xr4Vb2Io6Os1Ys7Ce@mail.example.com>",
+        "in_reply_to": [
+          "<fm.2c7q9x4m1v8k3b6n0z5r7t2w@example.net>"
+        ],
+        "references": [
+          "<20261102165107.4F2A91C3@mailer.northwind.example.org>",
+          "<fm.2c7q9x4m1v8k3b6n0z5r7t2w@example.net>"
+        ],
+        "parent": "<fm.2c7q9x4m1v8k3b6n0z5r7t2w@example.net>",
+        "thread": "T1",
+        "new_thread": false,
+        "answers": "<fm.2c7q9x4m1v8k3b6n0z5r7t2w@example.net>",
+        "links": [],
+        "candidate_thread": null,
+        "message_id_conflict": false
+      }
+    }
+  ]
+}

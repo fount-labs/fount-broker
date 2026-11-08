@@ -1,0 +1,39 @@
+{
+  "fixture": "gmail-forward-plain",
+  "provenance": "constructed",
+  "client": "gmail-web",
+  "kind": "forward-inline",
+  "replace_with_capture": true,
+  "covers": [
+    "Gmail web inline forward with a one-line note",
+    "References and In-Reply-To name the forwarded message, as Gmail sets them"
+  ],
+  "envelope": {
+    "sender": "dana@example.com",
+    "recipient": "ap.whitlockcpa@example.net"
+  },
+  "edge_id": "bc3a9f2c9133aa996a95999906171669",
+  "received_at": "2026-11-03T17:20:14Z",
+  "assume_verdict": "request",
+  "thread_headers": {
+    "message_id": "<CAFq3XkR1n8U2w-Yq4Ms9Xd5Zt7Ke1Io6Vc3Bf8Lj4Pr@mail.example.com>",
+    "in_reply_to": [
+      "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+    ],
+    "references": [
+      "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+    ]
+  },
+  "expect": {
+    "note": {
+      "status": "certain",
+      "marker": "gmail-forward",
+      "text": "Reconcile this against the October AP ledger in the Halvorsen folder. Flag anything over $500.",
+      "reason": null
+    },
+    "body_source": "plain",
+    "flags": [],
+    "attachments": []
+  },
+  "message_md": "gmail-forward-plain.message.md"
+}

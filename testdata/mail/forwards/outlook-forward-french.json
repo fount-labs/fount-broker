@@ -1,0 +1,36 @@
+{
+  "fixture": "outlook-forward-french",
+  "provenance": "constructed",
+  "client": "outlook-new-exchange-online",
+  "kind": "forward-inline",
+  "replace_with_capture": true,
+  "covers": [
+    "A French Outlook forward: 'TR:' subject and a 'De :/Envoyé :/À :/Objet :' block Fount doesn't recognize",
+    "No recognized marker plus forward signals, so the split is uncertain and the whole body is data",
+    "The underscore rule alone doesn't count as a marker"
+  ],
+  "envelope": {
+    "sender": "dana@example.com",
+    "recipient": "ap.whitlockcpa@example.net"
+  },
+  "edge_id": "c303526c46a6baa872e5909ea82006a1",
+  "received_at": "2026-11-04T17:02:21Z",
+  "assume_verdict": "request",
+  "thread_headers": {
+    "message_id": "<SA1PR04MB81239E2F4A6B8C0D1E3F5A7B9C1D3@SA1PR04MB8123.namprd04.prod.example.com>",
+    "in_reply_to": [],
+    "references": []
+  },
+  "expect": {
+    "note": {
+      "status": "uncertain",
+      "marker": null,
+      "text": null,
+      "reason": "no recognized marker, but the subject starts with a forward prefix and the body has an address header block"
+    },
+    "body_source": "plain",
+    "flags": [],
+    "attachments": []
+  },
+  "message_md": "outlook-forward-french.message.md"
+}

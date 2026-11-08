@@ -1,0 +1,43 @@
+Received: by mail-yw1-f170.mail.example.com with SMTP id 00721157ae682-6f1e2a3b4c5so1234567b3.2
+        for <ap.whitlockcpa@example.net>; Thu, 5 Nov 2026 14:03:09 -0800 (PST)
+MIME-Version: 1.0
+From: Dana Whitlock <dana@example.com>
+Date: Thu, 5 Nov 2026 14:03:09 -0800
+Message-ID: <CAFq3XkV3v9C5e-Gx6Ty1Ej7Fz8Pj2Nt0Ag4Gk9Qo5Uw@mail.example.com>
+Subject: September remittance for Halvorsen
+To: ap.whitlockcpa@example.net
+Content-Type: multipart/mixed; boundary="000000000000c7d2a30605f4a1bb"
+
+--000000000000c7d2a30605f4a1bb
+Content-Type: multipart/alternative; boundary="000000000000c7d2a10605f4a1b9"
+
+--000000000000c7d2a10605f4a1b9
+Content-Type: text/plain; charset="UTF-8"
+Content-Transfer-Encoding: quoted-printable
+
+Attached is the September remittance export from Halvorsen's bank. Match ea=
+ch
+payment to an open Northwind invoice and tell me which October invoices were
+already paid.
+
+Thanks,
+Dana
+--000000000000c7d2a10605f4a1b9
+Content-Type: text/html; charset="UTF-8"
+Content-Transfer-Encoding: quoted-printable
+
+<div dir=3D"ltr"><div>Attached is the September remittance export from Halv=
+orsen's bank. Match each</div><div>payment to an open Northwind invoice and=
+ tell me which October invoices were</div><div>already paid.</div><div><br>=
+</div><div>Thanks,</div><div>Dana</div></div>
+--000000000000c7d2a10605f4a1b9--
+--000000000000c7d2a30605f4a1bb
+Content-Type: text/csv; charset="US-ASCII"; name="halvorsen_remittance_sep2026.csv"
+Content-Disposition: attachment; filename="halvorsen_remittance_sep2026.csv"
+Content-Transfer-Encoding: base64
+Content-ID: <f_mh4b7c2d0>
+X-Attachment-Id: f_mh4b7c2d0
+
+ZGF0ZSxyZWZlcmVuY2UsaW52b2ljZSxhbW91bnQNCjIwMjYtMDktMjksQUNILTU1MTIwLE5XLTg4
+NDEyLDEyNDAuMDANCjIwMjYtMDktMjksQUNILTU1MTIwLE5XLTg4Mzc3LDg2MC4wMA0K
+--000000000000c7d2a30605f4a1bb--

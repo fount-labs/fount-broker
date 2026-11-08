@@ -1,0 +1,2 @@
+# Raw mail must keep its CRLF line endings byte for byte.
+*.eml -text

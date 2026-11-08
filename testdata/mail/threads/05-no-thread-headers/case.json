@@ -1,0 +1,79 @@
+{
+  "case": "05-no-thread-headers",
+  "provenance": "constructed",
+  "covers": [
+    "A thread_reply with neither header still joins by token, and answers is unknown",
+    "No subject fallback, even though the subject matches"
+  ],
+  "messages": [
+    {
+      "key": "F",
+      "file": "01-in-F.eml",
+      "direction": "in",
+      "edge_id": "cbb7dbdd363faeb82461d6630944db6c",
+      "received_at": "2026-11-03T18:18:05Z",
+      "assume_verdict": "request",
+      "token_thread": null,
+      "expect": {
+        "message_key": "<CAFq3XkQ9m2T7v-Zp1Lr8Wc4Ys6Jd0Hn5Ub2Ae7Ki3Oq@mail.example.com>",
+        "in_reply_to": [
+          "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+        ],
+        "references": [
+          "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+        ],
+        "parent": "<20261102165107.4F2A91C3@mailer.northwind.example.org>",
+        "thread": "T1",
+        "new_thread": true,
+        "answers": null,
+        "links": [],
+        "candidate_thread": null,
+        "message_id_conflict": false
+      }
+    },
+    {
+      "key": "Q1",
+      "file": "02-out-Q1.eml",
+      "direction": "out",
+      "sent_id": "bb2a61384c9e1ce9029aba3d72870fcd",
+      "expect": {
+        "message_key": "<fm.2c7q9x4m1v8k3b6n0z5r7t2w@example.net>",
+        "in_reply_to": [
+          "<CAFq3XkQ9m2T7v-Zp1Lr8Wc4Ys6Jd0Hn5Ub2Ae7Ki3Oq@mail.example.com>"
+        ],
+        "references": [
+          "<20261102165107.4F2A91C3@mailer.northwind.example.org>",
+          "<CAFq3XkQ9m2T7v-Zp1Lr8Wc4Ys6Jd0Hn5Ub2Ae7Ki3Oq@mail.example.com>"
+        ],
+        "parent": "<CAFq3XkQ9m2T7v-Zp1Lr8Wc4Ys6Jd0Hn5Ub2Ae7Ki3Oq@mail.example.com>",
+        "thread": "T1",
+        "new_thread": false,
+        "answers": "<CAFq3XkQ9m2T7v-Zp1Lr8Wc4Ys6Jd0Hn5Ub2Ae7Ki3Oq@mail.example.com>",
+        "links": [],
+        "candidate_thread": null,
+        "message_id_conflict": false
+      }
+    },
+    {
+      "key": "R",
+      "file": "03-in-R.eml",
+      "direction": "in",
+      "edge_id": "378caa7ebb17842747ce201750b94696",
+      "received_at": "2026-11-03T19:52:05Z",
+      "assume_verdict": "thread_reply",
+      "token_thread": "T1",
+      "expect": {
+        "message_key": "<CAFq3XkZ5d1K7m-Of8Ab3Mr9Nh0Xr4Vb2Io6Os1Ys7Ce@mail.example.com>",
+        "in_reply_to": [],
+        "references": [],
+        "parent": null,
+        "thread": "T1",
+        "new_thread": false,
+        "answers": null,
+        "links": [],
+        "candidate_thread": null,
+        "message_id_conflict": false
+      }
+    }
+  ]
+}
