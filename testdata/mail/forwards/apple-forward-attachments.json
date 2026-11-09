@@ -1,0 +1,47 @@
+{
+  "fixture": "apple-forward-attachments",
+  "provenance": "constructed",
+  "client": "apple-mail-macos",
+  "kind": "forward-inline",
+  "replace_with_capture": true,
+  "covers": [
+    "Apple Mail's attachment layout: multipart/alternative > text/plain + multipart/mixed(html, pdf, html)",
+    "The PDF is Content-Disposition: inline and still saved",
+    "RFC 2231 filename* with a non-ASCII name, and an RFC 2047 name= fallback",
+    "Folded Content-Type parameters"
+  ],
+  "envelope": {
+    "sender": "dana@example.com",
+    "recipient": "ap.whitlockcpa@example.net"
+  },
+  "edge_id": "0856def0b6ea734e840d3f5b1d4557cb",
+  "received_at": "2026-11-04T16:20:08Z",
+  "assume_verdict": "request",
+  "thread_headers": {
+    "message_id": "<8D2E7A40-91C6-4B3F-A5E1-7C0F9B2D6E83@example.com>",
+    "in_reply_to": [],
+    "references": []
+  },
+  "expect": {
+    "note": {
+      "status": "certain",
+      "marker": "apple-forward",
+      "text": "Reconcile this against the October AP ledger in the Halvorsen folder. Flag anything over $500.",
+      "reason": null
+    },
+    "body_source": "plain",
+    "flags": [],
+    "attachments": [
+      {
+        "path": "attachments/01-Relevé_Northwind_Oct2026.pdf",
+        "raw_name": "Relevé_Northwind_Oct2026.pdf",
+        "content_type": "application/pdf",
+        "size": 1082,
+        "sha256": "a56d2c8c6a059f4ef9e51bd53aecdb5a3d3d31e3f34b9c71895460cba5d3f38c",
+        "found_in": "the email (shown inline)",
+        "inline": true
+      }
+    ]
+  },
+  "message_md": "apple-forward-attachments.message.md"
+}

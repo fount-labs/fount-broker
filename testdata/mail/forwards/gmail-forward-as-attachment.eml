@@ -1,0 +1,102 @@
+Received: by mail-yw1-f170.mail.example.com with SMTP id 00721157ae682-6f1e2a3b4c5so1234567b3.2
+        for <ap.whitlockcpa@example.net>; Tue, 3 Nov 2026 09:52:33 -0800 (PST)
+MIME-Version: 1.0
+From: Dana Whitlock <dana@example.com>
+Date: Tue, 3 Nov 2026 09:52:33 -0800
+Message-ID: <CAFq3XkU0t6A2c-Ev3Rw8Ch4Dx5Nh9Lr7Yf1Ei6Om2Su@mail.example.com>
+Subject: Fwd: Northwind statement - October
+To: ap.whitlockcpa@example.net
+Content-Type: multipart/mixed; boundary="0000000000003e9f830605f3c2a6"
+
+--0000000000003e9f830605f3c2a6
+Content-Type: multipart/alternative; boundary="0000000000003e9f810605f3c2a4"
+
+--0000000000003e9f810605f3c2a4
+Content-Type: text/plain; charset="UTF-8"
+Content-Transfer-Encoding: quoted-printable
+
+Marcus sent this one on its own. Two of these invoices look like September'=
+s again. Can you check?
+--0000000000003e9f810605f3c2a4
+Content-Type: text/html; charset="UTF-8"
+Content-Transfer-Encoding: quoted-printable
+
+<div dir=3D"ltr">Marcus sent this one on its own. Two of these invoices loo=
+k like September's again. Can you check?</div>
+--0000000000003e9f810605f3c2a4--
+--0000000000003e9f830605f3c2a6
+Content-Type: message/rfc822; name="Northwind statement - October.eml"
+Content-Disposition: attachment; filename="Northwind statement - October.eml"
+Content-ID: <f_mh2k9z1a0>
+X-Attachment-Id: f_mh2k9z1a0
+
+From: Marcus Feld <marcus.feld@example.org>
+To: Dana Whitlock <dana@example.com>
+CC: Lena Ortiz <lena.ortiz@example.org>
+Subject: Northwind statement - October
+Thread-Topic: Northwind statement - October
+Thread-Index: AQHbTitcV2zQ8n4kQ0e1sXo9pYwVHQ==
+Date: Tue, 3 Nov 2026 01:30:44 +0000
+Message-ID: <DM6PR11MB41234B9A2C7D1E5F60718293A4B5C@DM6PR11MB4123.namprd11.prod.example.org>
+Accept-Language: en-US
+Content-Language: en-US
+X-MS-Has-Attach: yes
+X-MS-TNEF-Correlator: 
+Content-Type: multipart/mixed; boundary="_004_DM6PR11MB41234B9A2C7D1E5F60718293A4B5CDM6PR11MB4123namp_"
+MIME-Version: 1.0
+
+--_004_DM6PR11MB41234B9A2C7D1E5F60718293A4B5CDM6PR11MB4123namp_
+Content-Type: multipart/alternative; boundary="_000_DM6PR11MB41234B9A2C7D1E5F60718293A4B5CDM6PR11MB4123namp_"
+
+--_000_DM6PR11MB41234B9A2C7D1E5F60718293A4B5CDM6PR11MB4123namp_
+Content-Type: text/plain; charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+Dana - can your team check this against what we booked? Lena thinks two of
+the October invoices were already paid in September.
+
+Marcus
+--_000_DM6PR11MB41234B9A2C7D1E5F60718293A4B5CDM6PR11MB4123namp_
+Content-Type: text/html; charset="us-ascii"
+Content-Transfer-Encoding: quoted-printable
+
+<html><head>
+<meta http-equiv=3D"Content-Type" content=3D"text/html; charset=3Dus-ascii">
+</head>
+<body dir=3D"ltr">
+<div class=3D"elementToProof" style=3D"font-family: Aptos, Calibri, Helveti=
+ca, sans-serif; font-size: 12pt;">Dana - can your team check this against w=
+hat we booked? Lena thinks two of<br>the October invoices were already paid=
+ in September.<br><br>Marcus</div>
+</body>
+</html>
+--_000_DM6PR11MB41234B9A2C7D1E5F60718293A4B5CDM6PR11MB4123namp_--
+--_004_DM6PR11MB41234B9A2C7D1E5F60718293A4B5CDM6PR11MB4123namp_
+Content-Type: application/pdf; name="Northwind_Statement_Oct2026.pdf"
+Content-Description: Northwind_Statement_Oct2026.pdf
+Content-Disposition: attachment; filename="Northwind_Statement_Oct2026.pdf"; size=1082;
+	creation-date="Tue, 03 Nov 2026 01:30:40 GMT";
+	modification-date="Tue, 03 Nov 2026 01:30:44 GMT"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJeLjz9MKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4K
+ZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4K
+ZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAg
+MCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAw
+IFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA1MzIgPj4Kc3RyZWFtCkJUIC9G
+MSAxMSBUZiA3MiA3NDAgVGQgMTQgVEwKKE5vcnRod2luZCBTdXBwbHkgLSBTdGF0ZW1lbnQpIFRq
+IFQqCihBY2NvdW50IEhNLTIyMDcgLSBPY3RvYmVyIDIwMjYpIFRqIFQqCihPcGVuaW5nIGJhbGFu
+Y2UgMTgsMjQwLjAwKSBUaiBUKgooSW52b2ljZXMgOSw2MTUuNTApIFRqIFQqCihQYXltZW50cyAx
+MiwwMDAuMDApIFRqIFQqCihDbG9zaW5nIGJhbGFuY2UgMTUsODU1LjUwKSBUaiBUKgooTlctODgz
+OTEgIE9jdCAxICAxLDE4MC4wMCkgVGogVCoKKE5XLTg4Mzk3ICBPY3QgMyAgNjQyLjI1KSBUaiBU
+KgooTlctODg0MDIgIE9jdCA3ICAyLDIxMC4wMCkgVGogVCoKKE5XLTg4NDA2ICBPY3QgOSAgMzE4
+Ljc1KSBUaiBUKgooTlctODg0MTIgIE9jdCAxNCAgMSwyNDAuMDApIFRqIFQqCihOVy04ODQxOSAg
+T2N0IDE3ICA5MDUuNTApIFRqIFQqCihOVy04ODQyNSAgT2N0IDIxICAxLDQ5OS4wMCkgVGogVCoK
+KE5XLTg4NDMxICBPY3QgMjQgIDQxMC4wMCkgVGogVCoKKE5XLTg4NDQwICBPY3QgMjggIDEsMjEw
+LjAwKSBUaiBUKgpFVAplbmRzdHJlYW0KZW5kb2JqCjUgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1
+YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iagp4cmVmCjAgNgowMDAw
+MDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMTUgMDAwMDAgbiAKMDAwMDAwMDA2NCAwMDAwMCBuIAow
+MDAwMDAwMTIxIDAwMDAwIG4gCjAwMDAwMDAyNDcgMDAwMDAgbiAKMDAwMDAwMDgyOSAwMDAwMCBu
+IAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjg5OQolJUVPRgo=
+--_004_DM6PR11MB41234B9A2C7D1E5F60718293A4B5CDM6PR11MB4123namp_--
+--0000000000003e9f830605f3c2a6--

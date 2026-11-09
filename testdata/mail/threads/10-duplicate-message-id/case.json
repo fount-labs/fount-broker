@@ -1,0 +1,76 @@
+{
+  "case": "10-duplicate-message-id",
+  "provenance": "constructed",
+  "covers": [
+    "Two different owner emails share a Message-ID: both are marked, and the id links nothing"
+  ],
+  "messages": [
+    {
+      "key": "A",
+      "file": "01-in-A.eml",
+      "direction": "in",
+      "edge_id": "4cf14da885f3c24a94da1cfb23005b77",
+      "received_at": "2026-11-03T18:18:05Z",
+      "assume_verdict": "request",
+      "token_thread": null,
+      "expect": {
+        "message_key": "<CAFq3XkF3p9W5y-Ar6Mn1Yd7Zt8Jd2Hn0Ua4Ae9Kk5Oq@mail.example.com>",
+        "in_reply_to": [],
+        "references": [],
+        "parent": null,
+        "thread": "T1",
+        "new_thread": true,
+        "answers": null,
+        "links": [],
+        "candidate_thread": null,
+        "message_id_conflict": true
+      }
+    },
+    {
+      "key": "B",
+      "file": "02-in-B.eml",
+      "direction": "in",
+      "edge_id": "fa7688f72c239e71f253728e51a54120",
+      "received_at": "2026-11-03T19:05:05Z",
+      "assume_verdict": "request",
+      "token_thread": null,
+      "expect": {
+        "message_key": "<CAFq3XkF3p9W5y-Ar6Mn1Yd7Zt8Jd2Hn0Ua4Ae9Kk5Oq@mail.example.com>",
+        "in_reply_to": [],
+        "references": [],
+        "parent": null,
+        "thread": "T2",
+        "new_thread": true,
+        "answers": null,
+        "links": [],
+        "candidate_thread": null,
+        "message_id_conflict": true
+      }
+    },
+    {
+      "key": "C",
+      "file": "03-in-C.eml",
+      "direction": "in",
+      "edge_id": "6ee5a99920597c36e092d530c7dd3f3d",
+      "received_at": "2026-11-03T19:52:05Z",
+      "assume_verdict": "request",
+      "token_thread": null,
+      "expect": {
+        "message_key": "<CAFq3XkG6r2Y8a-Ct9Op4Af0Bv1Lf5Jp3Wc7Cg2Mm8Qs@mail.example.com>",
+        "in_reply_to": [
+          "<CAFq3XkF3p9W5y-Ar6Mn1Yd7Zt8Jd2Hn0Ua4Ae9Kk5Oq@mail.example.com>"
+        ],
+        "references": [
+          "<CAFq3XkF3p9W5y-Ar6Mn1Yd7Zt8Jd2Hn0Ua4Ae9Kk5Oq@mail.example.com>"
+        ],
+        "parent": "<CAFq3XkF3p9W5y-Ar6Mn1Yd7Zt8Jd2Hn0Ua4Ae9Kk5Oq@mail.example.com>",
+        "thread": "T3",
+        "new_thread": true,
+        "answers": null,
+        "links": [],
+        "candidate_thread": null,
+        "message_id_conflict": false
+      }
+    }
+  ]
+}

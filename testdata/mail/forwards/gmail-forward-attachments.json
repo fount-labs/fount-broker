@@ -1,0 +1,58 @@
+{
+  "fixture": "gmail-forward-attachments",
+  "provenance": "constructed",
+  "client": "gmail-web",
+  "kind": "forward-inline",
+  "replace_with_capture": true,
+  "covers": [
+    "Gmail inline forward that carries the original's attachments",
+    "PDF and xlsx attachments, base64, Gmail X-Attachment-Id headers"
+  ],
+  "envelope": {
+    "sender": "dana@example.com",
+    "recipient": "ap.whitlockcpa@example.net"
+  },
+  "edge_id": "f8b0f94f8f8994ce78bdcc8d04379a14",
+  "received_at": "2026-11-03T17:31:05Z",
+  "assume_verdict": "request",
+  "thread_headers": {
+    "message_id": "<CAFq3XkQ9m2T7v-Zp1Lr8Wc4Ys6Jd0Hn5Ub2Ae7Ki3Oq@mail.example.com>",
+    "in_reply_to": [
+      "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+    ],
+    "references": [
+      "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+    ]
+  },
+  "expect": {
+    "note": {
+      "status": "certain",
+      "marker": "gmail-forward",
+      "text": "Reconcile this against the October AP ledger in the Halvorsen folder. Flag anything over $500.",
+      "reason": null
+    },
+    "body_source": "plain",
+    "flags": [],
+    "attachments": [
+      {
+        "path": "attachments/01-Northwind_Statement_Oct2026.pdf",
+        "raw_name": "Northwind_Statement_Oct2026.pdf",
+        "content_type": "application/pdf",
+        "size": 1082,
+        "sha256": "a56d2c8c6a059f4ef9e51bd53aecdb5a3d3d31e3f34b9c71895460cba5d3f38c",
+        "found_in": "the email",
+        "inline": false
+      },
+      {
+        "path": "attachments/02-AP_aging_Oct2026.xlsx",
+        "raw_name": "AP_aging_Oct2026.xlsx",
+        "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "size": 1746,
+        "sha256": "b41de4c86ca7f480083be5edc576cb94b01a25e30850f0c4bbb92a3bfd958b48",
+        "found_in": "the email",
+        "inline": false
+      }
+    ]
+  },
+  "message_md": "gmail-forward-attachments.message.md"
+}

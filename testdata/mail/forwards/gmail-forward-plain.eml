@@ -1,0 +1,58 @@
+Received: by mail-yw1-f170.mail.example.com with SMTP id 00721157ae682-6f1e2a3b4c5so1234567b3.2
+        for <ap.whitlockcpa@example.net>; Tue, 3 Nov 2026 09:20:11 -0800 (PST)
+MIME-Version: 1.0
+References: <20261102165107.4F2A91C3@mailer.northwind.example.org>
+In-Reply-To: <20261102165107.4F2A91C3@mailer.northwind.example.org>
+From: Dana Whitlock <dana@example.com>
+Date: Tue, 3 Nov 2026 09:20:11 -0800
+Message-ID: <CAFq3XkR1n8U2w-Yq4Ms9Xd5Zt7Ke1Io6Vc3Bf8Lj4Pr@mail.example.com>
+Subject: Fwd: Statement for October 2026 - Account HM-2207
+To: ap.whitlockcpa@example.net
+Content-Type: multipart/alternative; boundary="000000000000a1c4e20605f3b7d1"
+
+--000000000000a1c4e20605f3b7d1
+Content-Type: text/plain; charset="UTF-8"
+Content-Transfer-Encoding: quoted-printable
+
+Reconcile this against the October AP ledger in the Halvorsen folder. Flag =
+anything over $500.
+
+---------- Forwarded message ---------
+From: Northwind Supply Billing <billing@northwind.example.org>
+Date: Mon, Nov 2, 2026 at 4:51 PM
+Subject: Statement for October 2026 - Account HM-2207
+To: Marcus Feld <marcus.feld@example.org>
+
+
+Hello Marcus,
+
+Please find attached your statement for October 2026.
+
+Opening balance:     $18,240.00
+Invoices:             $9,615.50
+Payments received:   $12,000.00
+Closing balance:     $15,855.50
+
+Payment is due by November 30, 2026. Remit to the account on file.
+
+Thank you,
+Northwind Supply Billing
+--000000000000a1c4e20605f3b7d1
+Content-Type: text/html; charset="UTF-8"
+Content-Transfer-Encoding: quoted-printable
+
+<div dir=3D"ltr">Reconcile this against the October AP ledger in the Halvor=
+sen folder. Flag anything over $500.<br><br><div class=3D"gmail_quote gmail=
+_quote_container"><div dir=3D"ltr" class=3D"gmail_attr">---------- Forwarde=
+d message ---------<br>From: <strong class=3D"gmail_sendername" dir=3D"auto=
+">Northwind Supply Billing</strong> <span dir=3D"auto">&lt;<a href=3D"mailt=
+o:billing@northwind.example.org">billing@northwind.example.org</a>&gt;</spa=
+n><br>Date: Mon, Nov 2, 2026 at 4:51 PM<br>Subject: Statement for October 2=
+026 - Account HM-2207<br>To: Marcus Feld &lt;<a href=3D"mailto:marcus.feld@=
+example.org">marcus.feld@example.org</a>&gt;<br></div><br><br>Hello Marcus,=
+<br><br>Please find attached your statement for October 2026.<br><br>Openin=
+g balance:     $18,240.00<br>Invoices:             $9,615.50<br>Payments re=
+ceived:   $12,000.00<br>Closing balance:     $15,855.50<br><br>Payment is d=
+ue by November 30, 2026. Remit to the account on file.<br><br>Thank you,<br=
+>Northwind Supply Billing</div></div>
+--000000000000a1c4e20605f3b7d1--

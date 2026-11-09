@@ -1,0 +1,51 @@
+{
+  "fixture": "gmail-forward-nested",
+  "provenance": "constructed",
+  "client": "gmail-web",
+  "kind": "forward-inline",
+  "replace_with_capture": true,
+  "covers": [
+    "A forward inside a forward: Gmail wrapping an Outlook forward",
+    "Marcus's older note sits below the first marker, so it's data, not an instruction",
+    "A long first forward with an invoice table",
+    "Cc in the forwarded header block"
+  ],
+  "envelope": {
+    "sender": "dana@example.com",
+    "recipient": "ap.whitlockcpa@example.net"
+  },
+  "edge_id": "1f5c2298690d862128f9d9f536f6cc19",
+  "received_at": "2026-11-03T17:40:22Z",
+  "assume_verdict": "request",
+  "thread_headers": {
+    "message_id": "<CAFq3XkT7r3Y9a-Ct0Pu5Af1Bv2Mg6Kq4Xe8Dh3Nl9Rt@mail.example.com>",
+    "in_reply_to": [
+      "<DM6PR11MB41234B9A2C7D1E5F60718293A4B5C@DM6PR11MB4123.namprd11.prod.example.org>"
+    ],
+    "references": [
+      "<DM6PR11MB41234B9A2C7D1E5F60718293A4B5C@DM6PR11MB4123.namprd11.prod.example.org>"
+    ]
+  },
+  "expect": {
+    "note": {
+      "status": "certain",
+      "marker": "gmail-forward",
+      "text": "Second batch from Marcus. Same drill: reconcile against the October AP ledger and check Lena's point about September.",
+      "reason": null
+    },
+    "body_source": "plain",
+    "flags": [],
+    "attachments": [
+      {
+        "path": "attachments/01-Northwind_Statement_Oct2026.pdf",
+        "raw_name": "Northwind_Statement_Oct2026.pdf",
+        "content_type": "application/pdf",
+        "size": 1082,
+        "sha256": "a56d2c8c6a059f4ef9e51bd53aecdb5a3d3d31e3f34b9c71895460cba5d3f38c",
+        "found_in": "the email",
+        "inline": false
+      }
+    ]
+  },
+  "message_md": "gmail-forward-nested.message.md"
+}

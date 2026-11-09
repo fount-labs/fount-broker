@@ -1,0 +1,83 @@
+{
+  "case": "09-stranger-reply",
+  "provenance": "constructed",
+  "covers": [
+    "A non-owner replies all on a job's thread: held, never joined, but shown with a candidate thread"
+  ],
+  "messages": [
+    {
+      "key": "F",
+      "file": "01-in-F.eml",
+      "direction": "in",
+      "edge_id": "360e0bd6e64a424ccde5b28199fca0f2",
+      "received_at": "2026-11-03T18:18:05Z",
+      "assume_verdict": "request",
+      "token_thread": null,
+      "expect": {
+        "message_key": "<CAFq3XkQ9m2T7v-Zp1Lr8Wc4Ys6Jd0Hn5Ub2Ae7Ki3Oq@mail.example.com>",
+        "in_reply_to": [
+          "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+        ],
+        "references": [
+          "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+        ],
+        "parent": "<20261102165107.4F2A91C3@mailer.northwind.example.org>",
+        "thread": "T1",
+        "new_thread": true,
+        "answers": null,
+        "links": [],
+        "candidate_thread": null,
+        "message_id_conflict": false
+      }
+    },
+    {
+      "key": "Q1",
+      "file": "02-out-Q1.eml",
+      "direction": "out",
+      "sent_id": "3e204e33761188858c72b2357047d83b",
+      "expect": {
+        "message_key": "<fm.2c7q9x4m1v8k3b6n0z5r7t2w@example.net>",
+        "in_reply_to": [
+          "<CAFq3XkQ9m2T7v-Zp1Lr8Wc4Ys6Jd0Hn5Ub2Ae7Ki3Oq@mail.example.com>"
+        ],
+        "references": [
+          "<20261102165107.4F2A91C3@mailer.northwind.example.org>",
+          "<CAFq3XkQ9m2T7v-Zp1Lr8Wc4Ys6Jd0Hn5Ub2Ae7Ki3Oq@mail.example.com>"
+        ],
+        "parent": "<CAFq3XkQ9m2T7v-Zp1Lr8Wc4Ys6Jd0Hn5Ub2Ae7Ki3Oq@mail.example.com>",
+        "thread": "T1",
+        "new_thread": false,
+        "answers": "<CAFq3XkQ9m2T7v-Zp1Lr8Wc4Ys6Jd0Hn5Ub2Ae7Ki3Oq@mail.example.com>",
+        "links": [],
+        "candidate_thread": null,
+        "message_id_conflict": false
+      }
+    },
+    {
+      "key": "MK",
+      "file": "03-in-MK.eml",
+      "direction": "in",
+      "edge_id": "d8d0b07f0a8cdc5fe88309322cfa0a1f",
+      "received_at": "2026-11-03T19:52:05Z",
+      "assume_verdict": "held",
+      "token_thread": null,
+      "expect": {
+        "message_key": "<CAH9tLm2Vx8Q1n-Rk4Ws7Dz0Pb3Jf6Yc9Ua2Ge5Ho8Kq@mail.example.org>",
+        "in_reply_to": [
+          "<CAFq3XkQ9m2T7v-Zp1Lr8Wc4Ys6Jd0Hn5Ub2Ae7Ki3Oq@mail.example.com>"
+        ],
+        "references": [
+          "<20261102165107.4F2A91C3@mailer.northwind.example.org>",
+          "<CAFq3XkQ9m2T7v-Zp1Lr8Wc4Ys6Jd0Hn5Ub2Ae7Ki3Oq@mail.example.com>"
+        ],
+        "parent": "<CAFq3XkQ9m2T7v-Zp1Lr8Wc4Ys6Jd0Hn5Ub2Ae7Ki3Oq@mail.example.com>",
+        "thread": null,
+        "new_thread": false,
+        "answers": null,
+        "links": [],
+        "candidate_thread": "T1",
+        "message_id_conflict": false
+      }
+    }
+  ]
+}

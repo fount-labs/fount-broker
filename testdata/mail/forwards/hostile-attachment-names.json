@@ -1,0 +1,130 @@
+{
+  "fixture": "hostile-attachment-names",
+  "provenance": "constructed",
+  "client": "gmail-web",
+  "kind": "forward-inline",
+  "replace_with_capture": false,
+  "covers": [
+    "Right-to-left override in an RFC 2231 name (shows as .pdf, is .exe)",
+    "Path traversal toward .fount/FOUNT.md",
+    "A part with no name",
+    "Two attachments with the same name",
+    "A Windows reserved name",
+    "A name over 120 bytes",
+    "Leading dots",
+    "Backtick and pipe in an RFC 2047 name, which would break the markdown table"
+  ],
+  "envelope": {
+    "sender": "dana@example.com",
+    "recipient": "ap.whitlockcpa@example.net"
+  },
+  "edge_id": "499a654ff10096a5839297f3ea43e0ed",
+  "received_at": "2026-11-04T20:10:12Z",
+  "assume_verdict": "request",
+  "thread_headers": {
+    "message_id": "<CAFq3XkY2b8I4k-Md5Ze0Kp6Lf7Vp1Tz9Gm3Mq8Ww4Ac@mail.example.com>",
+    "in_reply_to": [
+      "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+    ],
+    "references": [
+      "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+    ]
+  },
+  "expect": {
+    "note": {
+      "status": "certain",
+      "marker": "gmail-forward",
+      "text": "Vendor files attached. Reconcile what you can and tell me which ones you couldn't open.",
+      "reason": null
+    },
+    "body_source": "plain",
+    "flags": [
+      "bidi_in_filename",
+      "extension_mismatch"
+    ],
+    "attachments": [
+      {
+        "path": "attachments/01-Invoice_4471fdp.exe",
+        "raw_name": "Invoice_4471‮fdp.exe",
+        "content_type": "application/pdf",
+        "size": 1082,
+        "sha256": "a56d2c8c6a059f4ef9e51bd53aecdb5a3d3d31e3f34b9c71895460cba5d3f38c",
+        "found_in": "the email",
+        "inline": false
+      },
+      {
+        "path": "attachments/02-FOUNT.md",
+        "raw_name": "../../.fount/FOUNT.md",
+        "content_type": "text/markdown",
+        "size": 88,
+        "sha256": "70b9d4f109f364aaca3743ad2174e03150f0eea2bfa5e115e8baa7ddd608f600",
+        "found_in": "the email",
+        "inline": false
+      },
+      {
+        "path": "attachments/03-attachment.bin",
+        "raw_name": "",
+        "content_type": "application/octet-stream",
+        "size": 24,
+        "sha256": "cd044b5121759dec4e67dfcf8d7a5e8e62ae2ab273dab1aec0c9e067c10bf010",
+        "found_in": "the email",
+        "inline": false
+      },
+      {
+        "path": "attachments/04-statement.pdf",
+        "raw_name": "statement.pdf",
+        "content_type": "application/pdf",
+        "size": 1082,
+        "sha256": "a56d2c8c6a059f4ef9e51bd53aecdb5a3d3d31e3f34b9c71895460cba5d3f38c",
+        "found_in": "the email",
+        "inline": false
+      },
+      {
+        "path": "attachments/05-statement.pdf",
+        "raw_name": "statement.pdf",
+        "content_type": "application/pdf",
+        "size": 611,
+        "sha256": "49e28f2209b93a9f3ba2f873d8f45f18b718909447930e31d220b369228dfe39",
+        "found_in": "the email",
+        "inline": false
+      },
+      {
+        "path": "attachments/06-_CON.txt",
+        "raw_name": "CON.txt",
+        "content_type": "text/plain",
+        "size": 9,
+        "sha256": "4befcf7f51e517d4f51a67f1563131e0adef024e94b16610c70358fdf53025c5",
+        "found_in": "the email",
+        "inline": false
+      },
+      {
+        "path": "attachments/07-Northwind_Supply_Statement_Account_HM-2207_October_2026_with_all_supporting_remittance_detail_with_all_supporting_re.pdf",
+        "raw_name": "Northwind_Supply_Statement_Account_HM-2207_October_2026_with_all_supporting_remittance_detail_with_all_supporting_remittance_detail_with_all_supporting_remittance_detail_with_all_supporting_remittance_detail_final.pdf",
+        "content_type": "application/pdf",
+        "size": 1082,
+        "sha256": "a56d2c8c6a059f4ef9e51bd53aecdb5a3d3d31e3f34b9c71895460cba5d3f38c",
+        "found_in": "the email",
+        "inline": false
+      },
+      {
+        "path": "attachments/08-hidden",
+        "raw_name": "...hidden",
+        "content_type": "text/plain",
+        "size": 9,
+        "sha256": "cb4183fefa10f52290ec2f0481dcfcc2fdca3f8fa3299a2d5e5dbeb8fb44943e",
+        "found_in": "the email",
+        "inline": false
+      },
+      {
+        "path": "attachments/09-Q3 report final.csv",
+        "raw_name": "Q3 `report` | final.csv",
+        "content_type": "text/csv",
+        "size": 108,
+        "sha256": "7844871c9c17c5578d873cf09c2e7f41fe040b6c2d0b5358d6a13e6901b40aaa",
+        "found_in": "the email",
+        "inline": false
+      }
+    ]
+  },
+  "message_md": "hostile-attachment-names.message.md"
+}

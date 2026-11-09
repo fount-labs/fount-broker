@@ -1,0 +1,44 @@
+{
+  "fixture": "gmail-new-request",
+  "provenance": "constructed",
+  "client": "gmail-web",
+  "kind": "new",
+  "replace_with_capture": false,
+  "covers": [
+    "A fresh owner email with an attachment: no marker and no forward signals, so the whole body is the note"
+  ],
+  "envelope": {
+    "sender": "dana@example.com",
+    "recipient": "ap.whitlockcpa@example.net"
+  },
+  "edge_id": "c147262fedad227bda4b20abc6e95c72",
+  "received_at": "2026-11-05T22:03:12Z",
+  "assume_verdict": "request",
+  "thread_headers": {
+    "message_id": "<CAFq3XkV3v9C5e-Gx6Ty1Ej7Fz8Pj2Nt0Ag4Gk9Qo5Uw@mail.example.com>",
+    "in_reply_to": [],
+    "references": []
+  },
+  "expect": {
+    "note": {
+      "status": "certain",
+      "marker": null,
+      "text": "Attached is the September remittance export from Halvorsen's bank. Match each\npayment to an open Northwind invoice and tell me which October invoices were\nalready paid.\n\nThanks,\nDana",
+      "reason": null
+    },
+    "body_source": "plain",
+    "flags": [],
+    "attachments": [
+      {
+        "path": "attachments/01-halvorsen_remittance_sep2026.csv",
+        "raw_name": "halvorsen_remittance_sep2026.csv",
+        "content_type": "text/csv",
+        "size": 108,
+        "sha256": "7844871c9c17c5578d873cf09c2e7f41fe040b6c2d0b5358d6a13e6901b40aaa",
+        "found_in": "the email",
+        "inline": false
+      }
+    ]
+  },
+  "message_md": "gmail-new-request.message.md"
+}

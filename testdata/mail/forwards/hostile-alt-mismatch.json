@@ -1,0 +1,42 @@
+{
+  "fixture": "hostile-alt-mismatch",
+  "provenance": "constructed",
+  "client": "gmail-web",
+  "kind": "forward-inline",
+  "replace_with_capture": true,
+  "covers": [
+    "The forwarded vendor email names a different bank in its plain text and its HTML",
+    "The notes match, so the note is certain, but the body is flagged and both versions are shown",
+    "message.md leads with what a mail app shows (HTML)"
+  ],
+  "envelope": {
+    "sender": "dana@example.com",
+    "recipient": "ap.whitlockcpa@example.net"
+  },
+  "edge_id": "fd8f0e86a6a808188abe4bb815996454",
+  "received_at": "2026-11-04T19:55:43Z",
+  "assume_verdict": "request",
+  "thread_headers": {
+    "message_id": "<CAFq3XkX9z5G1i-Kb2Xc7In3Jd4Tn8Rx6Ek0Ko5Us1Ya@mail.example.com>",
+    "in_reply_to": [
+      "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+    ],
+    "references": [
+      "<20261102165107.4F2A91C3@mailer.northwind.example.org>"
+    ]
+  },
+  "expect": {
+    "note": {
+      "status": "certain",
+      "marker": "gmail-forward",
+      "text": "Reconcile this against the October AP ledger in the Halvorsen folder. Flag anything over $500.",
+      "reason": null
+    },
+    "body_source": "html",
+    "flags": [
+      "plain_html_differ"
+    ],
+    "attachments": []
+  },
+  "message_md": "hostile-alt-mismatch.message.md"
+}

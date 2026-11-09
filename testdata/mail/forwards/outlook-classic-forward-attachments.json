@@ -1,0 +1,71 @@
+{
+  "fixture": "outlook-classic-forward-attachments",
+  "provenance": "constructed",
+  "client": "outlook-classic-windows-imap",
+  "kind": "forward-inline",
+  "replace_with_capture": true,
+  "covers": [
+    "Classic Outlook for Windows forward: no underscore rule, a From/Sent/To/Cc/Subject block (trailing space after From)",
+    "Word-generated HTML with conditional comments and an MSO stylesheet",
+    "Inline signature image (multipart/related, cid) saved as an attachment; plain text shows [cid:...]",
+    "PDF plus an xlsx whose name is an RFC 2047 encoded-word inside a quoted parameter",
+    "Classic Outlook Message-ID shape with $ signs"
+  ],
+  "envelope": {
+    "sender": "dana@example.com",
+    "recipient": "ap.whitlockcpa@example.net"
+  },
+  "edge_id": "309295078e97575bd0227332a27aae6e",
+  "received_at": "2026-11-03T18:22:50Z",
+  "assume_verdict": "request",
+  "thread_headers": {
+    "message_id": "<000a01db4e2b$5c3f1b10$14b55130$@example.com>",
+    "in_reply_to": [
+      "<DM6PR11MB41234B9A2C7D1E5F60718293A4B5C@DM6PR11MB4123.namprd11.prod.example.org>"
+    ],
+    "references": [
+      "<DM6PR11MB41234B9A2C7D1E5F60718293A4B5C@DM6PR11MB4123.namprd11.prod.example.org>"
+    ]
+  },
+  "expect": {
+    "note": {
+      "status": "certain",
+      "marker": "outlook-header-block",
+      "text": "Northwind statement and our aging for Halvorsen. Please tie the closing balance to the aging and list what doesn't match.\n\nDana Whitlock, CPA\n[cid:image001.png@01DB4E2B.5C3F1B10]",
+      "reason": null
+    },
+    "body_source": "plain",
+    "flags": [],
+    "attachments": [
+      {
+        "path": "attachments/01-image001.png",
+        "raw_name": "image001.png",
+        "content_type": "image/png",
+        "size": 125,
+        "sha256": "555669368c9fe60f5ea0042ffc157408697ca347d9e34aec650832c573892052",
+        "found_in": "the email (inline image)",
+        "inline": true,
+        "content_id": "image001.png@01DB4E2B.5C3F1B10"
+      },
+      {
+        "path": "attachments/02-Northwind_Statement_Oct2026.pdf",
+        "raw_name": "Northwind_Statement_Oct2026.pdf",
+        "content_type": "application/pdf",
+        "size": 1082,
+        "sha256": "a56d2c8c6a059f4ef9e51bd53aecdb5a3d3d31e3f34b9c71895460cba5d3f38c",
+        "found_in": "the email",
+        "inline": false
+      },
+      {
+        "path": "attachments/03-AP aging – Halvorsen Oct 2026.xlsx",
+        "raw_name": "AP aging – Halvorsen Oct 2026.xlsx",
+        "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "size": 1746,
+        "sha256": "b41de4c86ca7f480083be5edc576cb94b01a25e30850f0c4bbb92a3bfd958b48",
+        "found_in": "the email",
+        "inline": false
+      }
+    ]
+  },
+  "message_md": "outlook-classic-forward-attachments.message.md"
+}
