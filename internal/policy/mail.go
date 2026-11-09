@@ -1,8 +1,11 @@
 package policy
 
+import "regexp"
+
 // Fount Mail's edge, reached over TLS pinned to the key its Tinfoil
-// attestation endorses. The broker signs each Device API request with the
-// address's key; the app names an op, never a path (package mail).
+// attestation endorses. The broker signs each read with the address's key;
+// the app signs the writes itself and the broker fixes their method and path.
+// Either way the app names an op, never a URL (package mail).
 const (
 	MailEdgeHost = "edge.fount.containers.tinfoil.dev"
 	MailEdgeRepo = "fount-labs/fount-mail-edge"
@@ -17,4 +20,19 @@ const (
 var MailDNSResolvers = []string{
 	"https://dns.google/dns-query",
 	"https://cloudflare-dns.com/dns-query",
+}
+
+// LicenseEntitlement asks Fount's API for a mail entitlement bound to a device
+// key, for the mail op license_entitlement. The broker fills in licenseKey from
+// the license credential, so the app sends only deviceKey. It isn't in
+// Destinations: the app can't name it as a fetch.
+var LicenseEntitlement = Destination{
+	Route:       RouteFountAPI,
+	Method:      "POST",
+	Path:        "license/entitlement",
+	ContentType: "application/json",
+	Body: Body{Kind: BodyObject, MaxBytes: 256, Fields: map[string]Field{
+		"licenseKey": {Types: []string{"string"}, Required: true, Pattern: licenseKeyPattern},
+		"deviceKey":  {Types: []string{"string"}, Required: true, Pattern: regexp.MustCompile(`^[A-Za-z0-9+/]{43}=$`)},
+	}},
 }
