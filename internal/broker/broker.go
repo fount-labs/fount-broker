@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/fount-labs/fount-broker/internal/frame"
+	"github.com/fount-labs/fount-broker/internal/mail"
 	"github.com/fount-labs/fount-broker/internal/policy"
 	"github.com/fount-labs/fount-broker/internal/protocol"
 	"github.com/fount-labs/fount-broker/internal/route"
@@ -33,12 +34,21 @@ type Broker struct {
 	vault   *Vault
 	// ProxyURL is announced in the ready frame; see package proxy.
 	ProxyURL string
+	// Mail serves mail requests and holds the mail_keys credential. Nil
+	// refuses both.
+	Mail MailService
 
 	out *frame.Writer
 
 	mu       sync.Mutex
 	inflight map[uint64]context.CancelFunc
 	wg       sync.WaitGroup
+}
+
+// MailService is package mail's Service.
+type MailService interface {
+	SetKeys(body []byte) error
+	Handle(ctx context.Context, op, mailbox, path string, body []byte) (any, error)
 }
 
 func New(version string, routes map[string]route.Route, vault *Vault) *Broker {
@@ -88,13 +98,23 @@ func (b *Broker) dispatch(ctx context.Context, req protocol.Request, body []byte
 			cancel()
 		}
 	case protocol.KindCredential:
+		if req.Name == policy.CredentialMailKeys {
+			if b.Mail == nil {
+				b.fail(req.ID, protocol.CodePolicy, errors.New("mail isn't available in this build"))
+			} else if err := b.Mail.SetKeys(body); err != nil {
+				b.fail(req.ID, protocol.CodeBadRequest, err)
+			} else {
+				b.result(req.ID, map[string]bool{"ok": true})
+			}
+			return
+		}
 		if !policy.KnownCredential(req.Name) {
 			b.fail(req.ID, protocol.CodePolicy, fmt.Errorf("unknown credential %q", req.Name))
 			return
 		}
 		b.vault.Set(policy.Credential(req.Name), string(body))
 		b.result(req.ID, map[string]bool{"ok": true})
-	case protocol.KindFetch, protocol.KindStatus:
+	case protocol.KindFetch, protocol.KindStatus, protocol.KindMail:
 		reqCtx, ok := b.track(ctx, req.ID)
 		if !ok {
 			b.fail(req.ID, protocol.CodeBadRequest, fmt.Errorf("request %d is already in flight", req.ID))
@@ -102,9 +122,12 @@ func (b *Broker) dispatch(ctx context.Context, req protocol.Request, body []byte
 		}
 		b.wg.Go(func() {
 			defer b.untrack(req.ID)
-			if req.Kind == protocol.KindFetch {
+			switch req.Kind {
+			case protocol.KindFetch:
 				b.fetch(reqCtx, req, body)
-			} else {
+			case protocol.KindMail:
+				b.mail(reqCtx, req, body)
+			default:
 				b.status(reqCtx, req)
 			}
 		})
@@ -243,6 +266,46 @@ func (b *Broker) status(ctx context.Context, req protocol.Request) {
 		return
 	}
 	b.result(req.ID, s)
+}
+
+func (b *Broker) mail(ctx context.Context, req protocol.Request, body []byte) {
+	if b.Mail == nil {
+		b.fail(req.ID, protocol.CodePolicy, errors.New("mail isn't available in this build"))
+		return
+	}
+	v, err := b.Mail.Handle(ctx, req.Op, req.Mailbox, req.Path, body)
+	if err != nil {
+		b.fail(req.ID, mailCode(ctx, err), err)
+		return
+	}
+	b.result(req.ID, v)
+}
+
+func mailCode(ctx context.Context, err error) protocol.Code {
+	for _, c := range []struct {
+		err  error
+		code protocol.Code
+	}{
+		{mail.ErrRequest, protocol.CodeBadRequest},
+		{mail.ErrNoKeys, protocol.CodeCredential},
+		{mail.ErrNotFound, protocol.CodeNotFound},
+		{route.ErrAttestation, protocol.CodeAttestation},
+		{mail.ErrSignature, protocol.CodeIntegrity},
+		{mail.ErrWrongKey, protocol.CodeIntegrity},
+		{mail.ErrWrongMailbox, protocol.CodeIntegrity},
+		{mail.ErrDecrypt, protocol.CodeIntegrity},
+		{mail.ErrMalformed, protocol.CodeIntegrity},
+		{mail.ErrRecord, protocol.CodeIntegrity},
+		{mail.ErrBootConflict, protocol.CodeIntegrity},
+	} {
+		if errors.Is(err, c.err) {
+			return c.code
+		}
+	}
+	if ctx.Err() != nil {
+		return protocol.CodeCancelled
+	}
+	return protocol.CodeNetwork
 }
 
 func (b *Broker) result(id uint64, v any) {

@@ -7,6 +7,7 @@
 //	{"kind":"cancel","id":N}
 //	{"kind":"credential","id":N,"name":"license"}  body: the secret
 //	{"kind":"status","id":N,"route":"tinfoil"}
+//	{"kind":"mail","id":N,"op":"get","mailbox":"<64 hex>","path":"<edge id>"}  body: empty, or a saved ledger for op restore
 //
 // Broker to app:
 //
@@ -18,7 +19,8 @@
 //	{"kind":"error","id":N,"code":"…","message":"…"}
 //
 // A fetch gets one head, any number of data frames, then end or error. The
-// other requests get one result or one error.
+// other requests get one result or one error. Mail ops and their results are
+// in package mail.
 package protocol
 
 import (
@@ -37,6 +39,7 @@ const (
 	KindCancel     Kind = "cancel"
 	KindCredential Kind = "credential"
 	KindStatus     Kind = "status"
+	KindMail       Kind = "mail"
 
 	KindReady  Kind = "ready"
 	KindHead   Kind = "head"
@@ -58,6 +61,9 @@ type Request struct {
 	Path  string `json:"path,omitempty"`
 	Name  string `json:"name,omitempty"`
 	Route string `json:"route,omitempty"`
+	// Op and Mailbox name a mail operation and the mailbox, by hex id, it acts on.
+	Op      string `json:"op,omitempty"`
+	Mailbox string `json:"mailbox,omitempty"`
 }
 
 // Reply is every header the broker sends.
@@ -93,9 +99,12 @@ const (
 	CodeNetwork Code = "network"
 	// CodeCancelled: the app cancelled the request.
 	CodeCancelled Code = "cancelled"
-	// CodeIntegrity: the response didn't match the digest the policy pins.
-	// The app must discard everything it received.
+	// CodeIntegrity: the response didn't match the digest the policy pins, or
+	// a mail message or record didn't verify. The app must discard everything
+	// it received.
 	CodeIntegrity Code = "integrity"
+	// CodeNotFound: the mail message or boot doesn't exist on the edge.
+	CodeNotFound Code = "not_found"
 )
 
 var ErrMalformed = errors.New("malformed request")
@@ -116,15 +125,18 @@ func DecodeRequest(header []byte) (Request, error) {
 		return Request{}, fmt.Errorf("%w: id is required", ErrMalformed)
 	}
 	extra := false
+	mail := r.Op != "" || r.Mailbox != ""
 	switch r.Kind {
 	case KindFetch:
-		extra = r.Name != "" || r.Route != "" || r.Dest == ""
+		extra = mail || r.Name != "" || r.Route != "" || r.Dest == ""
 	case KindCancel:
-		extra = r.Dest != "" || r.Accept != "" || r.Path != "" || r.Name != "" || r.Route != ""
+		extra = mail || r.Dest != "" || r.Accept != "" || r.Path != "" || r.Name != "" || r.Route != ""
 	case KindCredential:
-		extra = r.Dest != "" || r.Accept != "" || r.Path != "" || r.Route != "" || r.Name == ""
+		extra = mail || r.Dest != "" || r.Accept != "" || r.Path != "" || r.Route != "" || r.Name == ""
 	case KindStatus:
-		extra = r.Dest != "" || r.Accept != "" || r.Path != "" || r.Name != "" || r.Route == ""
+		extra = mail || r.Dest != "" || r.Accept != "" || r.Path != "" || r.Name != "" || r.Route == ""
+	case KindMail:
+		extra = r.Dest != "" || r.Accept != "" || r.Name != "" || r.Route != "" || r.Op == "" || r.Mailbox == ""
 	default:
 		return Request{}, fmt.Errorf("%w: unknown kind %q", ErrMalformed, r.Kind)
 	}

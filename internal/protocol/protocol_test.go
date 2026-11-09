@@ -13,6 +13,8 @@ func TestDecodeRequest(t *testing.T) {
 		`{"kind":"cancel","id":3}`,
 		`{"kind":"credential","id":4,"name":"license"}`,
 		`{"kind":"status","id":5,"route":"tinfoil"}`,
+		`{"kind":"mail","id":7,"op":"list","mailbox":"ab"}`,
+		`{"kind":"mail","id":8,"op":"get","mailbox":"ab","path":"cd"}`,
 	}
 	for _, h := range valid {
 		if _, err := DecodeRequest([]byte(h)); err != nil {
@@ -31,6 +33,11 @@ func TestDecodeRequest(t *testing.T) {
 		"status with path":   `{"kind":"status","id":1,"route":"models","path":"x"}`,
 		"credential no name": `{"kind":"credential","id":1}`,
 		"status no route":    `{"kind":"status","id":1}`,
+		"mail no op":         `{"kind":"mail","id":1,"mailbox":"ab"}`,
+		"mail no mailbox":    `{"kind":"mail","id":1,"op":"list"}`,
+		"mail with dest":     `{"kind":"mail","id":1,"op":"list","mailbox":"ab","dest":"x"}`,
+		"fetch with op":      `{"kind":"fetch","id":1,"dest":"x","op":"list"}`,
+		"credential mailbox": `{"kind":"credential","id":1,"name":"license","mailbox":"ab"}`,
 		"not json":           `kind=fetch`,
 		"wrong type":         `{"kind":"cancel","id":"1"}`,
 	}
