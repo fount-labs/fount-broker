@@ -20,7 +20,11 @@ type DevMailEdge struct {
 func NewDevMailEdge(base string) *DevMailEdge {
 	t := http.DefaultTransport.(*http.Transport).Clone()
 	t.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-	return &DevMailEdge{base: base, client: &http.Client{Transport: t, Timeout: 2 * time.Minute}}
+	return &DevMailEdge{base: base, client: &http.Client{
+		Transport:     t,
+		Timeout:       2 * time.Minute,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}
 }
 
 func (d *DevMailEdge) Base() string { return d.base }

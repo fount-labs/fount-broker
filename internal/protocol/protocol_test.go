@@ -15,6 +15,9 @@ func TestDecodeRequest(t *testing.T) {
 		`{"kind":"status","id":5,"route":"tinfoil"}`,
 		`{"kind":"mail","id":7,"op":"list","mailbox":"ab"}`,
 		`{"kind":"mail","id":8,"op":"get","mailbox":"ab","path":"cd"}`,
+		`{"kind":"mail","id":9,"op":"handle","mailbox":"","path":"smithcpa","headers":{"Fount-Nonce":"n"}}`,
+		`{"kind":"mail","id":10,"op":"license_entitlement","mailbox":""}`,
+		`{"kind":"mail","id":11,"op":"mailbox"}`,
 	}
 	for _, h := range valid {
 		if _, err := DecodeRequest([]byte(h)); err != nil {
@@ -34,7 +37,9 @@ func TestDecodeRequest(t *testing.T) {
 		"credential no name": `{"kind":"credential","id":1}`,
 		"status no route":    `{"kind":"status","id":1}`,
 		"mail no op":         `{"kind":"mail","id":1,"mailbox":"ab"}`,
-		"mail no mailbox":    `{"kind":"mail","id":1,"op":"list"}`,
+		"mail bad headers":   `{"kind":"mail","id":1,"op":"routing","headers":{"Fount-Nonce":1}}`,
+		"fetch with headers": `{"kind":"fetch","id":1,"dest":"x","headers":{}}`,
+		"status headers":     `{"kind":"status","id":1,"route":"tinfoil","headers":{"a":"b"}}`,
 		"mail with dest":     `{"kind":"mail","id":1,"op":"list","mailbox":"ab","dest":"x"}`,
 		"fetch with op":      `{"kind":"fetch","id":1,"dest":"x","op":"list"}`,
 		"credential mailbox": `{"kind":"credential","id":1,"name":"license","mailbox":"ab"}`,

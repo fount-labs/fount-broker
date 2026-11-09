@@ -8,6 +8,7 @@
 //	{"kind":"credential","id":N,"name":"license"}  body: the secret
 //	{"kind":"status","id":N,"route":"tinfoil"}
 //	{"kind":"mail","id":N,"op":"get","mailbox":"<64 hex>","path":"<edge id>"}  body: empty, or a saved ledger for op restore
+//	{"kind":"mail","id":N,"op":"routing","mailbox":"<64 hex, or empty>","headers":{"Fount-Signature":"…"}}  body: the signed JSON
 //
 // Broker to app:
 //
@@ -64,6 +65,9 @@ type Request struct {
 	// Op and Mailbox name a mail operation and the mailbox, by hex id, it acts on.
 	Op      string `json:"op,omitempty"`
 	Mailbox string `json:"mailbox,omitempty"`
+	// Headers are a pre-signed mail op's signature headers. Package mail
+	// says which it forwards; only mail requests may carry them.
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // Reply is every header the broker sends.
@@ -125,7 +129,7 @@ func DecodeRequest(header []byte) (Request, error) {
 		return Request{}, fmt.Errorf("%w: id is required", ErrMalformed)
 	}
 	extra := false
-	mail := r.Op != "" || r.Mailbox != ""
+	mail := r.Op != "" || r.Mailbox != "" || r.Headers != nil
 	switch r.Kind {
 	case KindFetch:
 		extra = mail || r.Name != "" || r.Route != "" || r.Dest == ""
@@ -136,7 +140,7 @@ func DecodeRequest(header []byte) (Request, error) {
 	case KindStatus:
 		extra = mail || r.Dest != "" || r.Accept != "" || r.Path != "" || r.Name != "" || r.Route == ""
 	case KindMail:
-		extra = r.Dest != "" || r.Accept != "" || r.Name != "" || r.Route != "" || r.Op == "" || r.Mailbox == ""
+		extra = r.Dest != "" || r.Accept != "" || r.Name != "" || r.Route != "" || r.Op == ""
 	default:
 		return Request{}, fmt.Errorf("%w: unknown kind %q", ErrMalformed, r.Kind)
 	}

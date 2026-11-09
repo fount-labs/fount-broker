@@ -57,6 +57,7 @@ request. If the closed app were malicious, these are the channels it could use:
 | `fount.feedback_report` | Fount | Up to 2 MiB, including free text. The app draws the preview you see |
 | Python package tunnel | PyPI, GitHub | Paths on those hosts. `github.com` serves any repository, so a path can carry data |
 | `fount.license_validate` | Fount | 64 characters of key per request |
+| Mail writes (`mailbox`, `address`, `routing`, `renew`) | The edge enclave, and its storage for what it keeps | Up to 64 KiB of signed JSON. The edge refuses anything that isn't a valid request |
 | `latex.file` | The bundle's host | Which of about 130,000 files it asks for, and in what order |
 | Mail sender checks | Google and Cloudflare DNS | Nothing. The verifier asks for the DKIM, DMARC and SPF records of mail you received, at most 48 questions per message. Senders choose those names |
 
@@ -72,8 +73,8 @@ The broker is the device's side of Fount Mail
 ([`internal/mail`](internal/mail/service.go)). The app gives it each address's
 keys once, as the `mail_keys` credential, and then names an operation and a
 mailbox: `list`, `get`, `delete`, `gaps`, and `ledger` and `restore` for the
-sequence ledger. The broker signs each request to the edge with the address's
-key, so the app never builds a Device API request.
+sequence ledger. The broker signs each of these reads with the address's key,
+so the app never builds one. Writes are different; see the end of this section.
 
 For each message it:
 
@@ -100,6 +101,27 @@ timeout fails the check, and after three failures the message is quarantined.
 The edge doesn't yet record the sending server's address, so SPF reports
 `none`. The automatic-request rule needs strict DKIM alignment, not SPF.
 
+The app signs its own writes, which carry only public keys, and the broker
+carries them unchanged ([`mail/passthrough.go`](internal/mail/passthrough.go)).
+Each op has a fixed method and path, because the signature covers both:
+
+| Op | Sends | `mailbox` |
+|---|---|---|
+| `handle` | `GET /handle/{path}`, `path` matching `^[a-z0-9-]{1,64}$` | empty |
+| `mailbox` | `POST /mailbox` | empty |
+| `address` | `POST /address` | the parent mailbox |
+| `routing` | `PUT /routing` | the mailbox |
+| `renew` | `POST /entitlement` | the mailbox |
+| `license_entitlement` | `api.fount.sh` `POST license/entitlement` | empty |
+
+The frame's `headers` may hold only `Fount-Key-Id`, `Fount-Timestamp`,
+`Fount-Nonce`, `Fount-Signature` and `Fount-Entitlement`, and `Fount-Key-Id`
+must equal `mailbox`. Edge ops go only to the attested edge. For
+`license_entitlement` the app sends `{"deviceKey":"<base64>"}` and the broker
+adds the `license` credential it holds. Every op answers with a result
+`{"status":N,"body":<reply JSON>,"retry_after":N}`, 4xx included; an `error`
+frame means the broker itself failed. Bodies and replies are capped at 64 KiB.
+
 ## Parse surfaces
 
 Every place the broker parses bytes it didn't make. Each is bounded and fails
@@ -111,11 +133,12 @@ In the broker:
 |---|---|---|
 | Frames and request headers | The app | [`frame`](internal/frame/frame.go), [`protocol`](internal/protocol/protocol.go) |
 | Request bodies with a schema | The app | [`policy/body.go`](internal/policy/body.go) |
+| Mail write frames: signature headers, handle names, `deviceKey` | The app | [`mail/passthrough.go`](internal/mail/passthrough.go) |
 | `mail_keys` and saved ledgers | The app | [`mail/keys.go`](internal/mail/keys.go), [`mail/service.go`](internal/mail/service.go) |
 | CONNECT requests | Local processes with the tunnel password | [`proxy`](internal/proxy/proxy.go) |
 | Attestation documents | Tinfoil enclaves | `tinfoil-go` |
 | HTTP responses | Every destination. Bodies are streamed to the app unread | `net/http` |
-| Device API JSON: listings, gap pages, boot records | The edge | [`mail/edge.go`](internal/mail/edge.go) |
+| Device API JSON: listings, gap pages, boot records. Write replies are only checked to be JSON, then passed to the app | The edge | [`mail/edge.go`](internal/mail/edge.go) |
 | Stored messages and gap records, checked against a boot's key | The edge and its storage | [`mail/object.go`](internal/mail/object.go), [`mail/record.go`](internal/mail/record.go) |
 | The verifier's frames | The verifier | [`mail/verify/process.go`](internal/mail/verify/process.go) |
 

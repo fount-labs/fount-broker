@@ -49,6 +49,7 @@ type Broker struct {
 type MailService interface {
 	SetKeys(body []byte) error
 	Handle(ctx context.Context, op, mailbox, path string, body []byte) (any, error)
+	Passthrough(ctx context.Context, op, mailbox, path string, headers map[string]string, body []byte) (*mail.Result, error)
 }
 
 func New(version string, routes map[string]route.Route, vault *Vault) *Broker {
@@ -273,12 +274,70 @@ func (b *Broker) mail(ctx context.Context, req protocol.Request, body []byte) {
 		b.fail(req.ID, protocol.CodePolicy, errors.New("mail isn't available in this build"))
 		return
 	}
-	v, err := b.Mail.Handle(ctx, req.Op, req.Mailbox, req.Path, body)
+	var v any
+	var err error
+	switch {
+	case req.Op == mail.OpLicenseEntitlement:
+		b.licenseEntitlement(ctx, req, body)
+		return
+	case mail.IsPassthrough(req.Op):
+		v, err = b.Mail.Passthrough(ctx, req.Op, req.Mailbox, req.Path, req.Headers, body)
+	case req.Headers != nil:
+		err = fmt.Errorf("%w: only pre-signed ops take headers", mail.ErrRequest)
+	default:
+		v, err = b.Mail.Handle(ctx, req.Op, req.Mailbox, req.Path, body)
+	}
 	if err != nil {
 		b.fail(req.ID, mailCode(ctx, err), err)
 		return
 	}
 	b.result(req.ID, v)
+}
+
+// licenseEntitlement asks Fount's API for an entitlement bound to the app's
+// device key, with the license the broker holds. Any status comes back as a
+// mail.Result, so the app can tell a refused license from a broken network.
+func (b *Broker) licenseEntitlement(ctx context.Context, req protocol.Request, body []byte) {
+	if req.Mailbox != "" || req.Path != "" || req.Headers != nil {
+		b.fail(req.ID, protocol.CodeBadRequest, errors.New("license_entitlement takes no mailbox, path or headers"))
+		return
+	}
+	deviceKey, err := mail.LicenseEntitlementRequest(body)
+	if err != nil {
+		b.fail(req.ID, protocol.CodeBadRequest, err)
+		return
+	}
+	dest := policy.LicenseEntitlement
+	license, ok := b.vault.Get(policy.CredentialLicense)
+	if !ok {
+		b.fail(req.ID, protocol.CodeCredential, errors.New("license_entitlement needs the license credential"))
+		return
+	}
+	out, err := json.Marshal(map[string]string{"licenseKey": license, "deviceKey": deviceKey})
+	if err != nil {
+		b.fail(req.ID, protocol.CodeBadRequest, err)
+		return
+	}
+	if err := dest.Body.Check(out); err != nil {
+		b.fail(req.ID, protocol.CodePolicy, fmt.Errorf("license_entitlement: %w", err))
+		return
+	}
+	rt := b.routes[dest.Route]
+	if rt == nil {
+		b.fail(req.ID, protocol.CodePolicy, fmt.Errorf("route %q is not available", dest.Route))
+		return
+	}
+	resp, err := rt.Do(ctx, route.Request{Dest: dest, Accept: "application/json", Body: out})
+	if err != nil {
+		b.failSend(ctx, req.ID, err)
+		return
+	}
+	res, err := mail.ReadResult(resp)
+	if err != nil {
+		b.failSend(ctx, req.ID, err)
+		return
+	}
+	b.result(req.ID, res)
 }
 
 func mailCode(ctx context.Context, err error) protocol.Code {
