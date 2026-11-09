@@ -67,7 +67,7 @@ replaces, and its sidecar's `provenance` becomes `"captured"`.
 | `kind` | `forward-inline`, `forward-attachment`, `new` or `reply` |
 | `replace_with_capture` | `true` if a real capture should replace this file |
 | `covers` | What the fixture tests |
-| `envelope` | `sender` and `recipient`, the SMTP envelope. To seal a test object, frame them as the edge does: `senderLen(2) \| sender \| recipientLen(2) \| recipient \| raw` |
+| `envelope` | `sender` and `recipient`, the SMTP envelope. To seal a test object, frame them as the edge's format 2 does, with no client IP or HELO: `senderLen(2) \| sender \| recipientLen(2) \| recipient \| 0x00 \| 0x00 \| 0x00 \| raw` (source none, IP length 0, HELO length 0). A test of SPF adds the IP and HELO itself; the layout is in `internal/mail/object.go` |
 | `edge_id`, `received_at` | Values to use for the edge ID and the edge clock. The edge ID is 32 lowercase hex characters |
 | `assume_verdict` | The verifier's verdict, given as input, because the files aren't signed |
 | `thread_headers` | `message_id`, `in_reply_to` and `references`, parsed by the §6.1 rules |

@@ -23,7 +23,14 @@ func TestCanonicalMatchesTheEdgeVector(t *testing.T) {
 }
 
 func TestOpenEdgeObjects(t *testing.T) {
-	v := loadVectors(t)
+	for _, path := range []string{vectorsV2, vectorsV1} {
+		t.Run(path, func(t *testing.T) {
+			openEdgeObjects(t, loadVectorsTB(t, path), byte(map[string]int{vectorsV2: 2, vectorsV1: 1}[path]))
+		})
+	}
+}
+
+func openEdgeObjects(t *testing.T, v *vectors, version byte) {
 	keys, err := ParseKeys(v.keysJSON())
 	if err != nil {
 		t.Fatal(err)
@@ -38,15 +45,19 @@ func TestOpenEdgeObjects(t *testing.T) {
 		if err := o.Verify(pub); err != nil {
 			t.Fatalf("seq %d: %v", m.Sequence, err)
 		}
-		if o.Sequence != m.Sequence || hexOf(o.BootID) != m.Boot || hexOf(o.EdgeID) != m.EdgeID {
+		if o.Version != version || o.Sequence != m.Sequence || hexOf(o.BootID) != m.Boot || hexOf(o.EdgeID) != m.EdgeID {
 			t.Fatalf("header %+v doesn't match %+v", o, m)
 		}
 		env, raw, err := o.Open(k)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if env.Sender != m.Sender || env.Recipient != m.Recipient || string(raw) != string(m.Raw) {
-			t.Fatalf("opened %+v %q", env, raw)
+		want := Envelope{Sender: m.Sender, Recipient: m.Recipient, ClientIP: m.ClientIP, HELO: m.HELO}
+		if m.ClientIPFrom == ipFromProxy {
+			want.ClientIPSource = ClientIPGatewayProxy
+		}
+		if env != want || string(raw) != string(m.Raw) {
+			t.Fatalf("opened %+v %q, want %+v", env, raw, want)
 		}
 		other := v.BootKeys[v.Messages[0].Boot]
 		if m.Boot != v.Messages[0].Boot {
@@ -184,6 +195,21 @@ func TestSyncFindsTheWithheldMessage(t *testing.T) {
 	}
 	if len(checker.calls) != len(v.Messages) || checker.calls[0].Recipient != "worker@fountbox.com" || checker.calls[0].ReceivedAt.IsZero() {
 		t.Fatalf("checker saw %+v", checker.calls)
+	}
+	var gotIPs, wantIPs []string
+	for i, c := range checker.calls {
+		gotIPs = append(gotIPs, c.ClientIP+"|"+c.ClientIPSource+"|"+c.HELO)
+		m := v.Messages[i]
+		src := ""
+		if m.ClientIP != "" {
+			src = ClientIPGatewayProxy
+		}
+		wantIPs = append(wantIPs, m.ClientIP+"|"+src+"|"+m.HELO)
+	}
+	slices.Sort(gotIPs)
+	slices.Sort(wantIPs)
+	if !slices.Equal(gotIPs, wantIPs) || !slices.Contains(gotIPs, "192.0.2.25|gateway_proxy|mail.example.com") {
+		t.Fatalf("checker saw addresses %v, want %v", gotIPs, wantIPs)
 	}
 	for _, m := range listed {
 		if _, err := s.Handle(ctx, OpDelete, mb, m.ID, nil); err != nil {

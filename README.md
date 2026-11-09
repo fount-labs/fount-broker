@@ -98,7 +98,12 @@ gets DNS answers only by asking the broker, which fetches them from both
 resolvers above and passes them back unread. The two must agree. A crash or
 timeout fails the check, and after three failures the message is quarantined.
 
-The edge doesn't yet record the sending server's address, so SPF reports
+SPF checks the sending server's address and HELO name, which the edge seals
+with each message from stored-message format 2. The edge reads that address
+from the PROXY header its gateway writes, and nothing attests the gateway, so
+an SPF result is only as honest as the gateway. The verdict says so: `spf`
+carries the `client_ip` it checked and `client_ip_source: "gateway_proxy"`.
+Mail with no recorded address (format 1, or format 2 without one) reports SPF
 `none`. The automatic-request rule needs strict DKIM alignment, not SPF.
 
 The app signs its own writes, which carry only public keys, and the broker

@@ -8,22 +8,29 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"net/netip"
 	"time"
 )
 
 // The stored-message object (design §9, edge internal/store/message.go):
 //
-//	magic "FME1" | version 1 | suite(6) | edge id(16) | mailbox id(32) |
+//	magic "FME1" | version(1) | suite(6) | edge id(16) | mailbox id(32) |
 //	pubkey hash(32) | received_at(8, unix ms) | sequence(8) | boot id(16) |
 //	encLen(2) enc | ctLen(4) ct | ed25519 signature(64) over everything before it
 //
-// The header up to the boot id is the HPKE AAD. The plaintext is
-// senderLen(2) sender | recipientLen(2) recipient | raw message.
+// The header up to the boot id is the HPKE AAD, so the version is signed and
+// bound to the ciphertext. The version names the plaintext framing, big-endian
+// lengths:
+//
+//	1: senderLen(2) sender | recipientLen(2) recipient | raw message
+//	2: senderLen(2) sender | recipientLen(2) recipient |
+//	   clientIPFrom(1) | clientIPLen(1) clientIP | heloLen(1) helo | raw message
 const (
-	objMagic   = "FME1"
-	objVersion = 1
-	hpkeInfo   = "fount-mail-edge/v1/stored-message"
-	headerLen  = 4 + 1 + 6 + 16 + 32 + 32 + 8 + 8 + 16
+	objMagic  = "FME1"
+	objV1     = 1
+	objV2     = 2
+	hpkeInfo  = "fount-mail-edge/v1/stored-message"
+	headerLen = 4 + 1 + 6 + 16 + 32 + 32 + 8 + 8 + 16
 	// MaxObject bounds a fetched object: a 25 MB message with its envelope and
 	// framing, rounded up.
 	MaxObject = 32 << 20
@@ -35,6 +42,7 @@ var suite = []byte{0x00, 0x20, 0x00, 0x01, 0x00, 0x01}
 // Object is a parsed stored message. Nothing in it is trusted until Verify
 // succeeds with the right boot's key.
 type Object struct {
+	Version    byte
 	EdgeID     []byte
 	MailboxID  []byte
 	PubKeyHash []byte
@@ -62,13 +70,13 @@ func ParseObject(b []byte) (*Object, error) {
 	if string(b[:4]) != objMagic {
 		return nil, fmt.Errorf("%w: bad magic", ErrMalformed)
 	}
-	if b[4] != objVersion {
+	if b[4] != objV1 && b[4] != objV2 {
 		return nil, fmt.Errorf("%w: version %d", ErrMalformed, b[4])
 	}
 	if !bytes.Equal(b[5:11], suite) {
 		return nil, fmt.Errorf("%w: suite %x", ErrMalformed, b[5:11])
 	}
-	o := &Object{header: b[:headerLen]}
+	o := &Object{Version: b[4], header: b[:headerLen]}
 	off := 11
 	take := func(n int) []byte {
 		v := b[off : off+n]
@@ -108,11 +116,37 @@ func (o *Object) Verify(bootKey ed25519.PublicKey) error {
 	return nil
 }
 
-// Envelope is what the edge sealed besides the message: the SMTP envelope.
+// Envelope is what the edge sealed besides the message: the SMTP envelope and,
+// from version 2, the sending server's address and HELO name. All of it is what
+// the sender or the gateway said; nothing here is verified.
 type Envelope struct {
 	Sender    string `json:"sender"`
 	Recipient string `json:"recipient"`
+	// ClientIP is the sending server's address in netip's canonical form, or
+	// empty. ClientIPSource says where the edge got it.
+	ClientIP       string `json:"client_ip,omitempty"`
+	ClientIPSource string `json:"client_ip_source,omitempty"`
+	// HELO is the session's last EHLO or HELO name, or empty.
+	HELO string `json:"helo,omitempty"`
 }
+
+// ClientIPSource values. Empty means the edge recorded no address (all
+// version 1 objects, and version 2 with source byte 0).
+const (
+	// ClientIPGatewayProxy: the source address in the PROXY v1 header the
+	// gateway writes inside its mutual TLS to the edge (edge design §7).
+	// Nothing attests the gateway, so the address, and any SPF result computed
+	// from it, is only as honest as the gateway.
+	ClientIPGatewayProxy = "gateway_proxy"
+)
+
+// The edge's limits on the version 2 fields, and its source bytes.
+const (
+	maxClientIP = 45
+	maxHELO     = 255
+	ipFromNone  = 0
+	ipFromProxy = 1
+)
 
 var (
 	ErrWrongMailbox = errors.New("mail: message is for another mailbox")
@@ -141,15 +175,20 @@ func (o *Object) Open(k *Keys) (Envelope, []byte, error) {
 	if err != nil {
 		return Envelope{}, nil, fmt.Errorf("%w: %v", ErrDecrypt, err)
 	}
-	env, raw, err := unframe(pt)
+	env, raw, err := unframe(o.Version, pt)
 	if err != nil {
 		return Envelope{}, nil, err
 	}
 	return env, raw, nil
 }
 
-func unframe(p []byte) (Envelope, []byte, error) {
-	field := func() (string, bool) {
+// unframe splits a decrypted plaintext of the given version into its envelope
+// and raw message, refusing anything the edge would not have written.
+func unframe(version byte, p []byte) (Envelope, []byte, error) {
+	bad := func(why string) (Envelope, []byte, error) {
+		return Envelope{}, nil, fmt.Errorf("%w: bad envelope framing: %s", ErrMalformed, why)
+	}
+	str16 := func() (string, bool) {
 		if len(p) < 2 {
 			return "", false
 		}
@@ -161,10 +200,58 @@ func unframe(p []byte) (Envelope, []byte, error) {
 		p = p[2+n:]
 		return v, true
 	}
-	sender, ok1 := field()
-	recipient, ok2 := field()
-	if !ok1 || !ok2 {
-		return Envelope{}, nil, fmt.Errorf("%w: bad envelope framing", ErrMalformed)
+	str8 := func(limit int) (string, bool) {
+		if len(p) < 1 {
+			return "", false
+		}
+		n := int(p[0])
+		if n > limit || len(p) < 1+n {
+			return "", false
+		}
+		v := string(p[1 : 1+n])
+		p = p[1+n:]
+		return v, true
 	}
-	return Envelope{Sender: sender, Recipient: recipient}, p, nil
+	var env Envelope
+	var ok bool
+	if env.Sender, ok = str16(); !ok {
+		return bad("sender")
+	}
+	if env.Recipient, ok = str16(); !ok {
+		return bad("recipient")
+	}
+	switch version {
+	case objV1:
+		return env, p, nil
+	case objV2:
+	default:
+		return bad(fmt.Sprintf("version %d", version))
+	}
+	if len(p) < 1 {
+		return bad("client IP source")
+	}
+	from := p[0]
+	p = p[1:]
+	ip, ok := str8(maxClientIP)
+	if !ok {
+		return bad("client IP")
+	}
+	switch from {
+	case ipFromNone:
+		if ip != "" {
+			return bad("client IP with no source")
+		}
+	case ipFromProxy:
+		a, err := netip.ParseAddr(ip)
+		if err != nil || a.Zone() != "" || a.String() != ip {
+			return bad(fmt.Sprintf("client IP %q", ip))
+		}
+		env.ClientIP, env.ClientIPSource = ip, ClientIPGatewayProxy
+	default:
+		return bad(fmt.Sprintf("client IP source %d", from))
+	}
+	if env.HELO, ok = str8(maxHELO); !ok {
+		return bad("HELO")
+	}
+	return env, p, nil
 }
