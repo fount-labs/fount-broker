@@ -33,6 +33,8 @@ import (
 	"github.com/emersion/go-msgauth/dkim"
 	"github.com/emersion/go-msgauth/dmarc"
 	"golang.org/x/net/publicsuffix"
+
+	broker "github.com/fount-labs/fount-broker/internal/mail"
 )
 
 // Input is one message to check.
@@ -44,10 +46,13 @@ type Input struct {
 	Recipient string
 	// ReceivedAt is the edge's clock when the message arrived.
 	ReceivedAt time.Time
-	// ClientIP and HELO are the sending server's, when the edge records them.
-	// It doesn't yet, so SPF reports none.
-	ClientIP string
-	HELO     string
+	// ClientIP is the sending server's address and ClientIPSource where the
+	// edge got it (broker.ClientIPGatewayProxy, or empty for none). SPF runs only
+	// with an address from the gateway's PROXY header; otherwise it reports none.
+	ClientIP       string
+	ClientIPSource string
+	// HELO is the session's EHLO or HELO name, unverified, or empty.
+	HELO string
 }
 
 // Resolver answers DNS questions. Errors are *net.DNSError, with IsNotFound
@@ -113,10 +118,19 @@ type Signature struct {
 	Aligned bool `json:"aligned"`
 }
 
+// SPF is the check of the envelope sender's domain (or the HELO name, when
+// MAIL FROM is empty) against the sending server's address.
 type SPF struct {
 	Result string `json:"result"`
 	Domain string `json:"domain,omitempty"`
-	Error  string `json:"error,omitempty"`
+	// ClientIP is the address checked, and ClientIPSource where it came from.
+	// "gateway_proxy" is the PROXY header of the unattested gateway, so a pass
+	// or fail is only as honest as that gateway (edge design §7). Both are
+	// empty when the edge recorded no address and Result is none.
+	ClientIP       string `json:"client_ip,omitempty"`
+	ClientIPSource string `json:"client_ip_source,omitempty"`
+	HELO           string `json:"helo,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 type DMARC struct {
@@ -418,12 +432,18 @@ func checkSPF(ctx context.Context, in Input, r Resolver) SPF {
 	if _, d, ok := strings.Cut(in.Sender, "@"); ok && d != "" {
 		domain = d
 	}
-	out := SPF{Domain: strings.ToLower(domain)}
-	if in.ClientIP == "" {
+	out := SPF{Domain: strings.ToLower(domain), HELO: in.HELO}
+	switch {
+	case in.ClientIP == "" && in.ClientIPSource == "":
 		out.Result = string(spf.None)
-		out.Error = "the edge doesn't record the sending server's IP address"
+		out.Error = "the edge recorded no sending server address for this message"
+		return out
+	case in.ClientIPSource != broker.ClientIPGatewayProxy:
+		out.Result = string(spf.None)
+		out.Error = fmt.Sprintf("client IP source %q isn't one SPF runs on", in.ClientIPSource)
 		return out
 	}
+	out.ClientIP, out.ClientIPSource = in.ClientIP, in.ClientIPSource
 	ip := net.ParseIP(in.ClientIP)
 	if ip == nil {
 		out.Result, out.Error = string(spf.PermError), "bad client IP"

@@ -286,14 +286,55 @@ func TestDMARCFallsBackToTheOrgDomain(t *testing.T) {
 
 func TestSPFWithAnIP(t *testing.T) {
 	z := newZone()
-	z.txt["example.com"] = []string{"v=spf1 ip4:192.0.2.0/24 -all"}
-	for ip, want := range map[string]string{"192.0.2.7": "pass", "198.51.100.1": "fail"} {
-		v, err := Check(context.Background(), Input{Raw: []byte(message("")), Sender: "owner@example.com", Recipient: recipient, ClientIP: ip, HELO: "mx.example.com"}, z.resolver())
+	z.txt["example.com"] = []string{"v=spf1 ip4:192.0.2.0/24 ip6:2001:db8::/32 -all"}
+	for ip, want := range map[string]string{"192.0.2.7": "pass", "198.51.100.1": "fail", "2001:db8::25": "pass"} {
+		v, err := Check(context.Background(), Input{Raw: []byte(message("")), Sender: "owner@example.com", Recipient: recipient, ClientIP: ip, ClientIPSource: mail.ClientIPGatewayProxy, HELO: "mx.example.com"}, z.resolver())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if v.SPF.Result != want {
+		if v.SPF.Result != want || v.SPF.ClientIP != ip || v.SPF.ClientIPSource != "gateway_proxy" || v.SPF.HELO != "mx.example.com" || v.SPF.Domain != "example.com" {
 			t.Errorf("%s: %+v", ip, v.SPF)
+		}
+		if want == "pass" && !v.DMARC.SPFAligned {
+			t.Errorf("%s: dmarc %+v", ip, v.DMARC)
+		}
+	}
+}
+
+// With an empty MAIL FROM, SPF checks the HELO name.
+func TestSPFChecksHELOForANullSender(t *testing.T) {
+	z := newZone()
+	z.txt["mx.example.com"] = []string{"v=spf1 ip4:192.0.2.7 -all"}
+	v, err := Check(context.Background(), Input{Raw: []byte(message("")), Recipient: recipient, ClientIP: "192.0.2.7", ClientIPSource: mail.ClientIPGatewayProxy, HELO: "mx.example.com"}, z.resolver())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.SPF.Result != "pass" || v.SPF.Domain != "mx.example.com" {
+		t.Fatalf("%+v", v.SPF)
+	}
+}
+
+// SPF runs only on an address the edge took from the gateway's PROXY header.
+func TestSPFNoneWithoutAProxyAddress(t *testing.T) {
+	z := newZone()
+	z.txt["example.com"] = []string{"v=spf1 ip4:192.0.2.0/24 -all"}
+	for name, in := range map[string]Input{
+		"no address":     {HELO: "mx.example.com"},
+		"unknown source": {ClientIP: "192.0.2.7", ClientIPSource: "header"},
+		"no source":      {ClientIP: "192.0.2.7"},
+	} {
+		in.Raw, in.Sender, in.Recipient = []byte(message("")), "owner@example.com", recipient
+		v, err := Check(context.Background(), in, z.resolver())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v.SPF.Result != "none" || v.SPF.ClientIP != "" || v.SPF.ClientIPSource != "" || v.SPF.Error == "" || v.DMARC.SPFAligned {
+			t.Errorf("%s: %+v", name, v.SPF)
+		}
+	}
+	for _, q := range z.asked {
+		if strings.TrimSuffix(q, ".") == "TXT example.com" {
+			t.Errorf("looked up SPF without an address: %v", z.asked)
 		}
 	}
 }
@@ -346,6 +387,35 @@ func TestProcessRunsTheConfinedVerifier(t *testing.T) {
 	}
 	if len(z.asked) != 2 {
 		t.Fatalf("asked %v", z.asked)
+	}
+}
+
+// The client IP and HELO reach the child, and its SPF lookup goes through the
+// broker's DNS.
+func TestProcessRunsSPF(t *testing.T) {
+	z := newZone()
+	z.txt["example.com"] = []string{"v=spf1 ip4:192.0.2.0/24 -all"}
+	p := &Process{Command: selfCommand(t), DNS: z}
+	raw, err := p.Check(context.Background(), mail.CheckInput{
+		Raw: []byte(message("")), Sender: "owner@example.com", Recipient: recipient, ReceivedAt: received,
+		ClientIP: "192.0.2.7", ClientIPSource: mail.ClientIPGatewayProxy, HELO: "mx.example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v Verdict
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	if v.SPF.Result != "pass" || v.SPF.ClientIP != "192.0.2.7" || v.SPF.ClientIPSource != "gateway_proxy" || v.SPF.HELO != "mx.example.com" {
+		t.Fatalf("spf %+v", v.SPF)
+	}
+	asked := false
+	for _, q := range z.asked {
+		asked = asked || strings.TrimSuffix(q, ".") == "TXT example.com"
+	}
+	if !asked {
+		t.Fatalf("the SPF record wasn't asked through the broker: %v", z.asked)
 	}
 }
 

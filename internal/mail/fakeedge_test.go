@@ -15,19 +15,23 @@ import (
 	"time"
 )
 
-// vectors is testdata/edge-vectors.json, written by the edge's own code.
+// vectors is testdata/edge-vectors.json (stored-message format 2) or
+// edge-vectors-v1.json, written by the edge's own code.
 type vectors struct {
 	MailboxID     string `json:"mailbox_id"`
 	SigningKey    []byte `json:"signing_key"`
 	DecryptionKey []byte `json:"decryption_key"`
 	Messages      []struct {
-		EdgeID    string `json:"edge_id"`
-		Sequence  uint64 `json:"sequence"`
-		Boot      string `json:"boot"`
-		Object    []byte `json:"object"`
-		Sender    string `json:"sender"`
-		Recipient string `json:"recipient"`
-		Raw       []byte `json:"raw"`
+		EdgeID       string `json:"edge_id"`
+		Sequence     uint64 `json:"sequence"`
+		Boot         string `json:"boot"`
+		Object       []byte `json:"object"`
+		Sender       string `json:"sender"`
+		Recipient    string `json:"recipient"`
+		ClientIP     string `json:"client_ip"`
+		ClientIPFrom byte   `json:"client_ip_from"`
+		HELO         string `json:"helo"`
+		Raw          []byte `json:"raw"`
 	} `json:"messages"`
 	Withheld     []uint64          `json:"withheld"`
 	ListResponse string            `json:"list_response"`
@@ -45,11 +49,16 @@ type vectors struct {
 	Comment string `json:"comment"`
 }
 
-func loadVectors(t *testing.T) *vectors { return loadVectorsTB(t) }
+const (
+	vectorsV2 = "testdata/edge-vectors.json"
+	vectorsV1 = "testdata/edge-vectors-v1.json"
+)
 
-func loadVectorsTB(t testing.TB) *vectors {
+func loadVectors(t *testing.T) *vectors { return loadVectorsTB(t, vectorsV2) }
+
+func loadVectorsTB(t testing.TB, path string) *vectors {
 	t.Helper()
-	b, err := os.ReadFile("testdata/edge-vectors.json")
+	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}

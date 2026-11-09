@@ -18,7 +18,8 @@ import (
 // The verifier and the broker speak frames (package frame) over the child's
 // stdin and stdout. Every header is a msg:
 //
-//	broker -> verifier  {"kind":"check","sender":…,"recipient":…,"received_at":ms}  body: the raw message
+//	broker -> verifier  {"kind":"check","sender":…,"recipient":…,"received_at":ms,
+//	                     "client_ip":…,"client_ip_source":…,"helo":…}  body: the raw message
 //	verifier -> broker  {"kind":"dns","id":N,"type":"TXT","name":"…"}
 //	broker -> verifier  {"kind":"dns","id":N}  body: JSON array of each resolver's response, base64
 //	                    {"kind":"dns","id":N,"error":"…"}
@@ -34,6 +35,7 @@ type msg struct {
 	Recipient  string `json:"recipient,omitempty"`
 	ReceivedAt int64  `json:"received_at,omitempty"`
 	ClientIP   string `json:"client_ip,omitempty"`
+	IPSource   string `json:"client_ip_source,omitempty"`
 	HELO       string `json:"helo,omitempty"`
 }
 
@@ -122,7 +124,10 @@ func (p *Process) Check(ctx context.Context, in mail.CheckInput) (json.RawMessag
 
 func (p *Process) converse(ctx context.Context, stdin io.Writer, stdout io.Reader, in mail.CheckInput) (json.RawMessage, error) {
 	w := frame.NewWriter(stdin)
-	check := msg{Kind: "check", Sender: in.Sender, Recipient: in.Recipient, ReceivedAt: in.ReceivedAt.UnixMilli()}
+	check := msg{
+		Kind: "check", Sender: in.Sender, Recipient: in.Recipient, ReceivedAt: in.ReceivedAt.UnixMilli(),
+		ClientIP: in.ClientIP, IPSource: in.ClientIPSource, HELO: in.HELO,
+	}
 	if err := writeMsg(w, check, in.Raw); err != nil {
 		return nil, err
 	}
@@ -262,7 +267,7 @@ func Run(r io.Reader, w io.Writer) error {
 			return answers, nil
 		}
 	}
-	in := Input{Raw: f.Body, Sender: m.Sender, Recipient: m.Recipient, ClientIP: m.ClientIP, HELO: m.HELO}
+	in := Input{Raw: f.Body, Sender: m.Sender, Recipient: m.Recipient, ClientIP: m.ClientIP, ClientIPSource: m.IPSource, HELO: m.HELO}
 	if m.ReceivedAt != 0 {
 		in.ReceivedAt = time.UnixMilli(m.ReceivedAt)
 	}

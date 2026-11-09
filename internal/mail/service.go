@@ -47,6 +47,10 @@ type CheckInput struct {
 	Sender     string    `json:"sender"`
 	Recipient  string    `json:"recipient"`
 	ReceivedAt time.Time `json:"received_at"`
+	// ClientIP, ClientIPSource and HELO are Envelope's, as the edge sealed them.
+	ClientIP       string `json:"client_ip,omitempty"`
+	ClientIPSource string `json:"client_ip_source,omitempty"`
+	HELO           string `json:"helo,omitempty"`
 }
 
 type Service struct {
@@ -237,7 +241,10 @@ func (s *Service) get(ctx context.Context, k *Keys, mailbox, id string) (any, er
 
 	if failures >= MaxFailures {
 		m.Quarantined = true
-	} else if v, err := s.checker.Check(ctx, CheckInput{Raw: body, Sender: env.Sender, Recipient: env.Recipient, ReceivedAt: o.ReceivedAt}); err != nil {
+	} else if v, err := s.checker.Check(ctx, CheckInput{
+		Raw: body, Sender: env.Sender, Recipient: env.Recipient, ReceivedAt: o.ReceivedAt,
+		ClientIP: env.ClientIP, ClientIPSource: env.ClientIPSource, HELO: env.HELO,
+	}); err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}

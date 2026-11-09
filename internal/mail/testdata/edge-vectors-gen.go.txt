@@ -9,6 +9,10 @@ package deviceapi
 //
 // Everything below runs the edge's own code: routing.Store, store.New, the
 // retention sweep, the void path and the Device API handlers.
+//
+// This revision writes stored-message format 2 (client IP and HELO sealed with
+// the envelope) and needs an edge at 10d7677 or later. edge-vectors-v1.json was
+// written by this file's previous revision (git history) from edge 861c109.
 
 import (
 	"context"
@@ -92,7 +96,11 @@ type vecMessage struct {
 	Object    string `json:"object"` // base64 of the GET /mail/{id} body
 	Sender    string `json:"sender"`
 	Recipient string `json:"recipient"`
-	Raw       string `json:"raw"` // base64
+	ClientIP  string `json:"client_ip"`
+	// ClientIPFrom is the sealed source byte: 0 none, 1 the gateway's PROXY header.
+	ClientIPFrom byte   `json:"client_ip_from"`
+	HELO         string `json:"helo"`
+	Raw          string `json:"raw"` // base64
 }
 
 type vecRequest struct {
@@ -169,20 +177,30 @@ func TestWriteBrokerVectors(t *testing.T) {
 		BootKeys:      map[string]string{},
 	}
 	var ids []string
-	putMsg := func(st store.Store, sender, raw string) string {
-		id, err := st.Put(ctx, addr, sender, []byte(raw))
+	envs := map[string]store.Envelope{}
+	putMsg := func(st store.Store, env store.Envelope, raw string) string {
+		env.Recipient = addr
+		id, err := st.Put(ctx, env, []byte(raw))
 		if err != nil {
 			t.Fatal(err)
 		}
 		ids = append(ids, id)
+		envs[id] = env
 		return id
+	}
+	owner := func(ip, helo string) store.Envelope {
+		env := store.Envelope{Sender: "owner@example.com", ClientIP: ip, HELO: helo}
+		if ip != "" {
+			env.ClientIPFrom = store.ClientIPProxy
+		}
+		return env
 	}
 	raw := func(n string) string {
 		return "From: Owner <owner@example.com>\r\nTo: " + addr + "\r\nSubject: vector " + n + "\r\nMessage-ID: <" + n + "@example.com>\r\n\r\nBody " + n + "\r\n"
 	}
 	// seq 1: kept. seq 2: expired by the sweep. seq 3: void (S3 refused it).
-	putMsg(stA, "owner@example.com", raw("1"))
-	id2 := putMsg(stA, "owner@example.com", raw("2"))
+	putMsg(stA, owner("192.0.2.25", "mail.example.com"), raw("1"))
+	id2 := putMsg(stA, owner("192.0.2.25", "mail.example.com"), raw("2"))
 	blobs.mu.Lock()
 	blobs.mod["edge/mail/"+v.MailboxID+"/"+id2] = time.Now().Add(-2 * time.Hour)
 	blobs.mu.Unlock()
@@ -190,7 +208,7 @@ func TestWriteBrokerVectors(t *testing.T) {
 		t.Fatalf("sweep %+v %v", res, err)
 	}
 	blobs.fail = func(k string) bool { return strings.HasPrefix(k, "edge/mail/") }
-	if _, err := stA.Put(ctx, addr, "owner@example.com", []byte(raw("3"))); err == nil {
+	if _, err := stA.Put(ctx, store.Envelope{Sender: "owner@example.com", Recipient: addr}, []byte(raw("3"))); err == nil {
 		t.Fatal("want void")
 	}
 	blobs.fail = nil
@@ -199,13 +217,13 @@ func TestWriteBrokerVectors(t *testing.T) {
 	if err := stB.(store.BootStore).WriteBoot(ctx); err != nil {
 		t.Fatal(err)
 	}
-	putMsg(stB, "owner@example.com", raw("4"))
-	id5 := putMsg(stB, "owner@example.com", raw("5"))
+	putMsg(stB, owner("2001:db8::25", "mx.example.com"), raw("4"))
+	id5 := putMsg(stB, owner("2001:db8::25", "mx.example.com"), raw("5"))
 	if err := blobs.Delete(ctx, "edge/mail/"+v.MailboxID+"/"+id5); err != nil {
 		t.Fatal(err)
 	}
 	v.Withheld = []uint64{5}
-	putMsg(stB, "owner@example.com", raw("6"))
+	putMsg(stB, owner("", ""), raw("6"))
 
 	api := New(Options{Store: stB, Resolver: NewKeyResolver(rt), Mutator: rt, MailDomain: "@fountbox.com"})
 	n := 0
@@ -249,9 +267,11 @@ func TestWriteBrokerVectors(t *testing.T) {
 			t.Fatal(err)
 		}
 		r := raw([]string{"1", "2", "4", "5", "6"}[i])
+		env := envs[id]
 		v.Messages = append(v.Messages, vecMessage{
 			EdgeID: id, Sequence: p.Sequence, Boot: hex.EncodeToString(boot),
-			Object: base64.StdEncoding.EncodeToString(obj), Sender: "owner@example.com", Recipient: addr,
+			Object: base64.StdEncoding.EncodeToString(obj), Sender: env.Sender, Recipient: env.Recipient,
+			ClientIP: env.ClientIP, ClientIPFrom: byte(env.ClientIPFrom), HELO: env.HELO,
 			Raw: base64.StdEncoding.EncodeToString([]byte(r)),
 		})
 	}

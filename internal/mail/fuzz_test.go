@@ -3,15 +3,18 @@ package mail
 import (
 	"crypto/ed25519"
 	"encoding/hex"
+	"net/netip"
 	"testing"
 )
 
 // The object parser must never accept trailing bytes or overrun, and anything
 // it accepts must re-verify only with the right key.
 func FuzzParseObject(f *testing.F) {
-	v := loadVectorsTB(f)
-	for _, m := range v.Messages {
-		f.Add(m.Object)
+	v := loadVectorsTB(f, vectorsV2)
+	for _, path := range []string{vectorsV2, vectorsV1} {
+		for _, m := range loadVectorsTB(f, path).Messages {
+			f.Add(m.Object)
+		}
 	}
 	pub, _ := hex.DecodeString(v.BootKeys[v.Messages[0].Boot])
 	f.Fuzz(func(t *testing.T, b []byte) {
@@ -23,6 +26,34 @@ func FuzzParseObject(f *testing.F) {
 			t.Fatalf("parsed %d bytes as %d+%d", len(b), len(o.signed), len(o.sig))
 		}
 		_ = o.Verify(pub)
+	})
+}
+
+// unframe must never overrun, and an envelope it accepts must be one the edge
+// could have written.
+func FuzzUnframe(f *testing.F) {
+	f.Add(byte(2), []byte(v2Layout))
+	f.Add(byte(2), []byte(v2LayoutNone))
+	f.Add(byte(1), []byte("\x00\x05a@b.c\x00\x06w@f.coRAW"))
+	f.Fuzz(func(t *testing.T, version byte, p []byte) {
+		env, raw, err := unframe(version, p)
+		if err != nil {
+			return
+		}
+		if version != objV1 && version != objV2 {
+			t.Fatalf("accepted version %d", version)
+		}
+		if (env.ClientIP == "") != (env.ClientIPSource == "") || len(env.ClientIP) > maxClientIP || len(env.HELO) > maxHELO {
+			t.Fatalf("accepted %+v", env)
+		}
+		if env.ClientIP != "" {
+			if a, err := netip.ParseAddr(env.ClientIP); err != nil || a.String() != env.ClientIP {
+				t.Fatalf("accepted client IP %q", env.ClientIP)
+			}
+		}
+		if len(raw) > len(p) {
+			t.Fatalf("raw longer than the plaintext")
+		}
 	})
 }
 
