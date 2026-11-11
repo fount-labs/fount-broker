@@ -117,7 +117,7 @@ func main() {
 	keysFile := flag.String("keys", "", "the address's keystore file")
 	licenseFile := flag.String("license", "", "a file holding the dev license key")
 	api := flag.String("api", "", "the dev Fount API base, for license_entitlement")
-	owner := flag.String("owner", "", "the mailbox's one routing owner, re-sent at version 1")
+	owner := flag.String("owner", "", "the mailbox's one routing owner, re-sent at version 1; skipped if empty")
 	bootIDs := flag.String("boots", "", "comma-separated boot ids to look up on the edge directly")
 	flag.Parse()
 	log.SetFlags(0)
@@ -275,10 +275,29 @@ func main() {
 		show("handle (unused)", rep, body)
 	}
 
-	routing, _ := json.Marshal(map[string]any{"version": 1, "owners": []string{*owner}})
-	rep, body = s.send(protocol.Request{Kind: protocol.KindMail, Op: "routing", Mailbox: mbox,
-		Headers: signed(ownerChange, mbox, "PUT", "/routing", routing, "")}, routing)
-	show("routing v1 resend", rep, body)
+	if *owner != "" {
+		routing, _ := json.Marshal(map[string]any{"version": 1, "owners": []string{*owner}})
+		rep, body = s.send(protocol.Request{Kind: protocol.KindMail, Op: "routing", Mailbox: mbox,
+			Headers: signed(ownerChange, mbox, "PUT", "/routing", routing, "")}, routing)
+		show("routing v1 resend", rep, body)
+	}
+
+	// Challenges change nothing, and a pause whose challenge the edge never issued is refused
+	// before the passkey or the nonce is looked at. A 401 "challenge invalid" shows the unsigned
+	// POST got past the edge's guard to the handler.
+	kc := make([]byte, 32)
+	rand.Read(kc)
+	rep, body = s.send(protocol.Request{Kind: protocol.KindMail, Op: "recover_challenge", Mailbox: mbox, Path: hex.EncodeToString(kc)}, nil)
+	show("recover_challenge", rep, body)
+	rep, body = s.send(protocol.Request{Kind: protocol.KindMail, Op: "pause_challenge", Mailbox: mbox, Path: "false"}, nil)
+	show("pause_challenge", rep, body)
+	pause := []byte(`{"challenge":"AAAA","paused":false,"assertion":{}}`)
+	rep, body = s.send(protocol.Request{Kind: protocol.KindMail, Op: "pause", Mailbox: mbox, Headers: map[string]string{
+		"Fount-Key-Id":    mbox,
+		"Fount-Timestamp": strconv.FormatInt(time.Now().Unix(), 10),
+		"Fount-Nonce":     rand.Text(),
+	}}, pause)
+	show("pause (unissued challenge)", rep, body)
 
 	if ent != "" {
 		renew := []byte("{}")
