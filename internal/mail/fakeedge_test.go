@@ -80,6 +80,7 @@ func (v *vectors) keysJSON() []byte {
 // every signed request with the edge's rules.
 type fakeEdge struct {
 	t        *testing.T
+	paused   bool // GET /mail carries it, as edge v0.2.1 does
 	v        *vectors
 	srv      *httptest.Server
 	attested ed25519.PublicKey
@@ -206,7 +207,7 @@ func (f *fakeEdge) listing() string {
 			out = append(out, listed{m.EdgeID, len(o)})
 		}
 	}
-	b, _ := json.Marshal(map[string]any{"messages": out})
+	b, _ := json.Marshal(map[string]any{"messages": out, "paused": f.paused})
 	return string(b)
 }
 
