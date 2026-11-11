@@ -118,6 +118,9 @@ func (c *client) list(ctx context.Context, k *Keys) ([]Listed, error) {
 	}
 	var out struct {
 		Messages []Listed `json:"messages"`
+		// Whether the worker is paused (edge v0.2.1). Mail still arrives and is fetched while
+		// it is; the app doesn't read it yet, so it isn't passed on.
+		Paused bool `json:"paused"`
 	}
 	if err := strictJSON(body, &out); err != nil {
 		return nil, err
