@@ -21,6 +21,7 @@ refused before anything is sent.
 | Destination | Goes to | Sealed |
 |---|---|---|
 | `tinfoil.chat_completions` | Fount's proxy, to an attested Tinfoil router | yes |
+| `tinfoil.convert_file` | Fount's proxy, to an attested Tinfoil router, then Tinfoil's document enclave. Up to 16 MiB of PDF pages for OCR | yes |
 | `tinfoil.websearch`, `tinfoil.webfetch` | Fount's proxy, to Tinfoil's attested web enclave, then Exa | to the enclave |
 | `openrouter.chat_completions` | Fount's proxy, to OpenRouter | no |
 | `openrouter_byok.chat_completions` | OpenRouter, with the user's key | no |

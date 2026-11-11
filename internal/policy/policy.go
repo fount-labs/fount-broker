@@ -100,6 +100,22 @@ var Destinations = map[string]Destination{
 		Body:        Body{Kind: BodyOpaque},
 		Credential:  CredentialLicense,
 	},
+	// Tinfoil's document-processing endpoint, through the same router as
+	// chat: up to 10 single-page PDFs in one multipart upload, returned as
+	// markdown. The mode is fixed to vlm, full-page OCR by a vision model;
+	// the app sends only pages it has already judged to need OCR. The body is
+	// sealed to the attested router like chat, so Fount's proxy sees only its
+	// size; the router attests Tinfoil's document enclave and forwards it
+	// there. The app builds the body with the boundary below.
+	"tinfoil.convert_file": {
+		Route:       RouteTinfoil,
+		Method:      "POST",
+		Path:        "convert/file?mode=vlm",
+		Accept:      []string{"", "application/json"},
+		ContentType: "multipart/form-data; boundary=fount-convert-7d3f9b2c4e1a8f6052b9d4c7e3a1f8b6",
+		Body:        Body{Kind: BodyOpaque, MaxBytes: 16 << 20},
+		Credential:  CredentialLicense,
+	},
 	// Tinfoil's web-search MCP server. The body is sealed to the enclave,
 	// which sends the search query, after removing what its PII filter
 	// detects, to Exa. Exa can read that query; Fount's proxy and Tinfoil

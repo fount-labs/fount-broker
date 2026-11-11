@@ -141,3 +141,26 @@ func TestCheckRepoRefusesAnotherRepo(t *testing.T) {
 		t.Fatal("an unpinned repo passed")
 	}
 }
+
+func TestTinfoilSendsConvertFileWithFixedModeAndBoundary(t *testing.T) {
+	var got *http.Request
+	tf := &Tinfoil{base: "https://proxy.example/proxy/v1/", discover: func(context.Context) (enclave, error) {
+		return &fakeEnclave{host: "router-0", do: func(r *http.Request) (*http.Response, error) {
+			got = r
+			return &http.Response{StatusCode: 200, Body: http.NoBody}, nil
+		}}, nil
+	}}
+	convert := Request{Dest: policy.Destinations["tinfoil.convert_file"], Accept: "application/json", Body: []byte("--x--"), Credential: "LIC"}
+	if _, err := tf.Do(context.Background(), convert); err != nil {
+		t.Fatal(err)
+	}
+	if got.Method != "POST" || got.URL.Path != "/proxy/v1/convert/file" || got.URL.RawQuery != "mode=vlm" {
+		t.Fatalf("got %s %s", got.Method, got.URL)
+	}
+	if got.Header.Get("Content-Type") != "multipart/form-data; boundary=fount-convert-7d3f9b2c4e1a8f6052b9d4c7e3a1f8b6" {
+		t.Fatalf("content type: %q", got.Header.Get("Content-Type"))
+	}
+	if got.Header.Get("Authorization") != "Bearer LIC" || got.Header.Get("Accept") != "application/json" {
+		t.Fatalf("headers: %v", got.Header)
+	}
+}

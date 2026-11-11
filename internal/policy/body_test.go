@@ -142,3 +142,22 @@ func TestWebFetchAsksForTheInjectionCheck(t *testing.T) {
 		t.Fatal("webfetch must be sealed to the web-search enclave and carry the license")
 	}
 }
+
+func TestConvertFileIsOneSealedVLMUploadUpTo16MiB(t *testing.T) {
+	d := Destinations["tinfoil.convert_file"]
+	if d.Route != RouteTinfoil || d.Method != "POST" || d.Path != "convert/file?mode=vlm" || d.PathPattern != nil {
+		t.Fatalf("shape: %s %s %s", d.Route, d.Method, d.Path)
+	}
+	if d.ContentType != "multipart/form-data; boundary=fount-convert-7d3f9b2c4e1a8f6052b9d4c7e3a1f8b6" {
+		t.Fatalf("content type: %q", d.ContentType)
+	}
+	if d.Credential != CredentialLicense {
+		t.Fatalf("credential: %q", d.Credential)
+	}
+	if err := d.Body.Check(make([]byte, 16<<20)); err != nil {
+		t.Fatalf("16 MiB refused: %v", err)
+	}
+	if err := d.Body.Check(make([]byte, 16<<20+1)); err == nil {
+		t.Fatal("a body over 16 MiB passed")
+	}
+}
