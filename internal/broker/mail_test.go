@@ -150,6 +150,16 @@ func TestMailPassthroughWire(t *testing.T) {
 			`PUT /routing ` + mailbox + `|n||{}`},
 		{`{"kind":"mail","id":5,"op":"renew","mailbox":"` + mailbox + `","headers":{"Fount-Key-Id":"` + mailbox + `",` + sig + `,"Fount-Entitlement":"t"}}`, `{}`,
 			`POST /entitlement ` + mailbox + `|n|t|{}`},
+		// As the app's broker_header writes them: challenges name the mailbox and carry no headers;
+		// recover and pause carry a key id, timestamp and nonce but no signature.
+		{`{"kind":"mail","id":6,"op":"recover_challenge","mailbox":"` + mailbox + `","path":"` + strings.Repeat("ab", 32) + `"}`, ``,
+			`GET /recover/` + mailbox + `?kc=` + strings.Repeat("ab", 32) + ` |||`},
+		{`{"kind":"mail","id":7,"op":"recover","mailbox":"` + mailbox + `","headers":{"Fount-Key-Id":"` + mailbox + `","Fount-Timestamp":"1762560000","Fount-Nonce":"n"}}`, `{"challenge":"AA"}`,
+			`POST /recover ` + mailbox + `|n||{"challenge":"AA"}`},
+		{`{"kind":"mail","id":8,"op":"pause_challenge","mailbox":"` + mailbox + `","path":"true"}`, ``,
+			`GET /pause/` + mailbox + `?paused=true |||`},
+		{`{"kind":"mail","id":9,"op":"pause","mailbox":"` + mailbox + `","headers":{"Fount-Key-Id":"` + mailbox + `","Fount-Timestamp":"1762560000","Fount-Nonce":"n"}}`, `{"paused":true}`,
+			`POST /pause ` + mailbox + `|n||{"paused":true}`},
 	}
 	for i, f := range frames {
 		s.send(f.header, f.body)
@@ -175,6 +185,8 @@ func TestMailPassthroughWire(t *testing.T) {
 		`{"kind":"mail","id":21,"op":"handle","mailbox":"","path":"../boots/x","headers":{` + sig + `}}`,
 		`{"kind":"mail","id":22,"op":"list","mailbox":"` + mailbox + `","headers":{` + sig + `}}`,
 		`{"kind":"mail","id":23,"op":"list","mailbox":""}`,
+		`{"kind":"mail","id":24,"op":"pause_challenge","mailbox":"` + mailbox + `","path":"true","headers":{` + sig + `}}`,
+		`{"kind":"mail","id":25,"op":"recover","mailbox":"` + mailbox + `","headers":{"Fount-Key-Id":"` + mailbox + `",` + sig + `}}`,
 	} {
 		s.send(h, "")
 		if r, _ := s.recv(); r.Kind != protocol.KindError || r.Code != protocol.CodeBadRequest {

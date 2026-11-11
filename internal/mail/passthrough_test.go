@@ -60,7 +60,9 @@ func (e *passEdge) serve(w http.ResponseWriter, r *http.Request) {
 	e.mu.Unlock()
 	ts, _ := strconv.ParseInt(r.Header.Get(HeaderTimestamp), 10, 64)
 	sig, _ := base64.StdEncoding.DecodeString(r.Header.Get(HeaderSignature))
-	if !ed25519.Verify(e.pub, []byte(Canonical(r.Method, r.URL.Path, body, ts, r.Header.Get(HeaderNonce))), sig) {
+	// Challenges and passkey-approved requests carry no device signature.
+	passkey := strings.HasPrefix(r.URL.Path, "/recover") || strings.HasPrefix(r.URL.Path, "/pause")
+	if !passkey && !ed25519.Verify(e.pub, []byte(Canonical(r.Method, r.URL.Path, body, ts, r.Header.Get(HeaderNonce))), sig) {
 		http.Error(w, `{"error":"signature does not verify"}`, http.StatusUnauthorized)
 		return
 	}
@@ -144,6 +146,55 @@ func TestPassthroughOps(t *testing.T) {
 		}
 		if ct := r.Header.Get("Content-Type"); (c.body != "") != (ct == "application/json") {
 			t.Fatalf("%s: Content-Type %q", c.op, ct)
+		}
+	}
+}
+
+// approved builds the headers I's DeviceClient sends for a passkey-approved
+// call: no signature.
+func approved(keyID string) map[string]string {
+	return map[string]string{
+		HeaderKeyID:     keyID,
+		HeaderTimestamp: strconv.FormatInt(time.Now().Unix(), 10),
+		HeaderNonce:     rand.Text(),
+	}
+}
+
+func TestPassthroughPasskeyOps(t *testing.T) {
+	s, e, _ := passSetup(t)
+	kc := strings.Repeat("ab", 32)
+	cases := []struct {
+		op, path, method, url string
+		headers               map[string]string
+		body                  string
+	}{
+		{OpRecoverChallenge, kc, "GET", "/recover/" + testMailbox + "?kc=" + kc, nil, ""},
+		{OpRecover, "", "POST", "/recover", approved(testMailbox), `{"challenge":"AA","assertion":{}}`},
+		{OpPauseChallenge, "true", "GET", "/pause/" + testMailbox + "?paused=true", map[string]string{}, ""},
+		{OpPauseChallenge, "false", "GET", "/pause/" + testMailbox + "?paused=false", nil, ""},
+		{OpPause, "", "POST", "/pause", approved(testMailbox), `{"challenge":"AA","paused":true,"assertion":{}}`},
+	}
+	for i, c := range cases {
+		res, err := s.Passthrough(context.Background(), c.op, testMailbox, c.path, c.headers, []byte(c.body))
+		if err != nil {
+			t.Fatalf("%s: %v", c.op, err)
+		}
+		if res.Status != 200 {
+			t.Fatalf("%s: got %+v %s", c.op, res, res.Body)
+		}
+		r, body := e.got[i], e.bodys[i]
+		if r.Method != c.method || r.URL.RequestURI() != c.url || string(body) != c.body {
+			t.Fatalf("%s: edge got %s %s %q", c.op, r.Method, r.URL.RequestURI(), body)
+		}
+		var fount []string
+		for name := range r.Header {
+			if strings.HasPrefix(name, "Fount-") {
+				fount = append(fount, name)
+			}
+		}
+		slices.Sort(fount)
+		if want := slices.Sorted(maps.Keys(c.headers)); !slices.Equal(fount, want) {
+			t.Fatalf("%s: edge got Fount headers %v, want %v", c.op, fount, want)
 		}
 	}
 }
@@ -261,6 +312,27 @@ func TestPassthroughRefusals(t *testing.T) {
 		"mailbox no signature":   {OpMailbox, "", "", map[string]string{}, "{}"},
 		"mailbox nil headers":    {OpMailbox, "", "", nil, "{}"},
 		"address key id but not": {OpAddress, testMailbox, "", without(HeaderKeyID), "{}"},
+
+		"recover challenge no mailbox": {OpRecoverChallenge, "", strings.Repeat("ab", 32), nil, ""},
+		"recover challenge short kc":   {OpRecoverChallenge, testMailbox, "abcd", nil, ""},
+		"recover challenge upper kc":   {OpRecoverChallenge, testMailbox, strings.Repeat("AB", 32), nil, ""},
+		"recover challenge kc query":   {OpRecoverChallenge, testMailbox, strings.Repeat("ab", 31) + "&x=1", nil, ""},
+		"recover challenge headers":    {OpRecoverChallenge, testMailbox, strings.Repeat("ab", 32), approved(testMailbox), ""},
+		"recover challenge body":       {OpRecoverChallenge, testMailbox, strings.Repeat("ab", 32), nil, "{}"},
+		"pause challenge bad state":    {OpPauseChallenge, testMailbox, "yes", nil, ""},
+		"pause challenge empty state":  {OpPauseChallenge, testMailbox, "", nil, ""},
+		"pause challenge traversal":    {OpPauseChallenge, "../mail", "true", nil, ""},
+		"pause challenge signed":       {OpPauseChallenge, testMailbox, "true", signed(priv, "", "GET", "/pause", nil, ""), ""},
+		"recover no key id":            {OpRecover, testMailbox, "", without2(approved(testMailbox), HeaderKeyID), "{}"},
+		"recover key mismatch":         {OpRecover, testMailbox, "", approved(strings.Repeat("11", 32)), "{}"},
+		"recover no nonce":             {OpRecover, testMailbox, "", without2(approved(testMailbox), HeaderNonce), "{}"},
+		"recover no timestamp":         {OpRecover, testMailbox, "", without2(approved(testMailbox), HeaderTimestamp), "{}"},
+		"recover with signature":       {OpRecover, testMailbox, "", with2(approved(testMailbox), HeaderSignature, "c2ln"), "{}"},
+		"recover with entitlement":     {OpRecover, testMailbox, "", with2(approved(testMailbox), HeaderEntitlement, "t"), "{}"},
+		"recover path":                 {OpRecover, testMailbox, "x", approved(testMailbox), "{}"},
+		"recover not json":             {OpRecover, testMailbox, "", approved(testMailbox), "{"},
+		"pause no mailbox":             {OpPause, "", "", approved(""), "{}"},
+		"pause other header":           {OpPause, testMailbox, "", with2(approved(testMailbox), "Authorization", "x"), "{}"},
 	}
 	for name, c := range cases {
 		if _, err := s.Passthrough(context.Background(), c.op, c.mailbox, c.path, c.headers, []byte(c.body)); !errors.Is(err, ErrRequest) {
@@ -270,6 +342,16 @@ func TestPassthroughRefusals(t *testing.T) {
 	if n := e.calls(); n != 0 {
 		t.Fatalf("refused requests reached the edge %d times", n)
 	}
+}
+
+func with2(h map[string]string, k, v string) map[string]string {
+	h[k] = v
+	return h
+}
+
+func without2(h map[string]string, k string) map[string]string {
+	delete(h, k)
+	return h
 }
 
 func TestLicenseEntitlementRequest(t *testing.T) {

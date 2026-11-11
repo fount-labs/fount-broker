@@ -14,25 +14,51 @@ import (
 	"strings"
 )
 
-// Passthrough ops carry a Device API write the app has already signed. The
-// broker fixes each op's method and path, because the signature covers them,
-// and sends it only to the attested edge. OpLicenseEntitlement goes to Fount's
-// API instead and is served by package broker, which holds the license.
+// Passthrough ops carry a Device API request the app has already authorized:
+// most are signed by a device key, and recovery and pause are approved by a
+// passkey assertion in the body. The broker fixes each op's method and path,
+// because the signature or the edge's challenge covers them, and sends it only
+// to the attested edge. OpLicenseEntitlement goes to Fount's API instead and
+// is served by package broker, which holds the license.
 const (
-	OpHandle             = "handle"  // GET /handle/{path}
-	OpMailbox            = "mailbox" // POST /mailbox
-	OpAddress            = "address" // POST /address
-	OpRouting            = "routing" // PUT /routing
-	OpRenew              = "renew"   // POST /entitlement
+	OpHandle             = "handle"            // GET /handle/{path}
+	OpMailbox            = "mailbox"           // POST /mailbox
+	OpAddress            = "address"           // POST /address
+	OpRouting            = "routing"           // PUT /routing
+	OpRenew              = "renew"             // POST /entitlement
+	OpRecoverChallenge   = "recover_challenge" // GET /recover/{mailbox}?kc={path}
+	OpRecover            = "recover"           // POST /recover
+	OpPauseChallenge     = "pause_challenge"   // GET /pause/{mailbox}?paused={path}
+	OpPause              = "pause"             // POST /pause
 	OpLicenseEntitlement = "license_entitlement"
+)
+
+// auth is what authorizes an op at the edge, and so which headers it carries.
+type auth int
+
+const (
+	// authSigned ops carry a device signature: timestamp, nonce and signature.
+	authSigned auth = iota
+	// authNone ops are the edge's unsigned challenge requests, and carry no
+	// headers. A challenge is an opaque MAC, so asking for one proves nothing.
+	authNone
+	// authPasskey ops are approved by a passkey assertion in the body. The edge
+	// wants a fresh timestamp and nonce but no signature, since the device that
+	// would sign may be the one that was lost.
+	authPasskey
 )
 
 type passOp struct {
 	method, path string
-	// perMailbox ops name their mailbox, which must be the Fount-Key-Id the
-	// app signed with. The others are authorized by an entitlement and name
-	// none.
+	// perMailbox ops name their mailbox. A signed or passkey op's mailbox must
+	// be its Fount-Key-Id; a challenge's goes in its path. The others are
+	// authorized by an entitlement and name none.
 	perMailbox bool
+	auth       auth
+	// query, for a challenge, is the query parameter its path fills, and
+	// valid checks that value.
+	query string
+	valid func(string) bool
 }
 
 var passOps = map[string]passOp{
@@ -41,6 +67,12 @@ var passOps = map[string]passOp{
 	OpAddress: {method: http.MethodPost, path: "/address", perMailbox: true},
 	OpRouting: {method: http.MethodPut, path: "/routing", perMailbox: true},
 	OpRenew:   {method: http.MethodPost, path: "/entitlement", perMailbox: true},
+	OpRecoverChallenge: {method: http.MethodGet, path: "/recover/", perMailbox: true, auth: authNone,
+		query: "kc", valid: func(v string) bool { return validHex(v, 32) }},
+	OpRecover: {method: http.MethodPost, path: "/recover", perMailbox: true, auth: authPasskey},
+	OpPauseChallenge: {method: http.MethodGet, path: "/pause/", perMailbox: true, auth: authNone,
+		query: "paused", valid: func(v string) bool { return v == "true" || v == "false" }},
+	OpPause: {method: http.MethodPost, path: "/pause", perMailbox: true, auth: authPasskey},
 }
 
 // IsPassthrough reports whether op is a pre-signed edge write.
@@ -107,9 +139,10 @@ func ReadResult(resp *http.Response) (*Result, error) {
 	return r, nil
 }
 
-// Passthrough sends one pre-signed write to the edge. mailbox is the hex
-// mailbox id for address, routing and renew, and empty for handle and
-// mailbox; path is the handle name for handle, and empty otherwise.
+// Passthrough sends one pre-authorized request to the edge. mailbox is the hex
+// mailbox id for every op but handle and mailbox, where it's empty. path is
+// the handle name for handle, the hex kc for recover_challenge, "true" or
+// "false" for pause_challenge, and empty otherwise.
 func (s *Service) Passthrough(ctx context.Context, op, mailbox, path string, headers map[string]string, body []byte) (*Result, error) {
 	p, ok := passOps[op]
 	if !ok {
@@ -122,12 +155,18 @@ func (s *Service) Passthrough(ctx context.Context, op, mailbox, path string, hea
 		return nil, fmt.Errorf("%w: %s names no mailbox", ErrRequest, op)
 	}
 	urlPath := p.path
-	if op == OpHandle {
+	switch {
+	case op == OpHandle:
 		if !handlePattern.MatchString(path) {
 			return nil, fmt.Errorf("%w: handle takes a name of 1 to 64 lowercase letters, digits and hyphens as its path", ErrRequest)
 		}
 		urlPath += path
-	} else if path != "" {
+	case p.query != "":
+		if !p.valid(path) {
+			return nil, fmt.Errorf("%w: %s's path isn't a valid %s", ErrRequest, op, p.query)
+		}
+		urlPath += mailbox + "?" + p.query + "=" + path
+	case path != "":
 		return nil, fmt.Errorf("%w: %s takes no path", ErrRequest, op)
 	}
 	if p.method == http.MethodGet && len(body) > 0 {
@@ -139,11 +178,11 @@ func (s *Service) Passthrough(ctx context.Context, op, mailbox, path string, hea
 	if len(body) > 0 && !json.Valid(body) {
 		return nil, fmt.Errorf("%w: %s body is not JSON", ErrRequest, op)
 	}
-	h, err := signatureHeaders(headers)
+	h, err := authHeaders(p.auth, op, headers)
 	if err != nil {
 		return nil, err
 	}
-	if h.Get(HeaderKeyID) != mailbox {
+	if p.auth != authNone && h.Get(HeaderKeyID) != mailbox {
 		if p.perMailbox {
 			return nil, fmt.Errorf("%w: %s must equal the mailbox", ErrRequest, HeaderKeyID)
 		}
@@ -165,9 +204,42 @@ func (s *Service) Passthrough(ctx context.Context, op, mailbox, path string, hea
 	return ReadResult(resp)
 }
 
-// signatureHeaders checks the app's headers: only the forwarded names, each
-// once, with a short printable value, and a timestamp, nonce and signature.
-func signatureHeaders(in map[string]string) (http.Header, error) {
+// authHeaders checks the app's headers for an op authorized by a: none for a
+// challenge; otherwise only the forwarded names, each once, with a short
+// printable value, a timestamp and nonce, and a signature exactly when the op
+// is signed. A passkey op takes no entitlement either.
+func authHeaders(a auth, op string, in map[string]string) (http.Header, error) {
+	if a == authNone {
+		if len(in) > 0 {
+			return nil, fmt.Errorf("%w: %s is unsigned and takes no headers", ErrRequest, op)
+		}
+		return http.Header{}, nil
+	}
+	h, err := forwardedHeaders(in)
+	if err != nil {
+		return nil, err
+	}
+	required := []string{HeaderTimestamp, HeaderNonce}
+	if a == authSigned {
+		required = append(required, HeaderSignature)
+	} else {
+		for _, name := range []string{HeaderSignature, HeaderEntitlement} {
+			if h.Get(name) != "" {
+				return nil, fmt.Errorf("%w: %s is approved by a passkey and takes no %s", ErrRequest, op, name)
+			}
+		}
+	}
+	for _, name := range required {
+		if h.Get(name) == "" {
+			return nil, fmt.Errorf("%w: %s needs %s", ErrRequest, op, name)
+		}
+	}
+	return h, nil
+}
+
+// forwardedHeaders checks that in names only forwarded headers, each once,
+// with a short printable value.
+func forwardedHeaders(in map[string]string) (http.Header, error) {
 	h := http.Header{}
 	for name, value := range in {
 		canon := http.CanonicalHeaderKey(name)
@@ -181,11 +253,6 @@ func signatureHeaders(in map[string]string) (http.Header, error) {
 			return nil, fmt.Errorf("%w: header %q must be 1 to %d printable ASCII characters", ErrRequest, canon, maxHeaderValue)
 		}
 		h.Set(canon, value)
-	}
-	for _, name := range []string{HeaderTimestamp, HeaderNonce, HeaderSignature} {
-		if h.Get(name) == "" {
-			return nil, fmt.Errorf("%w: the request isn't signed: %s is missing", ErrRequest, name)
-		}
 	}
 	return h, nil
 }

@@ -58,7 +58,7 @@ request. If the closed app were malicious, these are the channels it could use:
 | `fount.feedback_report` | Fount | Up to 2 MiB, including free text. The app draws the preview you see |
 | Python package tunnel | PyPI, GitHub | Paths on those hosts. `github.com` serves any repository, so a path can carry data |
 | `fount.license_validate` | Fount | 64 characters of key per request |
-| Mail writes (`mailbox`, `address`, `routing`, `renew`) | The edge enclave, and its storage for what it keeps | Up to 64 KiB of signed JSON. The edge refuses anything that isn't a valid request |
+| Mail writes (`mailbox`, `address`, `routing`, `renew`, `recover`, `pause`) and challenges (`recover_challenge`, `pause_challenge`) | The edge enclave, and its storage for what it keeps | Up to 64 KiB of signed JSON, or of public keys and a passkey assertion. The edge refuses anything that isn't a valid request |
 | `latex.file` | The bundle's host | Which of about 130,000 files it asks for, and in what order |
 | Mail sender checks | Google and Cloudflare DNS | Nothing. The verifier asks for the DKIM, DMARC and SPF records of mail you received, at most 48 questions per message. Senders choose those names |
 
@@ -109,7 +109,10 @@ Mail with no recorded address (format 1, or format 2 without one) reports SPF
 
 The app signs its own writes, which carry only public keys, and the broker
 carries them unchanged ([`mail/passthrough.go`](internal/mail/passthrough.go)).
-Each op has a fixed method and path, because the signature covers both:
+Recovery and pause aren't signed by a device key: the mailbox's passkey approves
+them with an assertion over a challenge the edge mints for that mailbox and that
+change. Each op has a fixed method and path, because the signature or the
+challenge covers both:
 
 | Op | Sends | `mailbox` |
 |---|---|---|
@@ -118,11 +121,17 @@ Each op has a fixed method and path, because the signature covers both:
 | `address` | `POST /address` | the parent mailbox |
 | `routing` | `PUT /routing` | the mailbox |
 | `renew` | `POST /entitlement` | the mailbox |
+| `recover_challenge` | `GET /recover/{mailbox}?kc={path}`, `path` 64 lowercase hex | the mailbox |
+| `recover` | `POST /recover` | the mailbox |
+| `pause_challenge` | `GET /pause/{mailbox}?paused={path}`, `path` `true` or `false` | the mailbox |
+| `pause` | `POST /pause` | the mailbox |
 | `license_entitlement` | `api.fount.sh` `POST license/entitlement` | empty |
 
 The frame's `headers` may hold only `Fount-Key-Id`, `Fount-Timestamp`,
 `Fount-Nonce`, `Fount-Signature` and `Fount-Entitlement`, and `Fount-Key-Id`
-must equal `mailbox`. Edge ops go only to the attested edge. For
+must equal `mailbox`. The two challenges take no headers. `recover` and `pause`
+take `Fount-Key-Id`, `Fount-Timestamp` and `Fount-Nonce`, and no signature or
+entitlement. Edge ops go only to the attested edge. For
 `license_entitlement` the app sends `{"deviceKey":"<base64>"}` and the broker
 adds the `license` credential it holds. Every op answers with a result
 `{"status":N,"body":<reply JSON>,"retry_after":N}`, 4xx included; an `error`
