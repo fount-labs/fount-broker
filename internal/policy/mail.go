@@ -22,6 +22,8 @@ var MailDNSResolvers = []string{
 	"https://cloudflare-dns.com/dns-query",
 }
 
+var licenseKeyPattern = regexp.MustCompile(`^[A-Z0-9-]{1,64}$`)
+
 // LicenseEntitlement asks Fount's API for a mail entitlement bound to a device
 // key, for the mail op license_entitlement. The broker fills in licenseKey from
 // the license credential, so the app sends only deviceKey. It isn't in

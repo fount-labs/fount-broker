@@ -25,7 +25,7 @@ refused before anything is sent.
 | `tinfoil.websearch`, `tinfoil.webfetch` | Fount's proxy, to Tinfoil's attested web enclave, then Exa | to the enclave |
 | `openrouter.chat_completions` | Fount's proxy, to OpenRouter | no |
 | `openrouter_byok.chat_completions` | OpenRouter, with the user's key | no |
-| `fount.license_validate`, `fount.feedback_report` | `api.fount.sh` | no |
+| `fount.device_credential`, `fount.device_renew`, `fount.devices`, `fount.device_revoke`, `fount.feedback_report` | `api.fount.sh` | no |
 | `models.*`, `vision.*`, `latex.index` | S3, Hugging Face and the Tectonic bundle host, pinned by SHA-256 | no body |
 | `latex.file` | The Tectonic bundle host, one file's byte range from the embedded index | no body |
 | `updates.*` | Fount's GitHub releases. Fount verifies each package's signature, not the broker | no body |
@@ -57,7 +57,8 @@ request. If the closed app were malicious, these are the channels it could use:
 | `openrouter.chat_completions`, `openrouter_byok.chat_completions` | OpenRouter and the model provider | The whole request |
 | `fount.feedback_report` | Fount | Up to 2 MiB, including free text. The app draws the preview you see |
 | Python package tunnel | PyPI, GitHub | Paths on those hosts. `github.com` serves any repository, so a path can carry data |
-| `fount.license_validate` | Fount | 64 characters of key per request |
+| `fount.device_credential`, `fount.device_renew` | Fount | A sign-in code of up to 128 URL-safe characters, and a device id, timestamp and signature in fixed shapes. The app signs these itself; the broker forwards the three `Fount-*` headers and the body unchanged and adds no bearer |
+| `fount.devices`, `fount.device_revoke` | Fount | Which of 2^128 device ids to revoke |
 | Mail writes (`mailbox`, `address`, `routing`, `renew`, `recover`, `pause`) and challenges (`recover_challenge`, `pause_challenge`) | The edge enclave, and its storage for what it keeps | Up to 64 KiB of signed JSON, or of public keys and a passkey assertion. The edge refuses anything that isn't a valid request |
 | `latex.file` | The bundle's host | Which of about 130,000 files it asks for, and in what order |
 | Mail sender checks | Google and Cloudflare DNS | Nothing. The verifier asks for the DKIM, DMARC and SPF records of mail you received, at most 48 questions per message. Senders choose those names |

@@ -268,12 +268,12 @@ func TestBodyIsCheckedBeforeSending(t *testing.T) {
 		return nil, errors.New("unreachable")
 	}})
 	for i, body := range []string{
-		`{"licenseKey":"FOUNT-AAAA","extra":1}`,
-		`{"licenseKey":"has spaces"}`,
+		`{"code":"abc","extra":1}`,
+		`{"code":"has spaces"}`,
 		`{}`,
 		`[1]`,
 	} {
-		s.send(fmt.Sprintf(`{"kind":"fetch","id":%d,"dest":"fount.license_validate"}`, i+1), body)
+		s.send(fmt.Sprintf(`{"kind":"fetch","id":%d,"dest":"fount.device_credential","headers":%s}`, i+1, signedHeaders), body)
 		if r, _ := s.recv(); r.Kind != protocol.KindError || r.Code != protocol.CodePolicy {
 			t.Errorf("body %s: got %+v, want a policy error", body, r)
 		}
