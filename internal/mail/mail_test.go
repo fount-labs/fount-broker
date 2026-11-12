@@ -405,3 +405,34 @@ func signRecord(t *testing.T, v *vectors, rec GapRecord) string {
 	t.Fatalf("no seed for boot %s", rec.BootID)
 	return ""
 }
+
+func TestListPassesPausedOnlyWhenTheEdgeSaysIt(t *testing.T) {
+	ctx := context.Background()
+	for _, paused := range []bool{true, false} {
+		s, f, _, v := newService(t)
+		f.paused = paused
+		lr, err := s.Handle(ctx, OpList, v.MailboxID, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := lr.(map[string]any)["paused"]; !ok || got != paused {
+			t.Fatalf("paused %v: list gave %v (present %v)", paused, got, ok)
+		}
+	}
+
+	s, f, _, v := newService(t)
+	f.override = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method != "GET" || r.URL.Path != "/mail" {
+			return false
+		}
+		w.Write([]byte(`{"messages":[]}`))
+		return true
+	}
+	lr, err := s.Handle(ctx, OpList, v.MailboxID, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := lr.(map[string]any)["paused"]; ok {
+		t.Fatalf("an edge that didn't say gave paused %v", got)
+	}
+}
