@@ -111,32 +111,35 @@ type Listed struct {
 // million; a listing that long is broken.
 const maxListed = 1 << 19
 
-func (c *client) list(ctx context.Context, k *Keys) ([]Listed, error) {
+// Listing is GET /mail's answer.
+type Listing struct {
+	Messages []Listed `json:"messages"`
+	// Whether the worker is paused (edge v0.2.1). Mail still arrives and is fetched while
+	// it is. Nil when the edge didn't say, which the app treats as paused.
+	Paused *bool `json:"paused,omitempty"`
+}
+
+func (c *client) list(ctx context.Context, k *Keys) (Listing, error) {
 	body, _, err := c.call(ctx, k, "GET", "/mail", "", 64<<20)
 	if err != nil {
-		return nil, err
+		return Listing{}, err
 	}
-	var out struct {
-		Messages []Listed `json:"messages"`
-		// Whether the worker is paused (edge v0.2.1). Mail still arrives and is fetched while
-		// it is; the app doesn't read it yet, so it isn't passed on.
-		Paused bool `json:"paused"`
-	}
+	var out Listing
 	if err := strictJSON(body, &out); err != nil {
-		return nil, err
+		return Listing{}, err
 	}
 	if len(out.Messages) > maxListed {
-		return nil, fmt.Errorf("%w: %d messages listed", ErrEdge, len(out.Messages))
+		return Listing{}, fmt.Errorf("%w: %d messages listed", ErrEdge, len(out.Messages))
 	}
 	for _, m := range out.Messages {
 		if !validHex(m.ID, 16) {
-			return nil, fmt.Errorf("%w: listed id %q isn't an edge id", ErrEdge, m.ID)
+			return Listing{}, fmt.Errorf("%w: listed id %q isn't an edge id", ErrEdge, m.ID)
 		}
 	}
 	if out.Messages == nil {
 		out.Messages = []Listed{}
 	}
-	return out.Messages, nil
+	return out, nil
 }
 
 func (c *client) get(ctx context.Context, k *Keys, id string) ([]byte, error) {

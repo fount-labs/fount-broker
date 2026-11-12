@@ -156,10 +156,11 @@ func cloneLedger(l *Ledger) *Ledger {
 }
 
 func (s *Service) list(ctx context.Context, k *Keys, mailbox string) (any, error) {
-	msgs, err := s.c.list(ctx, k)
+	l, err := s.c.list(ctx, k)
 	if err != nil {
 		return nil, err
 	}
+	msgs := l.Messages
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delivered := map[string]bool{}
@@ -173,7 +174,11 @@ func (s *Service) list(ctx context.Context, k *Keys, mailbox string) (any, error
 		}
 	}
 	s.pending[mailbox] = p
-	return map[string]any{"messages": msgs}, nil
+	out := map[string]any{"messages": msgs}
+	if l.Paused != nil {
+		out["paused"] = *l.Paused
+	}
+	return out, nil
 }
 
 // Message is one verified, decrypted message with its sender check.
