@@ -330,8 +330,9 @@ func (b *Broker) mail(ctx context.Context, req protocol.Request, body []byte) {
 }
 
 // licenseEntitlement asks Fount's API for an entitlement bound to the app's
-// device key, with the license the broker holds. Any status comes back as a
-// mail.Result, so the app can tell a refused license from a broken network.
+// device key, with the license credential the broker holds as Bearer. Any
+// status comes back as a mail.Result, so the app can tell a refused credential
+// from a broken network.
 func (b *Broker) licenseEntitlement(ctx context.Context, req protocol.Request, body []byte) {
 	if req.Mailbox != "" || req.Path != "" || req.Headers != nil {
 		b.fail(req.ID, protocol.CodeBadRequest, errors.New("license_entitlement takes no mailbox, path or headers"))
@@ -343,12 +344,12 @@ func (b *Broker) licenseEntitlement(ctx context.Context, req protocol.Request, b
 		return
 	}
 	dest := policy.LicenseEntitlement
-	license, ok := b.vault.Get(policy.CredentialLicense)
+	secret, ok := b.vault.Get(dest.Credential)
 	if !ok {
-		b.fail(req.ID, protocol.CodeCredential, errors.New("license_entitlement needs the license credential"))
+		b.fail(req.ID, protocol.CodeCredential, fmt.Errorf("license_entitlement needs the %s credential", dest.Credential))
 		return
 	}
-	out, err := json.Marshal(map[string]string{"licenseKey": license, "deviceKey": deviceKey})
+	out, err := json.Marshal(map[string]string{"deviceKey": deviceKey})
 	if err != nil {
 		b.fail(req.ID, protocol.CodeBadRequest, err)
 		return
@@ -362,7 +363,7 @@ func (b *Broker) licenseEntitlement(ctx context.Context, req protocol.Request, b
 		b.fail(req.ID, protocol.CodePolicy, fmt.Errorf("route %q is not available", dest.Route))
 		return
 	}
-	resp, err := rt.Do(ctx, route.Request{Dest: dest, Accept: "application/json", Body: out})
+	resp, err := rt.Do(ctx, route.Request{Dest: dest, Accept: "application/json", Body: out, Credential: secret})
 	if err != nil {
 		b.failSend(ctx, req.ID, err)
 		return

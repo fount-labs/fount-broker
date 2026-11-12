@@ -268,7 +268,8 @@ func printable(s string) bool {
 
 // LicenseEntitlementRequest reads the app's license_entitlement body,
 // {"deviceKey":"<std base64 Ed25519 public key>"}, and returns the key as sent.
-// The broker adds the license itself.
+// A licenseKey field is refused; the broker sends its license credential as
+// Bearer instead.
 func LicenseEntitlementRequest(body []byte) (string, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()

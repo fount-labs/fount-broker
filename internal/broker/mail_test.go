@@ -213,7 +213,7 @@ func TestMailLicenseEntitlement(t *testing.T) {
 	if r, _ := s.recv(); r.Kind != protocol.KindError || r.Code != protocol.CodeCredential || len(got) != 0 {
 		t.Fatalf("without a license: %+v", r)
 	}
-	s.send(`{"kind":"credential","id":2,"name":"license"}`, "LIC-123")
+	s.send(`{"kind":"credential","id":2,"name":"license"}`, deviceCredential)
 	s.recv()
 
 	s.send(fmt.Sprintf(frame, 3), body)
@@ -221,12 +221,15 @@ func TestMailLicenseEntitlement(t *testing.T) {
 	if r.Kind != protocol.KindResult || string(out) != `{"status":200,"body":{"entitlement":"tok"}}` {
 		t.Fatalf("got %+v %s", r, out)
 	}
-	var sent map[string]string
-	json.Unmarshal(got[0].Body, &sent)
 	d := got[0].Dest
-	if d.Route != policy.RouteFountAPI || d.Method != "POST" || d.Path != "license/entitlement" || got[0].Credential != "" ||
-		sent["licenseKey"] != "LIC-123" || sent["deviceKey"] != deviceKey || len(sent) != 2 {
-		t.Fatalf("route got %+v %s", got[0], got[0].Body)
+	if d.Route != policy.RouteFountAPI || d.Method != "POST" || d.Path != "mail/entitlement" || d.Credential != policy.CredentialLicense {
+		t.Fatalf("dest %+v", d)
+	}
+	if got[0].Credential != deviceCredential {
+		t.Fatal("the Bearer isn't the stored license credential")
+	}
+	if string(got[0].Body) != body {
+		t.Fatalf("body sent %s, want %s", got[0].Body, body)
 	}
 
 	status, reply = 403, `{"error":"no_access","reason":"expired"}`
@@ -237,10 +240,11 @@ func TestMailLicenseEntitlement(t *testing.T) {
 
 	for i, f := range []struct{ header, body string }{
 		{fmt.Sprintf(frame, 10), `{"deviceKey":"` + deviceKey + `","licenseKey":"OTHER-1"}`},
-		{fmt.Sprintf(frame, 11), `{}`},
-		{`{"kind":"mail","id":12,"op":"license_entitlement","mailbox":"` + strings.Repeat("ab", 32) + `"}`, body},
-		{`{"kind":"mail","id":13,"op":"license_entitlement","path":"../license/validate"}`, body},
-		{`{"kind":"mail","id":14,"op":"license_entitlement","headers":{"Fount-Nonce":"n"}}`, body},
+		{fmt.Sprintf(frame, 11), `{"licenseKey":"OTHER-1"}`},
+		{fmt.Sprintf(frame, 12), `{}`},
+		{`{"kind":"mail","id":13,"op":"license_entitlement","mailbox":"` + strings.Repeat("ab", 32) + `"}`, body},
+		{`{"kind":"mail","id":14,"op":"license_entitlement","path":"../license/validate"}`, body},
+		{`{"kind":"mail","id":15,"op":"license_entitlement","headers":{"Fount-Nonce":"n"}}`, body},
 	} {
 		s.send(f.header, f.body)
 		if r, _ := s.recv(); r.Kind != protocol.KindError || r.Code != protocol.CodeBadRequest {
@@ -256,18 +260,26 @@ func TestMailLicenseEntitlement(t *testing.T) {
 	}
 }
 
-func TestMailLicenseEntitlementRefusesABadLicense(t *testing.T) {
-	called := false
-	s := start(t, &fakeRoute{do: func(context.Context, route.Request) (*http.Response, error) {
-		called = true
-		return nil, errors.New("unreachable")
+func TestMailLicenseEntitlementBodyHasNoLicenseKey(t *testing.T) {
+	var got []route.Request
+	s := start(t, &fakeRoute{do: func(_ context.Context, r route.Request) (*http.Response, error) {
+		got = append(got, r)
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
 	}}, func(b *Broker) { b.Mail = &fakeMail{} })
-	s.send(`{"kind":"credential","id":1,"name":"license"}`, "not a license\n")
-	s.recv()
-	s.send(`{"kind":"mail","id":2,"op":"license_entitlement"}`, `{"deviceKey":"`+base64.StdEncoding.EncodeToString(make([]byte, 32))+`"}`)
-	r, _ := s.recv()
-	if r.Kind != protocol.KindError || r.Code != protocol.CodePolicy || called || strings.Contains(r.Message, "not a license") {
-		t.Fatalf("got %+v", r)
+	s.vault.Set(policy.CredentialLicense, deviceCredential)
+	s.send(`{"kind":"mail","id":1,"op":"license_entitlement"}`, `{"deviceKey":"`+base64.StdEncoding.EncodeToString(make([]byte, 32))+`"}`)
+	if r, _ := s.recv(); r.Kind != protocol.KindResult || len(got) != 1 {
+		t.Fatalf("got %+v, %d calls", r, len(got))
+	}
+	var sent map[string]any
+	if err := json.Unmarshal(got[0].Body, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := sent["licenseKey"]; ok || len(sent) != 1 {
+		t.Fatalf("body sent %s, want deviceKey only", got[0].Body)
+	}
+	if strings.Contains(string(got[0].Body), deviceCredential) {
+		t.Fatal("the credential leaked into the body")
 	}
 }
 

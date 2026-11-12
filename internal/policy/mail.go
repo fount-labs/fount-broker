@@ -22,19 +22,17 @@ var MailDNSResolvers = []string{
 	"https://cloudflare-dns.com/dns-query",
 }
 
-var licenseKeyPattern = regexp.MustCompile(`^[A-Z0-9-]{1,64}$`)
-
 // LicenseEntitlement asks Fount's API for a mail entitlement bound to a device
-// key, for the mail op license_entitlement. The broker fills in licenseKey from
-// the license credential, so the app sends only deviceKey. It isn't in
-// Destinations: the app can't name it as a fetch.
+// key, for the mail op license_entitlement. The broker sends the license
+// credential (a device credential) as Bearer; the body is only deviceKey. It
+// isn't in Destinations: the app can't name it as a fetch.
 var LicenseEntitlement = Destination{
 	Route:       RouteFountAPI,
 	Method:      "POST",
-	Path:        "license/entitlement",
+	Path:        "mail/entitlement",
 	ContentType: "application/json",
-	Body: Body{Kind: BodyObject, MaxBytes: 256, Fields: map[string]Field{
-		"licenseKey": {Types: []string{"string"}, Required: true, Pattern: licenseKeyPattern},
-		"deviceKey":  {Types: []string{"string"}, Required: true, Pattern: regexp.MustCompile(`^[A-Za-z0-9+/]{43}=$`)},
+	Credential:  CredentialLicense,
+	Body: Body{Kind: BodyObject, MaxBytes: 128, Fields: map[string]Field{
+		"deviceKey": {Types: []string{"string"}, Required: true, Pattern: regexp.MustCompile(`^[A-Za-z0-9+/]{43}=$`)},
 	}},
 }

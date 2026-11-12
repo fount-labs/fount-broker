@@ -126,15 +126,16 @@ challenge covers both:
 | `recover` | `POST /recover` | the mailbox |
 | `pause_challenge` | `GET /pause/{mailbox}?paused={path}`, `path` `true` or `false` | the mailbox |
 | `pause` | `POST /pause` | the mailbox |
-| `license_entitlement` | `api.fount.sh` `POST license/entitlement` | empty |
+| `license_entitlement` | `api.fount.sh` `POST mail/entitlement` | empty |
 
 The frame's `headers` may hold only `Fount-Key-Id`, `Fount-Timestamp`,
 `Fount-Nonce`, `Fount-Signature` and `Fount-Entitlement`, and `Fount-Key-Id`
 must equal `mailbox`. The two challenges take no headers. `recover` and `pause`
 take `Fount-Key-Id`, `Fount-Timestamp` and `Fount-Nonce`, and no signature or
 entitlement. Edge ops go only to the attested edge. For
-`license_entitlement` the app sends `{"deviceKey":"<base64>"}` and the broker
-adds the `license` credential it holds. Every op answers with a result
+`license_entitlement` the app sends `{"deviceKey":"<base64>"}` and nothing
+else (a `licenseKey` is refused); the broker sends the `license` credential it
+holds, a device credential, as Bearer. Every op answers with a result
 `{"status":N,"body":<reply JSON>,"retry_after":N}`, 4xx included; an `error`
 frame means the broker itself failed. Bodies and replies are capped at 64 KiB.
 

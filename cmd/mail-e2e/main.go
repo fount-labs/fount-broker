@@ -232,7 +232,7 @@ func main() {
 	rep, body = s.send(protocol.Request{Kind: protocol.KindMail, Op: "list", Mailbox: other}, nil)
 	show("list (no keys)", rep, body)
 
-	// Entitlement through the broker, which adds the license.
+	// Entitlement through the broker, which sends the license credential as Bearer.
 	devKey, _ := json.Marshal(map[string]string{"deviceKey": base64.StdEncoding.EncodeToString(signing.Public().(ed25519.PublicKey))})
 	rep, body = s.send(protocol.Request{Kind: protocol.KindMail, Op: "license_entitlement"}, devKey)
 	var lr struct {
