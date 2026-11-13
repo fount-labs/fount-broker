@@ -25,10 +25,18 @@ import (
 //	1: senderLen(2) sender | recipientLen(2) recipient | raw message
 //	2: senderLen(2) sender | recipientLen(2) recipient |
 //	   clientIPFrom(1) | clientIPLen(1) clientIP | heloLen(1) helo | raw message
+//	3: version 2's fields, then checkLen(4) check | raw message
+//
+// The check in version 3 is the edge's sender check (edgecheck.go), made when the
+// message arrived. It needs no signature of its own: the object's signature
+// covers the ciphertext, and the AAD binds the version.
 const (
-	objMagic  = "FME1"
-	objV1     = 1
-	objV2     = 2
+	objMagic = "FME1"
+	objV1    = 1
+	objV2    = 2
+	objV3    = 3
+	// MaxCheck bounds the edge's sender check in a version 3 object.
+	MaxCheck  = 256 << 10
 	hpkeInfo  = "fount-mail-edge/v1/stored-message"
 	headerLen = 4 + 1 + 6 + 16 + 32 + 32 + 8 + 8 + 16
 	// MaxObject bounds a fetched object: a 25 MB message with its envelope and
@@ -70,7 +78,7 @@ func ParseObject(b []byte) (*Object, error) {
 	if string(b[:4]) != objMagic {
 		return nil, fmt.Errorf("%w: bad magic", ErrMalformed)
 	}
-	if b[4] != objV1 && b[4] != objV2 {
+	if b[4] < objV1 || b[4] > objV3 {
 		return nil, fmt.Errorf("%w: version %d", ErrMalformed, b[4])
 	}
 	if !bytes.Equal(b[5:11], suite) {
@@ -154,39 +162,44 @@ var (
 	ErrDecrypt      = errors.New("mail: message does not decrypt")
 )
 
+// Opened is a decrypted object. Check is the edge's sender check, undecoded,
+// for version 3, and nil before.
+type Opened struct {
+	Envelope Envelope
+	Check    []byte
+	Raw      []byte
+}
+
 // Open decrypts a verified object with the address's keys.
-func (o *Object) Open(k *Keys) (Envelope, []byte, error) {
+func (o *Object) Open(k *Keys) (Opened, error) {
 	if !bytes.Equal(o.MailboxID, k.MailboxID) {
-		return Envelope{}, nil, ErrWrongMailbox
+		return Opened{}, ErrWrongMailbox
 	}
 	sum := sha256.Sum256(k.Decryption.PublicKey().Bytes())
 	if !bytes.Equal(o.PubKeyHash, sum[:]) {
-		return Envelope{}, nil, ErrWrongKey
+		return Opened{}, ErrWrongKey
 	}
 	priv, err := hpke.NewDHKEMPrivateKey(k.Decryption)
 	if err != nil {
-		return Envelope{}, nil, err
+		return Opened{}, err
 	}
 	r, err := hpke.NewRecipient(o.Enc, priv, hpke.HKDFSHA256(), hpke.AES128GCM(), []byte(hpkeInfo))
 	if err != nil {
-		return Envelope{}, nil, fmt.Errorf("%w: %v", ErrDecrypt, err)
+		return Opened{}, fmt.Errorf("%w: %v", ErrDecrypt, err)
 	}
 	pt, err := r.Open(o.header, o.Ct)
 	if err != nil {
-		return Envelope{}, nil, fmt.Errorf("%w: %v", ErrDecrypt, err)
+		return Opened{}, fmt.Errorf("%w: %v", ErrDecrypt, err)
 	}
-	env, raw, err := unframe(o.Version, pt)
-	if err != nil {
-		return Envelope{}, nil, err
-	}
-	return env, raw, nil
+	return unframe(o.Version, pt)
 }
 
-// unframe splits a decrypted plaintext of the given version into its envelope
-// and raw message, refusing anything the edge would not have written.
-func unframe(version byte, p []byte) (Envelope, []byte, error) {
-	bad := func(why string) (Envelope, []byte, error) {
-		return Envelope{}, nil, fmt.Errorf("%w: bad envelope framing: %s", ErrMalformed, why)
+// unframe splits a decrypted plaintext of the given version into its envelope,
+// the edge's check and the raw message, refusing anything the edge would not
+// have written.
+func unframe(version byte, p []byte) (Opened, error) {
+	bad := func(why string) (Opened, error) {
+		return Opened{}, fmt.Errorf("%w: bad envelope framing: %s", ErrMalformed, why)
 	}
 	str16 := func() (string, bool) {
 		if len(p) < 2 {
@@ -222,8 +235,8 @@ func unframe(version byte, p []byte) (Envelope, []byte, error) {
 	}
 	switch version {
 	case objV1:
-		return env, p, nil
-	case objV2:
+		return Opened{Envelope: env, Raw: p}, nil
+	case objV2, objV3:
 	default:
 		return bad(fmt.Sprintf("version %d", version))
 	}
@@ -253,5 +266,16 @@ func unframe(version byte, p []byte) (Envelope, []byte, error) {
 	if env.HELO, ok = str8(maxHELO); !ok {
 		return bad("HELO")
 	}
-	return env, p, nil
+	if version == objV2 {
+		return Opened{Envelope: env, Raw: p}, nil
+	}
+	if len(p) < 4 {
+		return bad("check length")
+	}
+	n := binary.BigEndian.Uint32(p)
+	if n > MaxCheck || uint64(len(p)-4) < uint64(n) {
+		return bad("check length")
+	}
+	check := p[4 : 4+n]
+	return Opened{Envelope: env, Check: check, Raw: p[4+n:]}, nil
 }

@@ -10,10 +10,18 @@ import (
 const (
 	v2Layout     = "\x00\x05a@b.c" + "\x00\x06w@f.co" + "\x01" + "\x09192.0.2.1" + "\x06mx.b.c" + "RAW"
 	v2LayoutNone = "\x00\x00" + "\x00\x06w@f.co" + "\x00" + "\x00" + "\x00"
+	// v3Layout is v2's envelope, then a 2-byte check, then the message.
+	v3Layout = "\x00\x05a@b.c" + "\x00\x06w@f.co" + "\x01" + "\x09192.0.2.1" + "\x06mx.b.c" + "\x00\x00\x00\x02{}" + "RAW"
 )
 
+// unframeEnv is unframe for the v1/v2 tests, which have no check.
+func unframeEnv(version byte, p []byte) (Envelope, []byte, error) {
+	o, err := unframe(version, p)
+	return o.Envelope, o.Raw, err
+}
+
 func TestUnframeV2Layout(t *testing.T) {
-	env, raw, err := unframe(objV2, []byte(v2Layout))
+	env, raw, err := unframeEnv(objV2, []byte(v2Layout))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +29,7 @@ func TestUnframeV2Layout(t *testing.T) {
 	if env != want || string(raw) != "RAW" {
 		t.Fatalf("got %+v %q", env, raw)
 	}
-	env, raw, err = unframe(objV2, []byte(v2LayoutNone))
+	env, raw, err = unframeEnv(objV2, []byte(v2LayoutNone))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +37,7 @@ func TestUnframeV2Layout(t *testing.T) {
 		t.Fatalf("empty framing: %+v %q", env, raw)
 	}
 	// The same bytes read as version 1 end the envelope after the recipient.
-	env, raw, err = unframe(objV1, []byte(v2Layout))
+	env, raw, err = unframeEnv(objV1, []byte(v2Layout))
 	if err != nil || (env != Envelope{Sender: "a@b.c", Recipient: "w@f.co"}) || string(raw) != v2Layout[15:] {
 		t.Fatalf("v1: %+v %q %v", env, raw, err)
 	}
@@ -54,22 +62,48 @@ func TestUnframeRefusesBadV2(t *testing.T) {
 		"sender overruns":     "\x00\x09a@b.c",
 		"recipient missing":   "\x00\x05a@b.c",
 	} {
-		if _, _, err := unframe(objV2, []byte(p)); err == nil {
+		if _, _, err := unframeEnv(objV2, []byte(p)); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}
 	long := head + "\x01" + ip8("2001:db8::25") + "\xff" + strings.Repeat("h", 255) + "RAW"
-	if env, raw, err := unframe(objV2, []byte(long)); err != nil || len(env.HELO) != 255 || string(raw) != "RAW" {
+	if env, raw, err := unframeEnv(objV2, []byte(long)); err != nil || len(env.HELO) != 255 || string(raw) != "RAW" {
 		t.Fatalf("255-byte HELO: %v", err)
 	}
-	if _, _, err := unframe(3, []byte(v2Layout)); err == nil {
-		t.Fatal("unframe accepted version 3")
+	if _, _, err := unframeEnv(4, []byte(v2Layout)); err == nil {
+		t.Fatal("unframe accepted version 4")
+	}
+}
+
+func TestUnframeV3Layout(t *testing.T) {
+	o, err := unframe(objV3, []byte(v3Layout))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Envelope{Sender: "a@b.c", Recipient: "w@f.co", ClientIP: "192.0.2.1", ClientIPSource: ClientIPGatewayProxy, HELO: "mx.b.c"}
+	if o.Envelope != want || string(o.Check) != "{}" || string(o.Raw) != "RAW" {
+		t.Fatalf("got %+v", o)
+	}
+	head := v3Layout[:len(v3Layout)-len("\x00\x00\x00\x02{}RAW")]
+	for name, p := range map[string]string{
+		"no check length":  head,
+		"short length":     head + "\x00\x00",
+		"check overruns":   head + "\x00\x00\x00\x09{}",
+		"check over limit": head + "\x00\x04\x00\x01" + strings.Repeat(" ", MaxCheck+1),
+	} {
+		if _, err := unframe(objV3, []byte(p)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// A v2 plaintext read as v3 takes "RAW" as a check length and refuses it.
+	if _, err := unframe(objV3, []byte(v2Layout)); err == nil {
+		t.Fatal("v2 bytes read as v3")
 	}
 }
 
 func TestParseObjectVersions(t *testing.T) {
 	obj := loadVectors(t).Messages[0].Object
-	for version, ok := range map[byte]bool{0: false, 1: true, 2: true, 3: false, 0xff: false} {
+	for version, ok := range map[byte]bool{0: false, 1: true, 2: true, 3: true, 4: false, 0xff: false} {
 		b := slices.Clone(obj)
 		b[4] = version
 		o, err := ParseObject(b)

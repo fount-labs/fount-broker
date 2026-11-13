@@ -36,12 +36,14 @@ func FuzzUnframe(f *testing.F) {
 	f.Add(byte(2), []byte(v2Layout))
 	f.Add(byte(2), []byte(v2LayoutNone))
 	f.Add(byte(1), []byte("\x00\x05a@b.c\x00\x06w@f.coRAW"))
+	f.Add(byte(3), []byte(v3Layout))
 	f.Fuzz(func(t *testing.T, version byte, p []byte) {
-		env, raw, err := unframe(version, p)
+		o, err := unframe(version, p)
 		if err != nil {
 			return
 		}
-		if version != objV1 && version != objV2 {
+		env, raw := o.Envelope, o.Raw
+		if version < objV1 || version > objV3 {
 			t.Fatalf("accepted version %d", version)
 		}
 		if (env.ClientIP == "") != (env.ClientIPSource == "") || len(env.ClientIP) > maxClientIP || len(env.HELO) > maxHELO {
@@ -52,7 +54,10 @@ func FuzzUnframe(f *testing.F) {
 				t.Fatalf("accepted client IP %q", env.ClientIP)
 			}
 		}
-		if len(raw) > len(p) {
+		if (version == objV3) != (o.Check != nil) || len(o.Check) > MaxCheck {
+			t.Fatalf("check %d bytes at version %d", len(o.Check), version)
+		}
+		if len(raw)+len(o.Check) > len(p) {
 			t.Fatalf("raw longer than the plaintext")
 		}
 	})

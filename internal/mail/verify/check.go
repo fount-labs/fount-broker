@@ -6,6 +6,10 @@
 // here, so a bug in one can crash or mislead this process but can't reach the
 // broker's keys or the network.
 //
+// Mail stored in format 3 carries the check the edge made on arrival
+// (mail.EdgeCheck), and the broker uses that instead. This verifier is the
+// fallback for format 1 and 2 objects.
+//
 // It reports facts. The app decides whether a message counts as a request,
 // using these and what only it knows: the paired owners, the d= stored at
 // pairing, and the signatures it has already seen.

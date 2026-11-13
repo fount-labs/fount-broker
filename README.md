@@ -107,7 +107,16 @@ For each message it:
 3. Records its sequence number. With the edge's signed gap records, every
    number must be a message, an expired message or a voided one. A number
    that's none of these is withheld mail, and one used twice is an anomaly.
-4. Runs the sender verifier on it.
+4. Takes the sender check the edge sealed into it, or runs the sender verifier
+   on it if there's none.
+
+From stored-message format 3 the edge checks the sender when the message
+arrives and seals the result inside the message, under the same signature
+([`mail/edgecheck.go`](internal/mail/edgecheck.go)). The broker decodes it
+strictly and confirms it was made over the message it opened. Its fields are the
+verifier's, without SPF and DMARC. A check the edge couldn't make, or one that
+doesn't hold, fails the message's check. The local verifier below is the
+fallback for format 1 and 2 messages, stored before the edge checked senders.
 
 The verifier ([`internal/mail/verify`](internal/mail/verify/check.go)) is this
 binary run as `fount-broker mail-verify`, a fresh process for each message,
@@ -178,6 +187,7 @@ In the broker:
 | HTTP responses | Every destination. Bodies are streamed to the app unread | `net/http` |
 | Device API JSON: listings, gap pages, boot records. Write replies are only checked to be JSON, then passed to the app | The edge | [`mail/edge.go`](internal/mail/edge.go) |
 | Stored messages and gap records, checked against a boot's key | The edge and its storage | [`mail/object.go`](internal/mail/object.go), [`mail/record.go`](internal/mail/record.go) |
+| The edge's sender check inside a format 3 message, after its signature verifies | The edge | [`mail/edgecheck.go`](internal/mail/edgecheck.go) |
 | The `+tag` of a stored message's envelope recipient | Senders | [`mail/replytoken.go`](internal/mail/replytoken.go) |
 | The verifier's frames | The verifier | [`mail/verify/process.go`](internal/mail/verify/process.go) |
 
@@ -215,6 +225,11 @@ go run ./cmd/fount-coordinator --dir /tmp/coordinator -- scripts/dev-runner.sh
 
 Its parse surfaces are the JobSpec and the API's small JSON bodies. File
 contents, and everything a runner leaves behind, are stored as opaque bytes.
+
+The coordinator never checks a sender itself. It reads mail only in format 3,
+takes who sent it from the edge's sealed check, and decides what the mail may do
+with [`mail/decide`](internal/mail/decide/decide.go), the same rules as the
+app's. The email itself goes to an intake runner as opaque bytes.
 
 ## Verifying the broker in your copy of Fount
 
