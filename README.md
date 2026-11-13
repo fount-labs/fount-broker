@@ -59,7 +59,7 @@ request. If the closed app were malicious, these are the channels it could use:
 | Python package tunnel | PyPI, GitHub | Paths on those hosts. `github.com` serves any repository, so a path can carry data |
 | `fount.device_credential`, `fount.device_renew` | Fount | A sign-in code of up to 128 URL-safe characters, and a device id, timestamp and signature in fixed shapes. The app signs these itself; the broker forwards the three `Fount-*` headers and the body unchanged and adds no bearer |
 | `fount.devices`, `fount.device_revoke` | Fount | Which of 2^128 device ids to revoke |
-| Mail writes (`mailbox`, `address`, `routing`, `renew`, `recover`, `pause`) and challenges (`recover_challenge`, `pause_challenge`) | The edge enclave, and its storage for what it keeps | Up to 64 KiB of signed JSON, or of public keys and a passkey assertion. The edge refuses anything that isn't a valid request |
+| Mail writes (`mailbox`, `address`, `routing`, `connect`, `renew`, `recover`, `pause`) and challenges (`recover_challenge`, `pause_challenge`) | The edge enclave, and its storage for what it keeps | Up to 64 KiB of signed JSON, or of public keys and a passkey assertion. The edge refuses anything that isn't a valid request |
 | `latex.file` | The bundle's host | Which of about 130,000 files it asks for, and in what order |
 | Mail sender checks | Google and Cloudflare DNS | Nothing. The verifier asks for the DKIM, DMARC and SPF records of mail you received, at most 48 questions per message. Senders choose those names |
 
@@ -121,6 +121,7 @@ challenge covers both:
 | `mailbox` | `POST /mailbox` | empty |
 | `address` | `POST /address` | the parent mailbox |
 | `routing` | `PUT /routing` | the mailbox |
+| `connect` | `POST /connect` | the mailbox |
 | `renew` | `POST /entitlement` | the mailbox |
 | `recover_challenge` | `GET /recover/{mailbox}?kc={path}`, `path` 64 lowercase hex | the mailbox |
 | `recover` | `POST /recover` | the mailbox |
