@@ -20,9 +20,12 @@ const (
 	OpGaps    = "gaps"    // GET /gaps, verified, and the ledger's view of what's missing
 	OpLedger  = "ledger"  // the mailbox's ledger, for the app to save
 	OpRestore = "restore" // body: a ledger the app saved earlier
+	// OpReplyToken mints a thread's reply token from the address's key. Path:
+	// the thread handle, 10 lowercase hex characters. It contacts no edge.
+	OpReplyToken = "reply_token"
 )
 
-var Ops = []string{OpList, OpGet, OpDelete, OpGaps, OpLedger, OpRestore}
+var Ops = []string{OpList, OpGet, OpDelete, OpGaps, OpLedger, OpRestore, OpReplyToken}
 
 var (
 	// ErrRequest is a request the mail route doesn't allow.
@@ -86,8 +89,8 @@ func (s *Service) SetKeys(body []byte) error {
 	return nil
 }
 
-// Handle runs one op. path is the edge id for get and delete, and empty
-// otherwise; body is the saved ledger for restore, and empty otherwise.
+// Handle runs one op. path is the edge id for get and delete, the thread
+// handle for reply_token, and empty otherwise; body is the saved ledger for restore, and empty otherwise.
 func (s *Service) Handle(ctx context.Context, op, mailbox, path string, body []byte) (any, error) {
 	if !slices.Contains(Ops, op) {
 		return nil, fmt.Errorf("%w: unknown op %q", ErrRequest, op)
@@ -95,8 +98,11 @@ func (s *Service) Handle(ctx context.Context, op, mailbox, path string, body []b
 	if !validHex(mailbox, 32) {
 		return nil, fmt.Errorf("%w: mailbox must be 64 lowercase hex characters", ErrRequest)
 	}
-	takesID := op == OpGet || op == OpDelete
-	if takesID != (path != "") || takesID && !validHex(path, 16) {
+	if op == OpReplyToken {
+		if !validHex(path, replyHandleLen) || len(body) > 0 {
+			return nil, fmt.Errorf("%w: reply_token takes a 10-hex-character thread handle as its path and no body", ErrRequest)
+		}
+	} else if takesID := op == OpGet || op == OpDelete; takesID != (path != "") || takesID && !validHex(path, 16) {
 		return nil, fmt.Errorf("%w: %s takes %s", ErrRequest, op, map[bool]string{true: "a 32-hex-character edge id as its path", false: "no path"}[takesID])
 	}
 	if (op == OpRestore) != (len(body) > 0) {
@@ -107,6 +113,12 @@ func (s *Service) Handle(ctx context.Context, op, mailbox, path string, body []b
 		return nil, ErrNoKeys
 	}
 	switch op {
+	case OpReplyToken:
+		tok, err := MintReplyToken(k, path)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"token": tok}, nil
 	case OpList:
 		return s.list(ctx, k, mailbox)
 	case OpGet:
@@ -201,6 +213,9 @@ type Message struct {
 	// Quarantined is true once the sender check has failed MaxFailures times.
 	// The app holds the message and shows it; it never counts as a request.
 	Quarantined bool `json:"quarantined"`
+	// ReplyToken is the envelope recipient's +tag, checked against this
+	// address's key. Absent when the recipient has no tag.
+	ReplyToken *ReplyToken `json:"reply_token,omitempty"`
 
 	Ledger Summary `json:"ledger"`
 }
@@ -236,6 +251,7 @@ func (s *Service) get(ctx context.Context, k *Keys, mailbox, id string) (any, er
 	m := &Message{
 		ID: id, Mailbox: mailbox, Sequence: o.Sequence, ReceivedAt: o.ReceivedAt.UnixMilli(),
 		Boot: hexOf(o.BootID), Envelope: env, Raw: body, BootAttested: bk.Attested,
+		ReplyToken: CheckReplyToken(k, env.Recipient),
 	}
 
 	s.mu.Lock()

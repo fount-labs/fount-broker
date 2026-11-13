@@ -79,6 +79,23 @@ mailbox: `list`, `get`, `delete`, `gaps`, and `ledger` and `restore` for the
 sequence ledger. The broker signs each of these reads with the address's key,
 so the app never builds one. Writes are different; see the end of this section.
 
+`reply_token` takes a thread handle, 10 lowercase hex characters, as its path
+and returns `{"token":"<16 characters>"}`. It contacts no edge. The app sends
+from `<local>+<token>@fountbox.com`, so a reply carries the token in its
+recipient. The token is the handle and a MAC under a key derived from the
+address's signing key ([`mail/replytoken.go`](internal/mail/replytoken.go)):
+
+```
+k     = HKDF-SHA256(ikm = Ed25519 seed, salt = none, info = "fount reply token v1"), 32 bytes
+mac   = HMAC-SHA256(k, "reply" || handle)[:5]
+token = lowercase unpadded base32 of handle || mac
+```
+
+`get` reads the `+tag` of the envelope recipient the edge sealed, never a
+header, and adds `"reply_token":{"handle":"<10 hex>"}` when the token is this
+address's, or `"reply_token":{"error":"…"}` when it is malformed or doesn't
+match. Case is ignored. A recipient with no tag has no `reply_token`.
+
 For each message it:
 
 1. Checks the edge's signature against the boot that signed it, from
@@ -155,11 +172,13 @@ In the broker:
 | Request bodies with a schema | The app | [`policy/body.go`](internal/policy/body.go) |
 | Mail write frames: signature headers, handle names, `deviceKey` | The app | [`mail/passthrough.go`](internal/mail/passthrough.go) |
 | `mail_keys` and saved ledgers | The app | [`mail/keys.go`](internal/mail/keys.go), [`mail/service.go`](internal/mail/service.go) |
+| Reply token handles | The app | [`mail/replytoken.go`](internal/mail/replytoken.go) |
 | CONNECT requests | Local processes with the tunnel password | [`proxy`](internal/proxy/proxy.go) |
 | Attestation documents | Tinfoil enclaves | `tinfoil-go` |
 | HTTP responses | Every destination. Bodies are streamed to the app unread | `net/http` |
 | Device API JSON: listings, gap pages, boot records. Write replies are only checked to be JSON, then passed to the app | The edge | [`mail/edge.go`](internal/mail/edge.go) |
 | Stored messages and gap records, checked against a boot's key | The edge and its storage | [`mail/object.go`](internal/mail/object.go), [`mail/record.go`](internal/mail/record.go) |
+| The `+tag` of a stored message's envelope recipient | Senders | [`mail/replytoken.go`](internal/mail/replytoken.go) |
 | The verifier's frames | The verifier | [`mail/verify/process.go`](internal/mail/verify/process.go) |
 
 In the verifier, which holds nothing worth taking:

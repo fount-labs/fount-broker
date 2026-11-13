@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -80,6 +81,28 @@ func FuzzParseKeys(f *testing.F) {
 			if hex.EncodeToString(k.MailboxID) != id || k.Signing == nil || k.Decryption == nil {
 				t.Fatalf("bad entry for %s", id)
 			}
+		}
+	})
+}
+
+// The +tag parser must never panic, and must accept only a token minted with
+// the right key.
+func FuzzCheckReplyToken(f *testing.F) {
+	k := &Keys{Signing: ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))}
+	tok, _ := MintReplyToken(k, "0123456789")
+	f.Add("worker+" + tok + "@fountbox.com")
+	f.Add("worker@fountbox.com")
+	f.Add("a+b+c@d@e")
+	f.Fuzz(func(t *testing.T, recipient string) {
+		r := CheckReplyToken(k, recipient)
+		if r == nil || r.Handle == "" {
+			return
+		}
+		if !validHex(r.Handle, replyHandleLen) || r.Error != "" {
+			t.Fatalf("checked as %+v", r)
+		}
+		if want, _ := MintReplyToken(k, r.Handle); !strings.Contains(strings.ToLower(recipient), "+"+want) {
+			t.Fatalf("accepted %q", recipient)
 		}
 	})
 }
