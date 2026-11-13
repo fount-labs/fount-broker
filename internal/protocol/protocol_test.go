@@ -18,6 +18,7 @@ func TestDecodeRequest(t *testing.T) {
 		`{"kind":"mail","id":9,"op":"handle","mailbox":"","path":"smithcpa","headers":{"Fount-Nonce":"n"}}`,
 		`{"kind":"mail","id":10,"op":"license_entitlement","mailbox":""}`,
 		`{"kind":"mail","id":11,"op":"mailbox"}`,
+		`{"kind":"fetch","id":12,"dest":"fount.device_renew","headers":{"Fount-Device":"ab"}}`,
 	}
 	for _, h := range valid {
 		if _, err := DecodeRequest([]byte(h)); err != nil {
@@ -38,10 +39,11 @@ func TestDecodeRequest(t *testing.T) {
 		"status no route":    `{"kind":"status","id":1}`,
 		"mail no op":         `{"kind":"mail","id":1,"mailbox":"ab"}`,
 		"mail bad headers":   `{"kind":"mail","id":1,"op":"routing","headers":{"Fount-Nonce":1}}`,
-		"fetch with headers": `{"kind":"fetch","id":1,"dest":"x","headers":{}}`,
 		"status headers":     `{"kind":"status","id":1,"route":"tinfoil","headers":{"a":"b"}}`,
 		"mail with dest":     `{"kind":"mail","id":1,"op":"list","mailbox":"ab","dest":"x"}`,
 		"fetch with op":      `{"kind":"fetch","id":1,"dest":"x","op":"list"}`,
+		"fetch with mailbox": `{"kind":"fetch","id":1,"dest":"x","mailbox":"ab"}`,
+		"fetch bad headers":  `{"kind":"fetch","id":1,"dest":"x","headers":{"Fount-Device":1}}`,
 		"credential mailbox": `{"kind":"credential","id":1,"name":"license","mailbox":"ab"}`,
 		"not json":           `kind=fetch`,
 		"wrong type":         `{"kind":"cancel","id":"1"}`,

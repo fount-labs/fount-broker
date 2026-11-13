@@ -185,6 +185,14 @@ func (b *Broker) fetch(ctx context.Context, req protocol.Request, body []byte) {
 		}
 		dest.Path += req.Path
 	}
+	if req.Headers != nil || dest.ClientHeaders != nil {
+		headers, err := clientHeaders(dest, req.Headers)
+		if err != nil {
+			b.fail(req.ID, protocol.CodePolicy, fmt.Errorf("%s: %w", req.Dest, err))
+			return
+		}
+		dest.Headers = headers
+	}
 	if err := dest.Body.Check(body); err != nil {
 		b.fail(req.ID, protocol.CodePolicy, fmt.Errorf("%s: %w", req.Dest, err))
 		return
@@ -234,6 +242,33 @@ func (b *Broker) fetch(ctx context.Context, req protocol.Request, body []byte) {
 		}
 	}
 	_ = b.reply(protocol.Reply{Kind: protocol.KindEnd, ID: req.ID}, nil)
+}
+
+// clientHeaders checks the app's headers against dest.ClientHeaders, which it
+// must send all of and nothing else, and returns dest's headers with them
+// added. The destination's own headers win.
+func clientHeaders(dest policy.Destination, sent map[string]string) (map[string]string, error) {
+	if len(dest.ClientHeaders) == 0 {
+		return nil, errors.New("this destination takes no headers")
+	}
+	for name := range sent {
+		if dest.ClientHeaders[name] == nil {
+			return nil, fmt.Errorf("header %q is not allowed", name)
+		}
+	}
+	headers := make(map[string]string, len(dest.ClientHeaders)+len(dest.Headers))
+	for name, pattern := range dest.ClientHeaders {
+		v, ok := sent[name]
+		if !ok {
+			return nil, fmt.Errorf("header %q is required", name)
+		}
+		if !pattern.MatchString(v) {
+			return nil, fmt.Errorf("header %q doesn't match %s", name, pattern)
+		}
+		headers[name] = v
+	}
+	maps.Copy(headers, dest.Headers)
+	return headers, nil
 }
 
 func (b *Broker) stream(id uint64, resp *http.Response, digest hash.Hash) error {
@@ -295,8 +330,9 @@ func (b *Broker) mail(ctx context.Context, req protocol.Request, body []byte) {
 }
 
 // licenseEntitlement asks Fount's API for an entitlement bound to the app's
-// device key, with the license the broker holds. Any status comes back as a
-// mail.Result, so the app can tell a refused license from a broken network.
+// device key, with the license credential the broker holds as Bearer. Any
+// status comes back as a mail.Result, so the app can tell a refused credential
+// from a broken network.
 func (b *Broker) licenseEntitlement(ctx context.Context, req protocol.Request, body []byte) {
 	if req.Mailbox != "" || req.Path != "" || req.Headers != nil {
 		b.fail(req.ID, protocol.CodeBadRequest, errors.New("license_entitlement takes no mailbox, path or headers"))
@@ -308,12 +344,12 @@ func (b *Broker) licenseEntitlement(ctx context.Context, req protocol.Request, b
 		return
 	}
 	dest := policy.LicenseEntitlement
-	license, ok := b.vault.Get(policy.CredentialLicense)
+	secret, ok := b.vault.Get(dest.Credential)
 	if !ok {
-		b.fail(req.ID, protocol.CodeCredential, errors.New("license_entitlement needs the license credential"))
+		b.fail(req.ID, protocol.CodeCredential, fmt.Errorf("license_entitlement needs the %s credential", dest.Credential))
 		return
 	}
-	out, err := json.Marshal(map[string]string{"licenseKey": license, "deviceKey": deviceKey})
+	out, err := json.Marshal(map[string]string{"deviceKey": deviceKey})
 	if err != nil {
 		b.fail(req.ID, protocol.CodeBadRequest, err)
 		return
@@ -327,7 +363,7 @@ func (b *Broker) licenseEntitlement(ctx context.Context, req protocol.Request, b
 		b.fail(req.ID, protocol.CodePolicy, fmt.Errorf("route %q is not available", dest.Route))
 		return
 	}
-	resp, err := rt.Do(ctx, route.Request{Dest: dest, Accept: "application/json", Body: out})
+	resp, err := rt.Do(ctx, route.Request{Dest: dest, Accept: "application/json", Body: out, Credential: secret})
 	if err != nil {
 		b.failSend(ctx, req.ID, err)
 		return

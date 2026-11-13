@@ -25,7 +25,7 @@ refused before anything is sent.
 | `tinfoil.websearch`, `tinfoil.webfetch` | Fount's proxy, to Tinfoil's attested web enclave, then Exa | to the enclave |
 | `openrouter.chat_completions` | Fount's proxy, to OpenRouter | no |
 | `openrouter_byok.chat_completions` | OpenRouter, with the user's key | no |
-| `fount.license_validate`, `fount.feedback_report` | `api.fount.sh` | no |
+| `fount.device_credential`, `fount.device_renew`, `fount.devices`, `fount.device_revoke`, `fount.feedback_report` | `api.fount.sh` | no |
 | `models.*`, `vision.*`, `latex.index` | S3, Hugging Face and the Tectonic bundle host, pinned by SHA-256 | no body |
 | `latex.file` | The Tectonic bundle host, one file's byte range from the embedded index | no body |
 | `updates.*` | Fount's GitHub releases. Fount verifies each package's signature, not the broker | no body |
@@ -57,8 +57,9 @@ request. If the closed app were malicious, these are the channels it could use:
 | `openrouter.chat_completions`, `openrouter_byok.chat_completions` | OpenRouter and the model provider | The whole request |
 | `fount.feedback_report` | Fount | Up to 2 MiB, including free text. The app draws the preview you see |
 | Python package tunnel | PyPI, GitHub | Paths on those hosts. `github.com` serves any repository, so a path can carry data |
-| `fount.license_validate` | Fount | 64 characters of key per request |
-| Mail writes (`mailbox`, `address`, `routing`, `renew`, `recover`, `pause`) and challenges (`recover_challenge`, `pause_challenge`) | The edge enclave, and its storage for what it keeps | Up to 64 KiB of signed JSON, or of public keys and a passkey assertion. The edge refuses anything that isn't a valid request |
+| `fount.device_credential`, `fount.device_renew` | Fount | A sign-in code of up to 128 URL-safe characters, and a device id, timestamp and signature in fixed shapes. The app signs these itself; the broker forwards the three `Fount-*` headers and the body unchanged and adds no bearer |
+| `fount.devices`, `fount.device_revoke` | Fount | Which of 2^128 device ids to revoke |
+| Mail writes (`mailbox`, `address`, `routing`, `connect`, `renew`, `recover`, `pause`) and challenges (`recover_challenge`, `pause_challenge`) | The edge enclave, and its storage for what it keeps | Up to 64 KiB of signed JSON, or of public keys and a passkey assertion. The edge refuses anything that isn't a valid request |
 | `latex.file` | The bundle's host | Which of about 130,000 files it asks for, and in what order |
 | Mail sender checks | Google and Cloudflare DNS | Nothing. The verifier asks for the DKIM, DMARC and SPF records of mail you received, at most 48 questions per message. Senders choose those names |
 
@@ -120,20 +121,22 @@ challenge covers both:
 | `mailbox` | `POST /mailbox` | empty |
 | `address` | `POST /address` | the parent mailbox |
 | `routing` | `PUT /routing` | the mailbox |
+| `connect` | `POST /connect` | the mailbox |
 | `renew` | `POST /entitlement` | the mailbox |
 | `recover_challenge` | `GET /recover/{mailbox}?kc={path}`, `path` 64 lowercase hex | the mailbox |
 | `recover` | `POST /recover` | the mailbox |
 | `pause_challenge` | `GET /pause/{mailbox}?paused={path}`, `path` `true` or `false` | the mailbox |
 | `pause` | `POST /pause` | the mailbox |
-| `license_entitlement` | `api.fount.sh` `POST license/entitlement` | empty |
+| `license_entitlement` | `api.fount.sh` `POST mail/entitlement` | empty |
 
 The frame's `headers` may hold only `Fount-Key-Id`, `Fount-Timestamp`,
 `Fount-Nonce`, `Fount-Signature` and `Fount-Entitlement`, and `Fount-Key-Id`
 must equal `mailbox`. The two challenges take no headers. `recover` and `pause`
 take `Fount-Key-Id`, `Fount-Timestamp` and `Fount-Nonce`, and no signature or
 entitlement. Edge ops go only to the attested edge. For
-`license_entitlement` the app sends `{"deviceKey":"<base64>"}` and the broker
-adds the `license` credential it holds. Every op answers with a result
+`license_entitlement` the app sends `{"deviceKey":"<base64>"}` and nothing
+else (a `licenseKey` is refused); the broker sends the `license` credential it
+holds, a device credential, as Bearer. Every op answers with a result
 `{"status":N,"body":<reply JSON>,"retry_after":N}`, 4xx included; an `error`
 frame means the broker itself failed. Bodies and replies are capped at 64 KiB.
 

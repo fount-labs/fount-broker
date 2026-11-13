@@ -44,8 +44,16 @@ func TestDestinationsAreWellFormed(t *testing.T) {
 		if strings.Contains(d.Path, "..") || strings.HasPrefix(d.Path, "/") {
 			t.Errorf("%s: path %q escapes its base", name, d.Path)
 		}
-		if d.Method == "GET" && d.Body.Kind != BodyNone {
-			t.Errorf("%s: a GET must not take a body", name)
+		if (d.Method == "GET" || d.Method == "DELETE") && d.Body.Kind != BodyNone {
+			t.Errorf("%s: a %s must not take a body", name, d.Method)
+		}
+		if d.ClientHeaders != nil && (d.Credential != CredentialNone || d.Route != RouteFountAPI) {
+			t.Errorf("%s: a request the app signs goes to Fount's API with no bearer", name)
+		}
+		for h, p := range d.ClientHeaders {
+			if p == nil || !strings.HasPrefix(p.String(), "^") || !strings.HasSuffix(p.String(), "$") {
+				t.Errorf("%s: header %s must be matched in full", name, h)
+			}
 		}
 	}
 }
@@ -159,5 +167,61 @@ func TestConvertFileIsOneSealedVLMUploadUpTo16MiB(t *testing.T) {
 	}
 	if err := d.Body.Check(make([]byte, 16<<20+1)); err == nil {
 		t.Fatal("a body over 16 MiB passed")
+	}
+}
+
+func TestDeviceDestinations(t *testing.T) {
+	for _, c := range []struct {
+		name, method, path string
+		signed             bool
+		credential         Credential
+	}{
+		{"fount.device_credential", "POST", "device/credential", true, CredentialNone},
+		{"fount.device_renew", "POST", "device/renew", true, CredentialNone},
+		{"fount.devices", "GET", "devices", false, CredentialLicense},
+		{"fount.device_revoke", "DELETE", "devices/", false, CredentialLicense},
+	} {
+		d, ok := Destinations[c.name]
+		if !ok {
+			t.Fatalf("%s is missing", c.name)
+		}
+		if d.Route != RouteFountAPI || d.Method != c.method || d.Path != c.path || d.Credential != c.credential || (d.ClientHeaders != nil) != c.signed {
+			t.Errorf("%s: %s %s %s credential %q signed %v", c.name, d.Route, d.Method, d.Path, d.Credential, d.ClientHeaders != nil)
+		}
+	}
+	if _, ok := Destinations["fount.license_validate"]; ok {
+		t.Error("fount.license_validate is replaced by fount.device_renew")
+	}
+
+	code := Destinations["fount.device_credential"].Body
+	for body, ok := range map[string]bool{
+		`{"code":"Xy-9_abc"}`:                         true,
+		`{"code":"` + strings.Repeat("a", 128) + `"}`: true,
+		`{"code":"` + strings.Repeat("a", 129) + `"}`: false,
+		`{"code":""}`:             false,
+		`{"code":"a b"}`:          false,
+		`{"code":1}`:              false,
+		`{"code":"a","name":"x"}`: false,
+		``:                        false,
+	} {
+		if err := code.Check([]byte(body)); (err == nil) != ok {
+			t.Errorf("device_credential body %q: %v, want ok=%v", body, err, ok)
+		}
+	}
+	if err := Destinations["fount.device_renew"].Body.Check([]byte("{}")); err == nil {
+		t.Error("device_renew took a body")
+	}
+
+	revoke := Destinations["fount.device_revoke"].PathPattern
+	for path, ok := range map[string]bool{
+		"0123456789abcdef0123456789abcdef":  true,
+		"0123456789ABCDEF0123456789abcdef":  false,
+		"0123456789abcdef0123456789abcde":   false,
+		"0123456789abcdef0123456789abcdef0": false,
+		"":                                  false,
+	} {
+		if revoke.MatchString(path) != ok {
+			t.Errorf("revoke path %q: want ok=%v", path, ok)
+		}
 	}
 }

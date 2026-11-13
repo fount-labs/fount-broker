@@ -50,6 +50,10 @@ type Destination struct {
 	ContentType string
 	// Headers are sent as they are, after any the app's request sets.
 	Headers map[string]string
+	// ClientHeaders are headers the app must send with each request, every
+	// one of them, each value matching its pattern in full. A destination
+	// without them refuses any header from the app.
+	ClientHeaders map[string]*regexp.Regexp
 	// Body is what the request body may hold.
 	Body Body
 	// Credential is sent as a bearer token.
@@ -71,7 +75,7 @@ const (
 	// RouteTinfoilWebSearch is Tinfoil's web-search enclave, reached through
 	// Fount's proxy like the router.
 	RouteTinfoilWebSearch = "tinfoil_websearch"
-	// RouteFountAPI is Fount's license and feedback API.
+	// RouteFountAPI is Fount's account, device and feedback API.
 	RouteFountAPI = "fount_api"
 	// RouteFountProxy is Fount's model proxy, which adds Fount's provider key
 	// and meters usage against the license.
@@ -179,16 +183,46 @@ var Destinations = map[string]Destination{
 		Body:        Body{Kind: BodyOpaque},
 		Credential:  CredentialOpenRouterKey,
 	},
-	// Checks a license key and returns a signed certificate of its access.
-	"fount.license_validate": {
-		Route:       RouteFountAPI,
-		Method:      "POST",
-		Path:        "license/validate",
-		Accept:      []string{"", "application/json"},
-		ContentType: "application/json",
+	// Trades the one-time code from the browser sign-in for a device
+	// credential. The app signs the request with its device key; the broker
+	// forwards the signature headers and the body exactly as the app sent
+	// them, since the signature covers the body's SHA-256. No bearer: the
+	// device has no credential yet.
+	"fount.device_credential": {
+		Route:         RouteFountAPI,
+		Method:        "POST",
+		Path:          "device/credential",
+		Accept:        []string{"", "application/json"},
+		ContentType:   "application/json",
+		ClientHeaders: deviceSignatureHeaders,
 		Body: Body{Kind: BodyObject, MaxBytes: 256, Fields: map[string]Field{
-			"licenseKey": {Types: []string{"string"}, Required: true, Pattern: licenseKeyPattern},
+			"code": {Types: []string{"string"}, Required: true, Pattern: regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)},
 		}},
+	},
+	// Trades the device's signature for a fresh device credential.
+	"fount.device_renew": {
+		Route:         RouteFountAPI,
+		Method:        "POST",
+		Path:          "device/renew",
+		Accept:        []string{"", "application/json"},
+		ClientHeaders: deviceSignatureHeaders,
+	},
+	// Lists the account's devices, with the device credential.
+	"fount.devices": {
+		Route:      RouteFountAPI,
+		Method:     "GET",
+		Path:       "devices",
+		Accept:     []string{"", "application/json"},
+		Credential: CredentialLicense,
+	},
+	// Revokes one of the account's devices by its id.
+	"fount.device_revoke": {
+		Route:       RouteFountAPI,
+		Method:      "DELETE",
+		Path:        "devices/",
+		PathPattern: deviceIDPattern,
+		Accept:      []string{"", "application/json"},
+		Credential:  CredentialLicense,
 	},
 	// A report the user writes and previews in the app before sending. A
 	// chat report includes the conversation it is about.
@@ -218,7 +252,18 @@ var Destinations = map[string]Destination{
 	},
 }
 
-var licenseKeyPattern = regexp.MustCompile(`^[A-Z0-9-]{1,64}$`)
+// deviceIDPattern is a device id: the first 16 bytes of SHA-256 of the
+// device's public key, in lowercase hex.
+var deviceIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// deviceSignatureHeaders are the headers of a device-signed request: the
+// device id, the Unix time in seconds, and an Ed25519 signature (64 bytes,
+// unpadded base64url, so its last character carries 2 bits).
+var deviceSignatureHeaders = map[string]*regexp.Regexp{
+	"Fount-Device":    deviceIDPattern,
+	"Fount-Timestamp": regexp.MustCompile(`^[1-9][0-9]{0,11}$`),
+	"Fount-Signature": regexp.MustCompile(`^[A-Za-z0-9_-]{85}[AQgw]$`),
+}
 
 // fetchURLPattern is an https URL with no user info or whitespace.
 var fetchURLPattern = regexp.MustCompile(`^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/\S*)?$`)

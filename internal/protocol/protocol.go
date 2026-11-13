@@ -4,6 +4,7 @@
 //
 //	{"kind":"fetch","id":N,"dest":"tinfoil.chat_completions","accept":"text/event-stream"}  body: opaque request
 //	{"kind":"fetch","id":N,"dest":"updates.package","path":"v1.2.3/Fount_1.2.3_aarch64.app.tar.gz"}
+//	{"kind":"fetch","id":N,"dest":"fount.device_renew","headers":{"Fount-Signature":"…"}}
 //	{"kind":"cancel","id":N}
 //	{"kind":"credential","id":N,"name":"license"}  body: the secret
 //	{"kind":"status","id":N,"route":"tinfoil"}
@@ -65,8 +66,9 @@ type Request struct {
 	// Op and Mailbox name a mail operation and the mailbox, by hex id, it acts on.
 	Op      string `json:"op,omitempty"`
 	Mailbox string `json:"mailbox,omitempty"`
-	// Headers are a pre-signed mail op's signature headers. Package mail
-	// says which it forwards; only mail requests may carry them.
+	// Headers are a pre-signed request's signature headers, on a mail op or
+	// a fetch. Package mail says which a mail op forwards, and the policy
+	// which a destination takes.
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
@@ -132,7 +134,7 @@ func DecodeRequest(header []byte) (Request, error) {
 	mail := r.Op != "" || r.Mailbox != "" || r.Headers != nil
 	switch r.Kind {
 	case KindFetch:
-		extra = mail || r.Name != "" || r.Route != "" || r.Dest == ""
+		extra = r.Op != "" || r.Mailbox != "" || r.Name != "" || r.Route != "" || r.Dest == ""
 	case KindCancel:
 		extra = mail || r.Dest != "" || r.Accept != "" || r.Path != "" || r.Name != "" || r.Route != ""
 	case KindCredential:

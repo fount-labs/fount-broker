@@ -25,6 +25,7 @@ const (
 	OpMailbox            = "mailbox"           // POST /mailbox
 	OpAddress            = "address"           // POST /address
 	OpRouting            = "routing"           // PUT /routing
+	OpConnect            = "connect"           // POST /connect
 	OpRenew              = "renew"             // POST /entitlement
 	OpRecoverChallenge   = "recover_challenge" // GET /recover/{mailbox}?kc={path}
 	OpRecover            = "recover"           // POST /recover
@@ -66,6 +67,7 @@ var passOps = map[string]passOp{
 	OpMailbox: {method: http.MethodPost, path: "/mailbox"},
 	OpAddress: {method: http.MethodPost, path: "/address", perMailbox: true},
 	OpRouting: {method: http.MethodPut, path: "/routing", perMailbox: true},
+	OpConnect: {method: http.MethodPost, path: "/connect", perMailbox: true},
 	OpRenew:   {method: http.MethodPost, path: "/entitlement", perMailbox: true},
 	OpRecoverChallenge: {method: http.MethodGet, path: "/recover/", perMailbox: true, auth: authNone,
 		query: "kc", valid: func(v string) bool { return validHex(v, 32) }},
@@ -268,7 +270,8 @@ func printable(s string) bool {
 
 // LicenseEntitlementRequest reads the app's license_entitlement body,
 // {"deviceKey":"<std base64 Ed25519 public key>"}, and returns the key as sent.
-// The broker adds the license itself.
+// A licenseKey field is refused; the broker sends its license credential as
+// Bearer instead.
 func LicenseEntitlementRequest(body []byte) (string, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()

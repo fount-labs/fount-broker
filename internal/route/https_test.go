@@ -1,8 +1,13 @@
 package route
 
 import (
+	"bytes"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"github.com/fount-labs/fount-broker/internal/policy"
 )
 
 func TestRedirectPolicy(t *testing.T) {
@@ -14,7 +19,7 @@ func TestRedirectPolicy(t *testing.T) {
 		return r
 	}
 	first := get("https://github.com/fount-labs/fount/releases/latest/download/latest.json")
-	post, _ := http.NewRequest(http.MethodPost, "https://api.fount.sh/license/validate", nil)
+	post, _ := http.NewRequest(http.MethodPost, "https://api.fount.sh/device/renew", nil)
 
 	follow := redirectPolicy([]string{"github.com", "release-assets.githubusercontent.com"})
 	if err := follow(get("https://release-assets.githubusercontent.com/a"), []*http.Request{first}); err != nil {
@@ -40,5 +45,33 @@ func TestRedirectPolicy(t *testing.T) {
 	}
 	if err := redirectPolicy(nil)(get("https://github.com/a"), []*http.Request{first}); err != http.ErrUseLastResponse {
 		t.Errorf("route without redirect hosts: got %v, want the 3xx returned as is", err)
+	}
+}
+
+func TestHTTPSSendsTheBodyAndHeadersItIsGiven(t *testing.T) {
+	var method, path, auth, contentType string
+	var header http.Header
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path, auth, contentType, header = r.Method, r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("Content-Type"), r.Header
+		body, _ = io.ReadAll(r.Body)
+	}))
+	defer srv.Close()
+
+	dest := policy.Destinations["fount.device_credential"]
+	dest.Headers = map[string]string{"Fount-Device": "d", "Fount-Timestamp": "1", "Fount-Signature": "s"}
+	sent := []byte("{ \"code\" :\t\"abc\" }")
+	resp, err := NewHTTPS(srv.URL+"/", nil).Do(t.Context(), Request{Dest: dest, Body: sent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if method != "POST" || path != "/device/credential" || auth != "" || contentType != "application/json" || !bytes.Equal(body, sent) {
+		t.Fatalf("server got %s %s auth %q type %q body %q", method, path, auth, contentType, body)
+	}
+	for k, v := range dest.Headers {
+		if got := header.Values(k); len(got) != 1 || got[0] != v {
+			t.Errorf("header %s: got %q, want %q", k, got, v)
+		}
 	}
 }
