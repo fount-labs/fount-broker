@@ -26,6 +26,7 @@ const (
 	OpAddress            = "address"           // POST /address
 	OpRouting            = "routing"           // PUT /routing
 	OpConnect            = "connect"           // POST /connect
+	OpSend               = "send"              // POST /send
 	OpRenew              = "renew"             // POST /entitlement
 	OpRecoverChallenge   = "recover_challenge" // GET /recover/{mailbox}?kc={path}
 	OpRecover            = "recover"           // POST /recover
@@ -60,6 +61,8 @@ type passOp struct {
 	// valid checks that value.
 	query string
 	valid func(string) bool
+	// maxBody bounds the request body. Zero means MaxPassBody.
+	maxBody int
 }
 
 var passOps = map[string]passOp{
@@ -68,6 +71,7 @@ var passOps = map[string]passOp{
 	OpAddress: {method: http.MethodPost, path: "/address", perMailbox: true},
 	OpRouting: {method: http.MethodPut, path: "/routing", perMailbox: true},
 	OpConnect: {method: http.MethodPost, path: "/connect", perMailbox: true},
+	OpSend:    {method: http.MethodPost, path: "/send", perMailbox: true, maxBody: MaxSendBody},
 	OpRenew:   {method: http.MethodPost, path: "/entitlement", perMailbox: true},
 	OpRecoverChallenge: {method: http.MethodGet, path: "/recover/", perMailbox: true, auth: authNone,
 		query: "kc", valid: func(v string) bool { return validHex(v, 32) }},
@@ -98,6 +102,9 @@ var forwarded = []string{HeaderKeyID, HeaderTimestamp, HeaderNonce, HeaderSignat
 const (
 	// MaxPassBody bounds a passthrough request and its reply.
 	MaxPassBody = 64 << 10
+	// MaxSendBody bounds a send request, which carries a whole message in
+	// base64. It is the edge's Device API body limit.
+	MaxSendBody = 1 << 20
 	// maxHeaderValue bounds one signature header. An entitlement token is the
 	// longest, well under this.
 	maxHeaderValue = 4 << 10
@@ -174,8 +181,12 @@ func (s *Service) Passthrough(ctx context.Context, op, mailbox, path string, hea
 	if p.method == http.MethodGet && len(body) > 0 {
 		return nil, fmt.Errorf("%w: %s takes no body", ErrRequest, op)
 	}
-	if len(body) > MaxPassBody {
-		return nil, fmt.Errorf("%w: body is over %d bytes", ErrRequest, MaxPassBody)
+	maxBody := p.maxBody
+	if maxBody == 0 {
+		maxBody = MaxPassBody
+	}
+	if len(body) > maxBody {
+		return nil, fmt.Errorf("%w: %s body is over %d bytes", ErrRequest, op, maxBody)
 	}
 	if len(body) > 0 && !json.Valid(body) {
 		return nil, fmt.Errorf("%w: %s body is not JSON", ErrRequest, op)
