@@ -200,6 +200,22 @@ scripts/build-release.sh v0.0.0   # writes dist/
 `FOUNT_BROKER_FOUNT_API` and `FOUNT_BROKER_MAIL_EDGE`. Release builds don't contain that code. The wire
 format is in [`internal/protocol`](internal/protocol/protocol.go).
 
+## Coordinator (in development)
+
+In Fount Cloud the broker's role grows into the coordinator
+([`internal/coordinator`](internal/coordinator/coordinator.go)): it holds each
+Cloud worker's data key and files, queues jobs, and hands each one to a runner
+with no network. It isn't in releases. The dev build keeps everything in one
+folder, serves an API with no authentication on loopback, and starts a command
+for each job:
+
+```sh
+go run ./cmd/fount-coordinator --dir /tmp/coordinator -- scripts/dev-runner.sh
+```
+
+Its parse surfaces are the JobSpec and the API's small JSON bodies. File
+contents, and everything a runner leaves behind, are stored as opaque bytes.
+
 ## Verifying the broker in your copy of Fount
 
 Each `v*` tag runs [`release.yml`](.github/workflows/release.yml), and Fount
