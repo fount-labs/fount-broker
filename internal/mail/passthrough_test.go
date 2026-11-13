@@ -1,6 +1,7 @@
 package mail
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -119,6 +120,7 @@ func TestPassthroughOps(t *testing.T) {
 		{OpAddress, testMailbox, "", "POST", "/address", "", `{"address":"tax.smithcpa@fountbox.com"}`},
 		{OpRouting, testMailbox, "", "PUT", "/routing", "", `{"version":2,"owners":["a"]}`},
 		{OpConnect, testMailbox, "", "POST", "/connect", "", `{"address":"w@fountbox.com","owner":"o@example.com"}`},
+		{OpSend, testMailbox, "", "POST", "/send", "", `{"message":"RnJvbTogdw=="}`},
 		{OpRenew, testMailbox, "", "POST", "/entitlement", "ent.token", `{}`},
 	}
 	for i, c := range cases {
@@ -300,6 +302,10 @@ func TestPassthroughRefusals(t *testing.T) {
 		"connect key mismatch":   {OpConnect, testMailbox, "", with(HeaderKeyID, strings.Repeat("11", 32)), "{}"},
 		"connect no key id":      {OpConnect, testMailbox, "", ok(), "{}"},
 		"connect path":           {OpConnect, testMailbox, "x", routing, "{}"},
+		"send key mismatch":      {OpSend, testMailbox, "", with(HeaderKeyID, strings.Repeat("11", 32)), "{}"},
+		"send no mailbox":        {OpSend, "", "", routing, "{}"},
+		"send path":              {OpSend, testMailbox, "x", routing, "{}"},
+		"send too big":           {OpSend, testMailbox, "", routing, `"` + strings.Repeat("a", MaxSendBody) + `"`},
 		"no signature":           {OpHandle, "", "x", without(HeaderSignature), ""},
 		"no nonce":               {OpHandle, "", "x", without(HeaderNonce), ""},
 		"no timestamp":           {OpHandle, "", "x", without(HeaderTimestamp), ""},
@@ -373,5 +379,21 @@ func TestLicenseEntitlementRequest(t *testing.T) {
 		if _, err := LicenseEntitlementRequest([]byte(body)); !errors.Is(err, ErrRequest) {
 			t.Errorf("%s: got %v", body, err)
 		}
+	}
+}
+
+func TestPassthroughSendCarriesAMessageOverMaxPassBody(t *testing.T) {
+	s, e, priv := passSetup(t)
+	body := []byte(`{"message":"` + strings.Repeat("A", MaxSendBody-20) + `"}`)
+	if len(body) <= MaxPassBody || len(body) > MaxSendBody {
+		t.Fatalf("body is %d bytes", len(body))
+	}
+	h := signed(priv, testMailbox, "POST", "/send", body, "")
+	res, err := s.Passthrough(context.Background(), OpSend, testMailbox, "", h, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != 200 || len(e.bodys) != 1 || !bytes.Equal(e.bodys[0], body) {
+		t.Fatalf("got %+v; edge got %d bytes", res, len(e.bodys[0]))
 	}
 }
