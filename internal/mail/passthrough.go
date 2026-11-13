@@ -25,6 +25,7 @@ const (
 	OpMailbox            = "mailbox"           // POST /mailbox
 	OpAddress            = "address"           // POST /address
 	OpRouting            = "routing"           // PUT /routing
+	OpConnect            = "connect"           // POST /connect
 	OpRenew              = "renew"             // POST /entitlement
 	OpRecoverChallenge   = "recover_challenge" // GET /recover/{mailbox}?kc={path}
 	OpRecover            = "recover"           // POST /recover
@@ -66,6 +67,7 @@ var passOps = map[string]passOp{
 	OpMailbox: {method: http.MethodPost, path: "/mailbox"},
 	OpAddress: {method: http.MethodPost, path: "/address", perMailbox: true},
 	OpRouting: {method: http.MethodPut, path: "/routing", perMailbox: true},
+	OpConnect: {method: http.MethodPost, path: "/connect", perMailbox: true},
 	OpRenew:   {method: http.MethodPost, path: "/entitlement", perMailbox: true},
 	OpRecoverChallenge: {method: http.MethodGet, path: "/recover/", perMailbox: true, auth: authNone,
 		query: "kc", valid: func(v string) bool { return validHex(v, 32) }},

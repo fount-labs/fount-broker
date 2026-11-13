@@ -118,6 +118,7 @@ func TestPassthroughOps(t *testing.T) {
 		{OpMailbox, "", "", "POST", "/mailbox", "ent.token", `{"handle":"smithcpa","decryption_key":"AAAA"}`},
 		{OpAddress, testMailbox, "", "POST", "/address", "", `{"address":"tax.smithcpa@fountbox.com"}`},
 		{OpRouting, testMailbox, "", "PUT", "/routing", "", `{"version":2,"owners":["a"]}`},
+		{OpConnect, testMailbox, "", "POST", "/connect", "", `{"address":"w@fountbox.com","owner":"o@example.com"}`},
 		{OpRenew, testMailbox, "", "POST", "/entitlement", "ent.token", `{}`},
 	}
 	for i, c := range cases {
@@ -296,6 +297,9 @@ func TestPassthroughRefusals(t *testing.T) {
 		"routing path":           {OpRouting, testMailbox, "x", routing, "{}"},
 		"routing not json":       {OpRouting, testMailbox, "", routing, "{"},
 		"routing too big":        {OpRouting, testMailbox, "", routing, `"` + strings.Repeat("a", MaxPassBody) + `"`},
+		"connect key mismatch":   {OpConnect, testMailbox, "", with(HeaderKeyID, strings.Repeat("11", 32)), "{}"},
+		"connect no key id":      {OpConnect, testMailbox, "", ok(), "{}"},
+		"connect path":           {OpConnect, testMailbox, "x", routing, "{}"},
 		"no signature":           {OpHandle, "", "x", without(HeaderSignature), ""},
 		"no nonce":               {OpHandle, "", "x", without(HeaderNonce), ""},
 		"no timestamp":           {OpHandle, "", "x", without(HeaderTimestamp), ""},
