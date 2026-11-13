@@ -9,6 +9,7 @@
 //	{"kind":"credential","id":N,"name":"license"}  body: the secret
 //	{"kind":"status","id":N,"route":"tinfoil"}
 //	{"kind":"mail","id":N,"op":"get","mailbox":"<64 hex>","path":"<edge id>"}  body: empty, or a saved ledger for op restore
+//	{"kind":"mail","id":N,"op":"reply_token","mailbox":"<64 hex>","path":"<10 hex thread handle>"}
 //	{"kind":"mail","id":N,"op":"routing","mailbox":"<64 hex, or empty>","headers":{"Fount-Signature":"…"}}  body: the signed JSON
 //
 // Broker to app:
