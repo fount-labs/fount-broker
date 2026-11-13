@@ -239,7 +239,8 @@ func (s *Service) get(ctx context.Context, k *Keys, mailbox, id string) (any, er
 	if err := o.Verify(bk.Key); err != nil {
 		return nil, err
 	}
-	env, body, err := o.Open(k)
+	opened, err := o.Open(k)
+	env, body := opened.Envelope, opened.Raw
 	if errors.Is(err, ErrWrongKey) {
 		s.mu.Lock()
 		s.ledger(mailbox).anomaly(Anomaly{Kind: AnomalyWrongKey, Sequence: o.Sequence, Detail: fmt.Sprintf("message %s is sealed to public key hash %s", id, hexOf(o.PubKeyHash))})
@@ -260,7 +261,14 @@ func (s *Service) get(ctx context.Context, k *Keys, mailbox, id string) (any, er
 	failures := s.failures[id]
 	s.mu.Unlock()
 
-	if failures >= MaxFailures {
+	if o.Version >= objV3 {
+		// The edge checked the sender when the message arrived (EdgeCheck).
+		if _, err := DecodeEdgeCheck(opened.Check, body); err != nil {
+			m.SenderCheckError = err.Error()
+		} else {
+			m.SenderCheck = json.RawMessage(opened.Check)
+		}
+	} else if failures >= MaxFailures {
 		m.Quarantined = true
 	} else if v, err := s.checker.Check(ctx, CheckInput{
 		Raw: body, Sender: env.Sender, Recipient: env.Recipient, ReceivedAt: o.ReceivedAt,

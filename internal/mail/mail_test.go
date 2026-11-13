@@ -48,10 +48,11 @@ func openEdgeObjects(t *testing.T, v *vectors, version byte) {
 		if o.Version != version || o.Sequence != m.Sequence || hexOf(o.BootID) != m.Boot || hexOf(o.EdgeID) != m.EdgeID {
 			t.Fatalf("header %+v doesn't match %+v", o, m)
 		}
-		env, raw, err := o.Open(k)
+		opened, err := o.Open(k)
 		if err != nil {
 			t.Fatal(err)
 		}
+		env, raw := opened.Envelope, opened.Raw
 		want := Envelope{Sender: m.Sender, Recipient: m.Recipient, ClientIP: m.ClientIP, HELO: m.HELO}
 		if m.ClientIPFrom == ipFromProxy {
 			want.ClientIPSource = ClientIPGatewayProxy
@@ -100,11 +101,11 @@ func TestOpenRefusesAnotherKey(t *testing.T) {
 	keys, _ := ParseKeys(v.keysJSON())
 	k := *keys[v.MailboxID]
 	other, _ := ParseKeys([]byte(`{"addresses":[{"mailbox_id":"` + v.MailboxID + `","signing_key":"` + base64.StdEncoding.EncodeToString(make([]byte, 32)) + `","decryption_key":"` + base64.StdEncoding.EncodeToString(append(make([]byte, 31), 9)) + `"}]}`))
-	if _, _, err := o.Open(other[v.MailboxID]); !errors.Is(err, ErrWrongKey) {
+	if _, err := o.Open(other[v.MailboxID]); !errors.Is(err, ErrWrongKey) {
 		t.Fatalf("another key: %v", err)
 	}
 	k.MailboxID = make([]byte, 32)
-	if _, _, err := o.Open(&k); !errors.Is(err, ErrWrongMailbox) {
+	if _, err := o.Open(&k); !errors.Is(err, ErrWrongMailbox) {
 		t.Fatalf("another mailbox: %v", err)
 	}
 }
