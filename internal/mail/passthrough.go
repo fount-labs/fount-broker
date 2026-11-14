@@ -103,8 +103,9 @@ const (
 	// MaxPassBody bounds a passthrough request and its reply.
 	MaxPassBody = 64 << 10
 	// MaxSendBody bounds a send request, which carries a whole message in
-	// base64. It is the edge's Device API body limit.
-	MaxSendBody = 1 << 20
+	// base64: up to 10 MiB, room for a reply with its files attached. It is the
+	// edge's POST /send body limit.
+	MaxSendBody = 14 << 20
 	// maxHeaderValue bounds one signature header. An entitlement token is the
 	// longest, well under this.
 	maxHeaderValue = 4 << 10
