@@ -3,9 +3,12 @@ package mail
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/fount-labs/fount-broker/internal/mail/mailtest"
 )
 
 // The app mints and checks nothing itself, but it builds addresses from this
@@ -114,5 +117,116 @@ func TestGetOmitsReplyTokenWithoutTag(t *testing.T) {
 	}
 	if rt := m.(*Message).ReplyToken; rt != nil {
 		t.Fatalf("reply_token %+v for an untagged recipient", rt)
+	}
+}
+
+// replyID is a worker email's Message-ID carrying tok.
+func replyID(tok string) string {
+	return "<fm." + strings.Repeat("0", replyIDRandomLen) + "." + tok + "@fountbox.com>"
+}
+
+func signedCheck(inReplyTo, references string) *EdgeCheck {
+	return &EdgeCheck{
+		Aligned: true,
+		DKIM:    []EdgeSignature{{Result: "pass", Covers: true, Aligned: true}},
+		Headers: EdgeCheckHeaders{InReplyTo: inReplyTo, References: references},
+	}
+}
+
+func TestReplyTokenHeaders(t *testing.T) {
+	k := replyVectorKeys(seq32(0))
+	a, _ := MintReplyToken(k, "aaaaaaaaaa")
+	b, _ := MintReplyToken(k, "bbbbbbbbbb")
+	other, _ := MintReplyToken(replyVectorKeys(seq32(1)), "aaaaaaaaaa")
+	flipped := []byte(a)
+	flipped[15] = map[bool]byte{true: 'b', false: 'a'}[flipped[15] == 'a']
+	old := "<fm." + strings.Repeat("0", replyIDRandomLen) + "@fountbox.com>"
+	unsigned := func(field string) *EdgeCheck {
+		c := signedCheck(replyID(a), replyID(a))
+		c.DKIM[0].Unsigned = []string{field}
+		return c
+	}
+	unaligned := signedCheck(replyID(a), replyID(a))
+	unaligned.Aligned, unaligned.DKIM[0].Aligned = false, false
+	otherSigner := signedCheck(replyID(a), "")
+	otherSigner.DKIM = []EdgeSignature{{Result: "pass", Aligned: true, Unsigned: []string{"references"}}, {Result: "pass"}}
+	handleA, handleB := &ReplyToken{Handle: "aaaaaaaaaa"}, &ReplyToken{Handle: "bbbbbbbbbb"}
+	for _, c := range []struct {
+		name  string
+		check *EdgeCheck
+		want  *ReplyToken
+	}{
+		{"in-reply-to", signedCheck(replyID(a), ""), handleA},
+		{"references only", signedCheck("", "<x@example.com> "+replyID(a)+" <y@example.com>"), handleA},
+		{"both, one handle", signedCheck(replyID(a), "<x@example.com> "+replyID(a)), handleA},
+		{"uppercase token", signedCheck(replyID(strings.ToUpper(a)), ""), handleA},
+		{"no brackets", signedCheck("", strings.Trim(replyID(a), "<>")+", x@example.com"), handleA},
+		{"two handles, the parent's", signedCheck(replyID(b), replyID(a)+" "+replyID(b)), handleB},
+		{"two handles, In-Reply-To over References", signedCheck(replyID(a), replyID(b)), handleA},
+		{"two handles, the last References one", signedCheck("<x@example.com>", replyID(b)+"\r\n "+replyID(a)), handleA},
+		{"a failure then a pass", signedCheck(replyID(other), replyID(a)), handleA},
+		{"unsigned In-Reply-To", unsigned("in-reply-to"), nil},
+		{"unsigned References", unsigned("references"), nil},
+		{"not aligned", unaligned, nil},
+		{"no signature covers both", otherSigner, nil},
+		{"wrong key", signedCheck(replyID(other), ""), &ReplyToken{Error: replyTokenMismatch}},
+		{"flipped mac", signedCheck("", replyID(string(flipped))), &ReplyToken{Error: replyTokenMismatch}},
+		{"first failure", signedCheck(replyID(a[:15]), replyID(other)), &ReplyToken{Error: replyTokenMalformed}},
+		{"old ids", signedCheck(old, "<x@example.com> "+old), nil},
+		{"other domain", signedCheck("<fm."+strings.Repeat("0", replyIDRandomLen)+"."+a+"@example.com>", ""), nil},
+		{"short random", signedCheck("<fm.0000."+a+"@fountbox.com>", ""), nil},
+		{"no headers", signedCheck("", ""), nil},
+		{"no check", nil, nil},
+	} {
+		got := CheckReplyTokenHeaders(k, c.check, "fountbox.com")
+		if (got == nil) != (c.want == nil) || got != nil && *got != *c.want {
+			t.Errorf("%s: %+v, want %+v", c.name, got, c.want)
+		}
+	}
+}
+
+// getWithThreadHeaders gets a vector message re-sealed for recipient, with a
+// sender check whose aligned signature covers In-Reply-To.
+func getWithThreadHeaders(t *testing.T, recipient, inReplyTo string) *ReplyToken {
+	t.Helper()
+	s, f, _, v := newService(t)
+	v.Messages[0].Recipient = recipient
+	replaceWithV3(t, f, v, 0, func(raw []byte) []byte {
+		var m map[string]any
+		json.Unmarshal(mailtest.Check("dana@example.com", recipient, raw), &m)
+		m["headers"].(map[string]any)["in_reply_to"] = inReplyTo
+		b, _ := json.Marshal(m)
+		return b
+	})
+	r, err := s.Handle(context.Background(), OpGet, v.MailboxID, v.Messages[0].EdgeID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.(*Message).SenderCheckError != "" {
+		t.Fatal(r.(*Message).SenderCheckError)
+	}
+	return r.(*Message).ReplyToken
+}
+
+func TestGetReadsReplyTokenFromHeaders(t *testing.T) {
+	v := loadVectors(t)
+	keys, _ := ParseKeys(v.keysJSON())
+	k := keys[v.MailboxID]
+	a, _ := MintReplyToken(k, "aaaaaaaaaa")
+	b, _ := MintReplyToken(k, "bbbbbbbbbb")
+	for _, c := range []struct {
+		name, recipient, inReplyTo string
+		want                       ReplyToken
+	}{
+		{"headers", "worker@fountbox.com", replyID(b), ReplyToken{Handle: "bbbbbbbbbb"}},
+		{"the +tag wins", "worker+" + a + "@fountbox.com", replyID(b), ReplyToken{Handle: "aaaaaaaaaa"}},
+		{"headers over a bad +tag", "worker+nottoken@fountbox.com", replyID(b), ReplyToken{Handle: "bbbbbbbbbb"}},
+		{"a bad +tag over bad headers", "worker+nottoken@fountbox.com", replyID(a[:15]), ReplyToken{Error: replyTokenMalformed}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := getWithThreadHeaders(t, c.recipient, c.inReplyTo); got == nil || *got != c.want {
+				t.Fatalf("%+v, want %+v", got, c.want)
+			}
+		})
 	}
 }

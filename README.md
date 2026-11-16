@@ -80,9 +80,11 @@ sequence ledger. The broker signs each of these reads with the address's key,
 so the app never builds one. Writes are different; see the end of this section.
 
 `reply_token` takes a thread handle, 10 lowercase hex characters, as its path
-and returns `{"token":"<16 characters>"}`. It contacts no edge. The app sends
-from `<local>+<token>@fountbox.com`, so a reply carries the token in its
-recipient. The token is the handle and a MAC under a key derived from the
+and returns `{"token":"<16 characters>"}`. It contacts no edge. The app puts it
+in each email's `Message-ID`, `<fm.<26 random>.<token>@fountbox.com>`, so a
+reply carries it back in `In-Reply-To` and `References`. Emails sent before
+that had a `Reply-To` of `<local>+<token>@fountbox.com`, so a reply to one
+carries it in its recipient. The token is the handle and a MAC under a key derived from the
 address's signing key ([`mail/replytoken.go`](internal/mail/replytoken.go)):
 
 ```
@@ -91,10 +93,14 @@ mac   = HMAC-SHA256(k, "reply" || handle)[:5]
 token = lowercase unpadded base32 of handle || mac
 ```
 
-`get` reads the `+tag` of the envelope recipient the edge sealed, never a
-header, and adds `"reply_token":{"handle":"<10 hex>"}` when the token is this
-address's, or `"reply_token":{"error":"…"}` when it is malformed or doesn't
-match. Case is ignored. A recipient with no tag has no `reply_token`.
+`get` reads the `+tag` of the envelope recipient the edge sealed, and the
+token `Message-ID`s in `In-Reply-To` and `References` as the sender check read
+them, only when an aligned signature covers both. It adds
+`"reply_token":{"handle":"<10 hex>"}` when a token is this address's, or
+`"reply_token":{"error":"…"}` when it is malformed or doesn't match. A `+tag`'s
+handle wins. When the headers name several threads, the parent's wins: the
+`In-Reply-To` one, else the last in `References`. Case is ignored in the token.
+A message with neither has no `reply_token`.
 
 For each message it:
 
@@ -188,7 +194,7 @@ In the broker:
 | Device API JSON: listings, gap pages, boot records. Write replies are only checked to be JSON, then passed to the app | The edge | [`mail/edge.go`](internal/mail/edge.go) |
 | Stored messages and gap records, checked against a boot's key | The edge and its storage | [`mail/object.go`](internal/mail/object.go), [`mail/record.go`](internal/mail/record.go) |
 | The edge's sender check inside a format 3 message, after its signature verifies | The edge | [`mail/edgecheck.go`](internal/mail/edgecheck.go) |
-| The `+tag` of a stored message's envelope recipient | Senders | [`mail/replytoken.go`](internal/mail/replytoken.go) |
+| The `+tag` of a stored message's envelope recipient, and the `In-Reply-To` and `References` in its sender check | Senders | [`mail/replytoken.go`](internal/mail/replytoken.go) |
 | The verifier's frames | The verifier | [`mail/verify/process.go`](internal/mail/verify/process.go) |
 
 In the verifier, which holds nothing worth taking:
