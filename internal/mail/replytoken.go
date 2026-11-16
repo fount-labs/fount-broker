@@ -6,20 +6,23 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/hex"
+	"slices"
 	"strings"
 )
 
 // Reply tokens (Fount Mail design §12–13). Each worker thread has one token,
-// carried in the recipient address as <local>+<token>@<domain>. The edge
-// routes on the address; the broker checks the token, so a reply joins a
-// thread only if it was addressed with that thread's token.
+// carried in each worker email's Message-ID as <fm.<26>.<token>@<domain>>, so a
+// reply carries it back in In-Reply-To and References. Emails sent before that
+// carried it in a Reply-To of <local>+<token>@<domain>, so the recipient's +tag
+// is still read. The broker checks the token, so a reply joins a thread only if
+// it answers, or was addressed with, that thread's token.
 //
 //	k     = HKDF-SHA256(ikm = the address's Ed25519 seed, salt = nil, info = replyTokenInfo), 32 bytes
 //	mac   = HMAC-SHA256(k, "reply" || handle)[:5]
 //	token = lowercase unpadded base32 of handle(5) || mac(5), 16 characters
 //
 // The handle is the app's name for the thread. The app puts the token only in
-// the address it sends from; records never hold it.
+// the Message-IDs of the emails it sends.
 const (
 	replyTokenInfo = "fount reply token v1"
 	replyHandleLen = 5
@@ -29,8 +32,9 @@ const (
 
 var replyB32 = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(base32.NoPadding)
 
-// ReplyToken is what get found in the recipient's +tag: the thread handle when
-// the token is this address's, or why it isn't.
+// ReplyToken is what get found in the recipient's +tag or the reply's signed
+// In-Reply-To and References: the thread handle when the token is this
+// address's, or why it isn't.
 type ReplyToken struct {
 	Handle string `json:"handle,omitempty"`
 	Error  string `json:"error,omitempty"`
@@ -76,6 +80,11 @@ func CheckReplyToken(k *Keys, recipient string) *ReplyToken {
 	if !ok {
 		return nil
 	}
+	return checkToken(k, tag)
+}
+
+// checkToken checks one token against this address's key, ignoring case.
+func checkToken(k *Keys, tag string) *ReplyToken {
 	if len(tag) != replyTokenLen {
 		return &ReplyToken{Error: replyTokenMalformed}
 	}
@@ -92,4 +101,101 @@ func CheckReplyToken(k *Keys, recipient string) *ReplyToken {
 		return &ReplyToken{Error: replyTokenMismatch}
 	}
 	return &ReplyToken{Handle: hex.EncodeToString(h)}
+}
+
+// The random part of a worker email's Message-ID, fm.<26>.<token>@<domain>. It
+// keeps every email's ID its own.
+const replyIDRandomLen = 26
+
+// CheckReplyTokenHeaders reads the tokens in the Message-IDs a reply answers:
+// the In-Reply-To and References the sender check read. It uses them only when
+// an aligned signature covers both, since a header anyone could have typed
+// proves nothing. domain is the mail domain, from the envelope recipient.
+//
+// When the passing tokens name several threads, the parent's wins: an
+// In-Reply-To token, else the last References one. It returns nil when there
+// are no token IDs, and the first failure when none pass. IDs without a token,
+// fm.<26>@<domain> from before tokens moved there, aren't token IDs.
+func CheckReplyTokenHeaders(k *Keys, check *EdgeCheck, domain string) *ReplyToken {
+	if check == nil || !threadHeadersSigned(check) {
+		return nil
+	}
+	var first *ReplyToken
+	var parent, last string
+	for i, value := range []string{check.Headers.InReplyTo, check.Headers.References} {
+		for _, id := range msgIDs(value) {
+			tag, ok := replyIDToken(id, domain)
+			if !ok {
+				continue
+			}
+			t := checkToken(k, tag)
+			switch {
+			case t.Handle == "":
+				if first == nil {
+					first = t
+				}
+			case i == 0:
+				parent = t.Handle
+			default:
+				last = t.Handle
+			}
+		}
+	}
+	switch {
+	case parent != "":
+		return &ReplyToken{Handle: parent}
+	case last != "":
+		return &ReplyToken{Handle: last}
+	}
+	return first
+}
+
+// threadHeadersSigned is true when an aligned signature leaves neither
+// In-Reply-To nor References unsigned.
+func threadHeadersSigned(c *EdgeCheck) bool {
+	if !c.Aligned {
+		return false
+	}
+	for _, s := range c.DKIM {
+		if s.Aligned && !slices.Contains(s.Unsigned, "in-reply-to") && !slices.Contains(s.Unsigned, "references") {
+			return true
+		}
+	}
+	return false
+}
+
+// msgIDs are the ids in a msg-id list: what's inside each <…>, or the pieces
+// between whitespace and commas when there are no brackets (message-format.md
+// §6.1).
+func msgIDs(s string) []string {
+	if !strings.Contains(s, "<") {
+		return strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\r' || r == '\n' })
+	}
+	var ids []string
+	for {
+		_, rest, ok := strings.Cut(s, "<")
+		if !ok {
+			return ids
+		}
+		id, rest, ok := strings.Cut(rest, ">")
+		if !ok {
+			return ids
+		}
+		ids = append(ids, id)
+		s = rest
+	}
+}
+
+// replyIDToken is the token part of fm.<26>.<token>@<domain>. A token part of
+// the wrong shape is still returned, so it fails as malformed.
+func replyIDToken(id, domain string) (string, bool) {
+	at := strings.LastIndexByte(id, '@')
+	if at < 0 || domain == "" || !strings.EqualFold(id[at+1:], domain) {
+		return "", false
+	}
+	parts := strings.Split(id[:at], ".")
+	if len(parts) != 3 || parts[0] != "fm" || len(parts[1]) != replyIDRandomLen || parts[2] == "" {
+		return "", false
+	}
+	return parts[2], true
 }

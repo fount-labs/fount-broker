@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -213,8 +214,11 @@ type Message struct {
 	// Quarantined is true once the sender check has failed MaxFailures times.
 	// The app holds the message and shows it; it never counts as a request.
 	Quarantined bool `json:"quarantined"`
-	// ReplyToken is the envelope recipient's +tag, checked against this
-	// address's key. Absent when the recipient has no tag.
+	// ReplyToken is the thread token the message carries, checked against this
+	// address's key: the envelope recipient's +tag, else a token Message-ID in
+	// the signed In-Reply-To or References (CheckReplyTokenHeaders). A +tag's
+	// handle wins over the headers', and a headers' handle over a +tag's
+	// error. Absent when it carries neither.
 	ReplyToken *ReplyToken `json:"reply_token,omitempty"`
 
 	Ledger Summary `json:"ledger"`
@@ -285,11 +289,33 @@ func (s *Service) get(ctx context.Context, k *Keys, mailbox, id string) (any, er
 	} else {
 		m.SenderCheck = v
 	}
+	if m.ReplyToken == nil || m.ReplyToken.Handle == "" {
+		if t := headerReplyToken(k, m.SenderCheck, env.Recipient); t != nil && (m.ReplyToken == nil || t.Handle != "") {
+			m.ReplyToken = t
+		}
+	}
 
 	s.mu.Lock()
 	m.Ledger = summarize(s.ledger(mailbox), len(s.pending[mailbox]))
 	s.mu.Unlock()
 	return m, nil
+}
+
+// headerReplyToken is CheckReplyTokenHeaders over a sender check, the edge's or
+// the local verifier's: both name the fields it reads the same way.
+func headerReplyToken(k *Keys, check json.RawMessage, recipient string) *ReplyToken {
+	if check == nil {
+		return nil
+	}
+	var c EdgeCheck
+	if err := json.Unmarshal(check, &c); err != nil {
+		return nil
+	}
+	at := strings.LastIndexByte(recipient, '@')
+	if at < 0 {
+		return nil
+	}
+	return CheckReplyTokenHeaders(k, &c, recipient[at+1:])
 }
 
 // Summary is the ledger's verdict after a call.
