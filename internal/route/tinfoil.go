@@ -40,7 +40,7 @@ func NewTinfoil(base string, cacheSecret func() string) *Tinfoil {
 	return &Tinfoil{
 		base: base,
 		discover: func(ctx context.Context) (enclave, error) {
-			return tinfoil.DiscoverRouter(ctx, &tinfoil.EnclaveOptions{
+			return tinfoil.NewRouterHTTPClient(ctx, &tinfoil.RouterOptions{
 				TransportMode:     tinfoil.TransportModeEHBP,
 				BaseURL:           base,
 				UserCacheSecret:   cacheSecret(),
@@ -55,8 +55,8 @@ func NewTinfoil(base string, cacheSecret func() string) *Tinfoil {
 func NewTinfoilEnclave(host, repo, base string) *Tinfoil {
 	return &Tinfoil{
 		base: base,
-		discover: func(context.Context) (enclave, error) {
-			return tinfoil.NewEnclaveHTTPClient(host, repo, &tinfoil.EnclaveOptions{
+		discover: func(ctx context.Context) (enclave, error) {
+			return tinfoil.NewEnclaveHTTPClient(ctx, host, tinfoil.Pin{Repo: repo}, &tinfoil.EnclaveOptions{
 				TransportMode:     tinfoil.TransportModeEHBP,
 				BaseURL:           base,
 				VerificationCheck: checkRepo(repo),
@@ -151,8 +151,7 @@ func (t *Tinfoil) send(ctx context.Context, c enclave, r Request) (*http.Respons
 }
 
 func classify(err error) error {
-	var attestation *tinfoil.AttestationError
-	if errors.As(err, &attestation) {
+	if errors.Is(err, tinfoil.ErrAttestation) {
 		return fmt.Errorf("%w: %v", ErrAttestation, err)
 	}
 	return err

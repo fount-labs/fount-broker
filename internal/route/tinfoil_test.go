@@ -3,6 +3,7 @@ package route
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -59,7 +60,7 @@ func TestTinfoilRediscoversOnceAfterNetworkFailure(t *testing.T) {
 		n := discoveries
 		return &fakeEnclave{host: "router", do: func(r *http.Request) (*http.Response, error) {
 			if n == 1 {
-				return nil, &tinfoil.NetworkError{Err: errors.New("connection refused")}
+				return nil, fmt.Errorf("%w: connection refused", tinfoil.ErrNetwork)
 			}
 			b, _ := io.ReadAll(r.Body)
 			if string(b) != `{"model":"m"}` {
@@ -81,7 +82,7 @@ func TestTinfoilDoesNotRetryAttestationFailure(t *testing.T) {
 	tf := &Tinfoil{base: "https://proxy.example/proxy/v1/", discover: func(context.Context) (enclave, error) {
 		discoveries++
 		return &fakeEnclave{do: func(*http.Request) (*http.Response, error) {
-			return nil, &tinfoil.AttestationError{Err: errors.New("bad measurement")}
+			return nil, fmt.Errorf("%w: bad measurement", tinfoil.ErrAttestation)
 		}}, nil
 	}}
 	_, err := tf.Do(context.Background(), chat)
@@ -95,7 +96,7 @@ func TestTinfoilDoesNotRetryAttestationFailure(t *testing.T) {
 
 func TestTinfoilDiscoveryAttestationFailure(t *testing.T) {
 	tf := &Tinfoil{base: "https://proxy.example/proxy/v1/", discover: func(context.Context) (enclave, error) {
-		return nil, &tinfoil.AttestationError{Err: errors.New("revoked")}
+		return nil, fmt.Errorf("%w: revoked", tinfoil.ErrAttestation)
 	}}
 	if _, err := tf.Do(context.Background(), chat); !errors.Is(err, ErrAttestation) {
 		t.Fatalf("got %v, want ErrAttestation", err)

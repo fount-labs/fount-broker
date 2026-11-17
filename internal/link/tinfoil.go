@@ -88,11 +88,11 @@ func TinfoilChecker(repo string) (Checker, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := v.CheckRepoVerifiability(repo); err != nil {
+	if err := v.CheckPinVerifiability(verify.Pin{Repo: repo}); err != nil {
 		return nil, fmt.Errorf("pin %q: %w", repo, err)
 	}
 	return func(doc, nonce []byte) (ed25519.PublicKey, error) {
-		verified, err := v.VerifyV3(doc, nonce, repo)
+		verified, err := v.VerifyV3(doc, nonce, verify.Pin{Repo: repo})
 		if err != nil {
 			return nil, err
 		}
