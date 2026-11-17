@@ -85,10 +85,10 @@ type envRunner struct {
 	mode string
 }
 
-func (e envRunner) Run(ctx context.Context, id string, job JobDirs) (RunResult, error) {
+func (e envRunner) Run(ctx context.Context, id, account string, job JobDirs) (RunResult, error) {
 	l := e.LocalRunner
 	l.Command = append([]string{"/usr/bin/env", "FAKE_RUNNER=" + e.mode}, l.Command...)
-	return l.Run(ctx, id, job)
+	return l.Run(ctx, id, account, job)
 }
 
 func waitJob(t *testing.T, c *Coordinator, id string) Job {

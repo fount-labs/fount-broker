@@ -4,7 +4,8 @@
 // runs a loopback tunnel for Python's package manager; see package proxy.
 //
 // Run as "fount-broker mail-verify", it is the offline mail sender verifier the
-// broker starts for each message; see package verify.
+// broker starts for each message; see package verify. Run as "fount-broker
+// runner", it is a Cloud runner enclave's broker; see runner_dev.go.
 package main
 
 import (
@@ -39,30 +40,19 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "runner" {
+		log.SetPrefix("fount-broker runner: ")
+		if err := runner(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	vault := broker.NewVault()
-	tinfoil := route.NewTinfoil(policy.TinfoilProxyBase(), func() string {
-		s, _ := vault.Get(policy.CredentialTinfoilCacheSecret)
-		return s
-	})
-	vault.OnChange(policy.CredentialTinfoilCacheSecret, tinfoil.Reset)
-
-	routes := map[string]route.Route{
-		policy.RouteTinfoil: tinfoil,
-		policy.RouteTinfoilWebSearch: route.NewTinfoilEnclave(
-			policy.TinfoilWebSearchHost, policy.TinfoilWebSearchRepo, policy.FountProxyBase()),
-		policy.RouteFountAPI:    route.NewHTTPS(policy.FountAPIBase(), nil),
-		policy.RouteFountProxy:  route.NewHTTPS(policy.FountProxyBase(), nil),
-		policy.RouteModels:      route.NewHTTPS(policy.ModelsBase, func() any { return policy.ModelFiles }),
-		policy.RouteOpenRouter:  route.NewHTTPS(policy.OpenRouterBase, nil),
-		policy.RouteHuggingFace: route.NewHTTPS(policy.HuggingFaceBase, func() any { return policy.VisionModels }, policy.HuggingFaceRedirectHosts...),
-		policy.RouteUpdates:     route.NewHTTPS(policy.UpdatesBase, nil, policy.UpdatesRedirectHosts...),
-		policy.RouteLatex:       route.NewHTTPS(policy.LatexBase, nil),
-	}
-	b := broker.New(version, routes, vault)
+	b := broker.New(version, newRoutes(vault), vault)
 	if m, err := newMail(); err != nil {
 		log.Printf("mail unavailable: %v", err)
 	} else {
@@ -82,5 +72,26 @@ func main() {
 	}
 	if err := b.Serve(ctx, os.Stdin, os.Stdout); err != nil {
 		log.Fatal(err)
+	}
+}
+
+// newRoutes is every route, holding vault's credentials.
+func newRoutes(vault *broker.Vault) map[string]route.Route {
+	tinfoil := route.NewTinfoil(policy.TinfoilProxyBase(), func() string {
+		s, _ := vault.Get(policy.CredentialTinfoilCacheSecret)
+		return s
+	})
+	vault.OnChange(policy.CredentialTinfoilCacheSecret, tinfoil.Reset)
+	return map[string]route.Route{
+		policy.RouteTinfoil: tinfoil,
+		policy.RouteTinfoilWebSearch: route.NewTinfoilEnclave(
+			policy.TinfoilWebSearchHost, policy.TinfoilWebSearchRepo, policy.FountProxyBase()),
+		policy.RouteFountAPI:    route.NewHTTPS(policy.FountAPIBase(), nil),
+		policy.RouteFountProxy:  route.NewHTTPS(policy.FountProxyBase(), nil),
+		policy.RouteModels:      route.NewHTTPS(policy.ModelsBase, func() any { return policy.ModelFiles }),
+		policy.RouteOpenRouter:  route.NewHTTPS(policy.OpenRouterBase, nil),
+		policy.RouteHuggingFace: route.NewHTTPS(policy.HuggingFaceBase, func() any { return policy.VisionModels }, policy.HuggingFaceRedirectHosts...),
+		policy.RouteUpdates:     route.NewHTTPS(policy.UpdatesBase, nil, policy.UpdatesRedirectHosts...),
+		policy.RouteLatex:       route.NewHTTPS(policy.LatexBase, nil),
 	}
 }

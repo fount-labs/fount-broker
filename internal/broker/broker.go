@@ -37,6 +37,9 @@ type Broker struct {
 	// Mail serves mail requests and holds the mail_keys credential. Nil
 	// refuses both.
 	Mail MailService
+	// Locked refuses credential requests: a runner enclave filled the vault
+	// for one Cloud job (package relay), and the job can't change it.
+	Locked bool
 
 	out *frame.Writer
 
@@ -99,6 +102,10 @@ func (b *Broker) dispatch(ctx context.Context, req protocol.Request, body []byte
 			cancel()
 		}
 	case protocol.KindCredential:
+		if b.Locked {
+			b.fail(req.ID, protocol.CodePolicy, errors.New("this job's credentials are set by its runner, not by the job"))
+			return
+		}
 		if req.Name == policy.CredentialMailKeys {
 			if b.Mail == nil {
 				b.fail(req.ID, protocol.CodePolicy, errors.New("mail isn't available in this build"))

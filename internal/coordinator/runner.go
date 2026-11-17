@@ -11,10 +11,11 @@ import (
 	"time"
 )
 
-// A Runner runs one job in folders the coordinator prepared and reads back after
-// (m4-cloud-runners.md §5.1). Everything it leaves there is treated as hostile.
+// A Runner runs one job, for account, in folders the coordinator prepared and
+// reads back after (m4-cloud-runners.md §5.1). Everything it leaves there is
+// treated as hostile.
 type Runner interface {
-	Run(ctx context.Context, runnerID string, job JobDirs) (RunResult, error)
+	Run(ctx context.Context, runnerID, account string, job JobDirs) (RunResult, error)
 }
 
 // JobDirs are the folders of one job, in fount-runner's terms.
@@ -51,7 +52,7 @@ type LocalRunner struct {
 	Timeout time.Duration
 }
 
-func (l LocalRunner) Run(ctx context.Context, _ string, job JobDirs) (RunResult, error) {
+func (l LocalRunner) Run(ctx context.Context, _, _ string, job JobDirs) (RunResult, error) {
 	if len(l.Command) == 0 {
 		return RunResult{}, errors.New("no runner command")
 	}

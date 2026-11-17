@@ -34,3 +34,10 @@ func MailEdgeDev() string {
 	}
 	return ""
 }
+
+// harnessRegistryDev is FOUNT_BROKER_REGISTRY, a dev registry's origin such as
+// http://registry:5000, which then stands in for ghcr.io. Plain http is
+// allowed: the supervisor checks every digest anyway.
+func harnessRegistryDev() string {
+	return strings.TrimRight(os.Getenv("FOUNT_BROKER_REGISTRY"), "/")
+}

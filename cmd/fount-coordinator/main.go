@@ -4,14 +4,18 @@
 //
 //	fount-coordinator --dir <folder> [--listen 127.0.0.1:8790] [--runners 2] [--slots 2]
 //	  [--job-timeout 30m] -- <runner command...>
+//	fount-coordinator --dir <folder> [flags] --runner-addr <host:port> [--credentials <file.json>]
 //
 // The runner command is started once per job with fount-runner's --workspace,
 // --job, --data and --index added: fount-runner itself, or scripts/dev-runner.sh
-// for the runner image in Docker.
+// for the runner image in Docker. With --runner-addr, each job goes instead to
+// a runner enclave's broker (fount-broker runner, a dev build), with the
+// credentials file's tokens, by the broker's names, for every job.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -42,9 +46,27 @@ func run() error {
 	runners := flag.Int("runners", 2, "runners in the pool")
 	slots := flag.Int("slots", 2, "jobs at once per runner")
 	timeout := flag.Duration("job-timeout", 30*time.Minute, "longest a job may run")
+	runnerAddr := flag.String("runner-addr", "", "a runner enclave broker's job listener, in place of a runner command")
+	credentials := flag.String("credentials", "", "JSON file of every job's broker credentials, with --runner-addr")
 	flag.Parse()
-	if *dir == "" || flag.NArg() == 0 {
-		return errors.New("usage: fount-coordinator --dir <folder> [flags] -- <runner command...>")
+	if *dir == "" || (flag.NArg() == 0) == (*runnerAddr == "") {
+		return errors.New("usage: fount-coordinator --dir <folder> [flags] (-- <runner command...> | --runner-addr <host:port>)")
+	}
+	var runner coordinator.Runner = coordinator.LocalRunner{Command: flag.Args(), Timeout: *timeout}
+	if *runnerAddr != "" {
+		remote := coordinator.RemoteRunner{Addr: *runnerAddr, Timeout: *timeout}
+		if *credentials != "" {
+			data, err := os.ReadFile(*credentials)
+			if err != nil {
+				return err
+			}
+			if err := json.Unmarshal(data, &remote.Credentials); err != nil {
+				return fmt.Errorf("%s: %w", *credentials, err)
+			}
+		}
+		runner = remote
+	} else if *credentials != "" {
+		return errors.New("--credentials needs --runner-addr")
 	}
 	if err := loopbackOnly(*listen); err != nil {
 		return err
@@ -59,7 +81,7 @@ func run() error {
 		Store:    coordinator.DirStore{Root: filepath.Join(*dir, "objects")},
 		Key:      key,
 		Pool:     coordinator.NewPool(*runners, *slots, nil),
-		Runner:   coordinator.LocalRunner{Command: flag.Args(), Timeout: *timeout},
+		Runner:   runner,
 	})
 	if err != nil {
 		return err

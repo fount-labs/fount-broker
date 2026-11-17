@@ -324,7 +324,7 @@ func (c *Coordinator) runJob(ctx context.Context, job Job, w Worker, spec JobSpe
 		return 0, 0, err
 	}
 
-	result, runErr := c.cfg.Runner.Run(ctx, job.Runner, dirs)
+	result, runErr := c.cfg.Runner.Run(ctx, job.Runner, w.Account, dirs)
 	results, collectErr := collect(dirs, given, job.ThreadID, job.ID)
 	if collectErr != nil {
 		results = &Results{Writes: map[string][]byte{

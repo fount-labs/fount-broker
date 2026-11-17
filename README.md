@@ -237,6 +237,75 @@ takes who sent it from the edge's sealed check, and decides what the mail may do
 with [`mail/decide`](internal/mail/decide/decide.go), the same rules as the
 app's. The email itself goes to an intake runner as opaque bytes.
 
+## Supervisor (in development)
+
+In a Cloud runner enclave the supervisor
+([`internal/supervisor`](internal/supervisor/image.go)) starts each job in its
+own [gVisor](https://gvisor.dev) sandbox. Jobs from different accounts share a
+runner, so the sandbox is what keeps them apart, and this code is open so that
+claim can be checked. It needs root over the enclave to run gVisor, and holds no
+customer data, keys or network.
+
+- **The closed harness image is pinned by digest** in the supervisor's config.
+  Whoever fetched the blobs is untrusted: the manifest must match the pin, and
+  every layer and the config must match the manifest, before any is parsed. The
+  layers are unpacked once, through an `os.Root` so no entry, symlink or
+  hardlink lands outside the tree, without setuid bits, devices or file
+  capabilities. Each layer's uncompressed digest must match the config's.
+- **Each job's sandbox** has that tree as a read-only root, no network, no
+  capabilities, `no_new_privs`, uid 10001, a tmpfs `/tmp`, and cgroup caps on
+  memory (no swap), processes and optionally CPU. It sees only its own
+  workspace, data and index folders, its job file, and, if given, a folder
+  holding its own broker socket. The sandbox and its cgroup are deleted when
+  the job ends, however it ends.
+
+**In a runner enclave** the broker and the supervisor share two volumes,
+`harness-blobs` and `sockets`:
+
+1. `fount-broker runner` pulls the pinned image from the registry into
+   `harness-blobs` ([`internal/registry`](internal/registry/registry.go)),
+   following redirects only to the policy's hosts and never sending the
+   registry token off the registry's host. `index.json` is written last.
+2. `fount-supervisor serve` waits for it, checks and unpacks the image as
+   above, deletes the blobs, and listens on `sockets/supervisor.sock`.
+3. Each job arrives from the coordinator on one TCP connection, as frames
+   ([`internal/jobwire`](internal/jobwire/jobwire.go)): a header with the
+   job's account and credentials and fount-runner's job file, then the
+   workspace and index as tar streams of plain files and directories
+   ([`internal/filetree`](internal/filetree/filetree.go)). The broker
+   ([`internal/relay`](internal/relay/relay.go)) keeps the credentials, names
+   the job, serves the job's own broker on `sockets/<id>/job.sock` with a vault
+   holding only those credentials (which the job can't change), and relays the
+   rest to the supervisor unread. The supervisor never sees a credential.
+4. The supervisor makes the job's folders from the streams, runs it with
+   `sockets/<id>` at `/run/broker` and `--broker-socket /run/broker/job.sock`,
+   streams its output back, and sends back its workspace and index once the
+   sandbox is gone. The coordinator cancels a job by closing the connection.
+
+The job listener is plain TCP, so `runner` is in dev builds only, until the
+coordinator's channel is attested. A local run of all three, with a registry:
+
+```sh
+fount-broker runner --image registry:5000/fount-labs/runner@sha256:<digest> \
+  --listen 0.0.0.0:7400            # FOUNT_BROKER_REGISTRY=http://registry:5000
+fount-supervisor serve --image sha256:<digest>   # privileged, --network none
+fount-coordinator --dir /tmp/coordinator --runner-addr 127.0.0.1:7400
+```
+
+`fount-supervisor run` takes one job as fount-runner's folder flags instead, so
+the dev coordinator can run it as its runner command:
+
+```sh
+fount-supervisor unpack --blobs <oci layout> --image sha256:<digest> --out /harness
+fount-coordinator --dir /tmp/coordinator -- fount-supervisor run --harness /harness
+```
+
+Parse surfaces: the image index, manifest and config (JSON, after their digest
+matches, 4 MiB cap), and the layers' tar streams (after their digest matches;
+capped bytes and entries; fuzzed by `FuzzLayer`); each job's first frame
+(strict, both hops; `FuzzDecodeJob`) and its tar streams, in both directions
+(plain files and directories only, capped; `FuzzExtract`).
+
 ## Verifying the broker in your copy of Fount
 
 Each `v*` tag runs [`release.yml`](.github/workflows/release.yml), and Fount
