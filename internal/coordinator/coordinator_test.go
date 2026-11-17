@@ -29,6 +29,17 @@ func fakeRunner(mode string, args []string) int {
 		flags[strings.TrimPrefix(args[i], "--")] = args[i+1]
 	}
 	ws := flags["workspace"]
+	if flags["mode"] == "index" {
+		files, _ := filepath.Glob(filepath.Join(ws, "files", "*"))
+		os.MkdirAll(flags["index"], 0o755)
+		os.WriteFile(filepath.Join(flags["index"], "manifest.json"), []byte(fmt.Sprintf(`{"files":%d}`, len(files))), 0o644)
+		os.WriteFile(filepath.Join(ws, "files", "memo.md"), []byte("written by the index step"), 0o644)
+		fmt.Println(`{"event":"index-built"}`)
+		return 0
+	}
+	if flags["index-read-only"] == "" || flags["index"] != "" {
+		return 2
+	}
 	job, _ := os.ReadFile(flags["job"])
 	var spec runnerJob
 	json.Unmarshal(job, &spec)
@@ -42,8 +53,8 @@ func fakeRunner(mode string, args []string) int {
 	os.MkdirAll(filepath.Join(ws, ".fount", "conversations"), 0o755)
 	os.WriteFile(filepath.Join(ws, ".fount", "conversations", spec.SessionID+".json"), []byte(`{"turns":1}`), 0o644)
 	os.WriteFile(filepath.Join(ws, "files", "memo.md"), []byte("memo v2"), 0o644)
-	os.MkdirAll(flags["index"], 0o755)
-	os.WriteFile(filepath.Join(flags["index"], "manifest.json"), []byte(`{"built":true}`), 0o644)
+	// A hijacked job poisoning the index it was given.
+	os.WriteFile(filepath.Join(flags["index-read-only"], "manifest.json"), []byte(`{"poisoned":true}`), 0o644)
 	fmt.Println(`{"event":"job-finished","payload":{"state":"ready_for_review"}}`)
 	switch mode {
 	case "fail":
@@ -147,8 +158,13 @@ func TestAJobRunsAndKeepsOnlyItsResults(t *testing.T) {
 	if got, _ := c.ReadFile(w.ID, "fount/conversations/s_t1.json"); string(got) != `{"turns":1}` {
 		t.Fatalf("session: %q", got)
 	}
-	if got, _ := c.ReadFile(w.ID, "index/manifest.json"); string(got) != `{"built":true}` {
+	// The index step built the index from the files before the job; the
+	// job's write to it was dropped, and so was the index step's to the files.
+	if got, _ := c.ReadFile(w.ID, "index/manifest.json"); string(got) != `{"files":1}` {
 		t.Fatalf("index: %q", got)
+	}
+	if got, _ := c.ReadFile(w.ID, "jobs/"+job.ID+"/index-events.jsonl"); !strings.Contains(string(got), "index-built") {
+		t.Fatalf("index events: %q", got)
 	}
 	if got, _ := c.ReadFile(w.ID, "jobs/"+job.ID+"/events.jsonl"); !strings.Contains(string(got), "job-finished") {
 		t.Fatalf("events: %q", got)
@@ -164,6 +180,10 @@ func TestAJobRunsAndKeepsOnlyItsResults(t *testing.T) {
 	second, _ := c.Enqueue(w.ID, spec("t1"))
 	if j := waitJob(t, c, second.ID); j.State != JobFinished {
 		t.Fatalf("second job: %s %s", j.State, j.Error)
+	}
+	// The first job added a reply, so the index was built again.
+	if got, _ := c.ReadFile(w.ID, "jobs/"+second.ID+"/index-events.jsonl"); !strings.Contains(string(got), "index-built") {
+		t.Fatalf("second index events: %q", got)
 	}
 	worker, _ := c.Worker(w.ID)
 	if worker.Version < 5 {
@@ -297,5 +317,65 @@ func TestAPI(t *testing.T) {
 	code, list := do("GET", "/v0/workers/"+id+"/files?prefix=root/threads/", "")
 	if code != 200 || len(list["paths"].([]any)) != 1 {
 		t.Fatalf("list: %d %v", code, list)
+	}
+}
+
+func TestTheIndexStepRunsOnlyWhenTheFilesChanged(t *testing.T) {
+	c, cancel := newTestCoordinator(t, "ok", 0)
+	cancel()
+	w, _ := c.CreateWorker("acme", nil)
+	c.PutFile(w.ID, "files/a.md", []byte("a"))
+	worker, _ := c.Worker(w.ID)
+	if err := c.refreshIndex(context.Background(), Job{ID: "j_1"}, worker); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.refreshIndex(context.Background(), Job{ID: "j_2"}, worker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ReadFile(w.ID, "jobs/j_2/index-events.jsonl"); !errors.Is(err, ErrNotFound) {
+		t.Fatal("the index step ran with no file changed")
+	}
+	c.PutFile(w.ID, "files/b.md", []byte("b"))
+	if err := c.refreshIndex(context.Background(), Job{ID: "j_3"}, worker); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := c.ReadFile(w.ID, "index/manifest.json"); string(got) != `{"files":2}` {
+		t.Fatalf("index: %q", got)
+	}
+}
+
+// credsRunner records each run's credentials.
+type credsRunner struct {
+	envRunner
+	seen chan map[string]string
+}
+
+func (r credsRunner) Run(ctx context.Context, id, account string, job JobDirs) (RunResult, error) {
+	r.seen <- job.Credentials
+	return r.envRunner.Run(ctx, id, account, job)
+}
+
+func TestEachRunGetsCredentialsMintedForItsJob(t *testing.T) {
+	c, cancel := newTestCoordinator(t, "ok", 0)
+	cancel()
+	seen := make(chan map[string]string, 4)
+	c.cfg.Runner = credsRunner{c.cfg.Runner.(envRunner), seen}
+	c.cfg.Credentials = func(account, workerID, jobID string) (map[string]string, error) {
+		return map[string]string{"license": account + "/" + workerID + "/" + jobID}, nil
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	go c.Run(ctx)
+	w, _ := c.CreateWorker("acme", nil)
+	c.PutFile(w.ID, "files/a.md", []byte("a"))
+	j, _ := c.Enqueue(w.ID, spec("t1"))
+	if done := waitJob(t, c, j.ID); done.State != JobFinished {
+		t.Fatalf("%s %s", done.State, done.Error)
+	}
+	want := "acme/" + w.ID + "/" + j.ID
+	for _, run := range []string{"index step", "job"} {
+		if got := <-seen; got["license"] != want {
+			t.Errorf("the %s got %v, want %s", run, got, want)
+		}
 	}
 }

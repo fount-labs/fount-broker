@@ -19,12 +19,15 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/fount-labs/fount-broker/internal/jobwire"
 )
 
 type Config struct {
@@ -37,6 +40,9 @@ type Config struct {
 	Key     WrappingKey
 	Pool    *Pool
 	Runner  Runner
+	// Credentials are a job's credentials, by the broker's names: in the pool,
+	// minted for that one job (package jobcred). Nil gives jobs none.
+	Credentials func(account, workerID, jobID string) (map[string]string, error)
 }
 
 type Coordinator struct {
@@ -293,6 +299,11 @@ func (c *Coordinator) execute(ctx context.Context, job Job, w Worker, spec JobSp
 var errRunnerFailed = errors.New("the runner failed the job")
 
 func (c *Coordinator) runJob(ctx context.Context, job Job, w Worker, spec JobSpec) (kept, dropped int, err error) {
+	// A job whose index is out of date still runs: its runner indexes what
+	// changed in a copy of its own.
+	if err := c.refreshIndex(ctx, job, w); err != nil {
+		log.Printf("job %s: the index step: %v", job.ID, err)
+	}
 	root, err := os.MkdirTemp(c.cfg.WorkDir, job.ID+"-")
 	if err != nil {
 		return 0, 0, err
@@ -318,6 +329,9 @@ func (c *Coordinator) runJob(ctx context.Context, job Job, w Worker, spec JobSpe
 	}
 	runnerJob, err := spec.runnerJob()
 	if err != nil {
+		return 0, 0, err
+	}
+	if dirs.Credentials, err = c.credentials(w, job); err != nil {
 		return 0, 0, err
 	}
 	if err := os.WriteFile(dirs.JobFile, runnerJob, fileMode); err != nil {
@@ -351,15 +365,87 @@ func (c *Coordinator) runJob(ctx context.Context, job Job, w Worker, spec JobSpe
 	return kept, dropped, nil
 }
 
-// apply stages a job's results. A collect that failed keeps no index, so the
-// kept one stays.
+// refreshIndex runs the index step (§5.5) in a sandbox of its own when the
+// worker's files changed since its kept index was built. It is the only job
+// that writes the kept index; the agent's job gets it read-only.
+func (c *Coordinator) refreshIndex(ctx context.Context, job Job, w Worker) error {
+	root, err := os.MkdirTemp(c.cfg.WorkDir, job.ID+"-index-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(root)
+	dirs := JobDirs{
+		Mode:      jobwire.ModeIndex,
+		Workspace: filepath.Join(root, "workspace"),
+		Index:     filepath.Join(root, "index"),
+		Data:      filepath.Join(root, "data"),
+		JobFile:   filepath.Join(root, "job.json"),
+	}
+	var digest string
+	current := false
+	if err := c.view(w.ID, func(t *Tree) error {
+		digest = rootDigest(t)
+		if indexed, err := t.Read(pathIndexed); err == nil && string(indexed) == digest {
+			current = true
+			return nil
+		}
+		_, err := materialize(t, dirs)
+		return err
+	}); err != nil {
+		return errors.New("couldn't prepare its folder")
+	}
+	if current {
+		return nil
+	}
+	if err := os.WriteFile(dirs.JobFile, []byte("{}"), fileMode); err != nil {
+		return err
+	}
+	if dirs.Credentials, err = c.credentials(w, job); err != nil {
+		return err
+	}
+	result, err := c.cfg.Runner.Run(ctx, job.Runner, w.Account, dirs)
+	logs := map[string][]byte{prefixJobs + job.ID + "/index-events.jsonl": result.Events}
+	if len(result.Stderr) > 0 {
+		logs[prefixJobs+job.ID+"/index-stderr.txt"] = result.Stderr
+	}
+	results := &Results{Writes: logs}
+	switch {
+	case err != nil:
+	case result.ExitCode != 0:
+		err = fmt.Errorf("%w (exit %d)", errRunnerFailed, result.ExitCode)
+	default:
+		if results, err = collectIndex(dirs); err != nil {
+			results, err = &Results{Writes: logs}, errors.New("couldn't read back the index")
+			break
+		}
+		maps.Copy(results.Writes, logs)
+		results.Writes[pathIndexed] = []byte(digest)
+	}
+	if cerr := c.change(w.ID, func(t *Tree) error { return apply(t, results) }); cerr != nil && err == nil {
+		err = errors.New("couldn't keep the index")
+	}
+	return err
+}
+
+func (c *Coordinator) credentials(w Worker, job Job) (map[string]string, error) {
+	if c.cfg.Credentials == nil {
+		return nil, nil
+	}
+	creds, err := c.cfg.Credentials(w.Account, w.ID, job.ID)
+	if err != nil {
+		return nil, fmt.Errorf("the job's credentials: %w", err)
+	}
+	return creds, nil
+}
+
+// apply stages a job's results. Only the index step's carry an index.
 func apply(t *Tree, r *Results) error {
 	for p, data := range r.Writes {
 		if err := t.Write(p, data); err != nil {
 			return err
 		}
 	}
-	if len(r.Index) == 0 {
+	if r.Index == nil {
 		return nil
 	}
 	for _, p := range t.List(prefixIndex) {

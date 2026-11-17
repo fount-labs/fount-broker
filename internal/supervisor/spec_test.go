@@ -3,6 +3,8 @@ package supervisor
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/fount-labs/fount-broker/internal/jobwire"
 )
 
 func TestJobSpecIsTheSandboxPolicy(t *testing.T) {
@@ -55,7 +57,32 @@ func TestJobSpecIsTheSandboxPolicy(t *testing.T) {
 	if opts := mounts["/job.json"].Options; opts[len(opts)-1] != "ro" {
 		t.Errorf("job file options %v", opts)
 	}
+	if opts := mounts["/index"].Options; opts[len(opts)-1] != "ro" {
+		t.Errorf("an agent job's index options %v", opts)
+	}
+	job.Mode = jobwire.ModeIndex
+	data, _ = jobSpec("/harness/rootfs", img, 10001, 10001, limits, job, nil, "/g")
+	json.Unmarshal(data, &spec)
+	for _, m := range spec.Mounts {
+		if m.Destination == "/index" && m.Options[len(m.Options)-1] != "rw" {
+			t.Errorf("the index step's index options %v", m.Options)
+		}
+	}
 	if spec.Process.Env[len(spec.Process.Env)-1] != "HOME=/tmp" {
 		t.Errorf("env %v", spec.Process.Env)
+	}
+}
+
+func TestThreadsAreAFairShareOfTheCores(t *testing.T) {
+	for _, c := range []struct {
+		cpus        float64
+		cores, jobs int
+		want        int
+	}{
+		{0, 16, 8, 2}, {0, 4, 8, 1}, {0, 8, 0, 8}, {1.5, 16, 8, 2}, {0.2, 16, 8, 1}, {4, 2, 1, 4},
+	} {
+		if got := Threads(c.cpus, c.cores, c.jobs); got != c.want {
+			t.Errorf("Threads(%v, %d, %d) = %d, want %d", c.cpus, c.cores, c.jobs, got, c.want)
+		}
 	}
 }

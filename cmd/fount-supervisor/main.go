@@ -32,6 +32,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -97,17 +98,19 @@ func unpackTo(blobs, image, out string) error {
 }
 
 // sandboxFlags registers the sandbox policy's flags on fs, and returns a
-// function making the Supervisor once fs is parsed.
-func sandboxFlags(fs *flag.FlagSet) func(harness string) (*supervisor.Supervisor, error) {
+// function making the Supervisor once fs is parsed, for running up to jobs at
+// once.
+func sandboxFlags(fs *flag.FlagSet) func(harness string, jobs int) (*supervisor.Supervisor, error) {
 	state := fs.String("state", "/run/fount-supervisor", "folder for runsc's state and job bundles")
 	runsc := fs.String("runsc", "/usr/local/bin/runsc", "runsc binary")
 	platform := fs.String("platform", "systrap", "runsc platform")
 	memory := fs.Int64("memory-mib", 2048, "sandbox memory cap, MiB")
 	pids := fs.Int64("pids", 1024, "sandbox process and thread cap")
 	cpus := fs.Float64("cpus", 0, "sandbox CPU cap in cores; 0 is uncapped")
+	threads := fs.Int("threads", 0, "fount-runner --threads; 0 is the CPU cap rounded up, or else the cores shared between the jobs at once")
 	tmp := fs.Int64("tmp-mib", 2048, "sandbox /tmp size, MiB")
 	confinement := fs.String("confinement", "gvisor", "fount-runner --script-confinement")
-	return func(harness string) (*supervisor.Supervisor, error) {
+	return func(harness string, jobs int) (*supervisor.Supervisor, error) {
 		var img supervisor.Image
 		data, err := os.ReadFile(filepath.Join(harness, "image.json"))
 		if err != nil {
@@ -132,7 +135,11 @@ func sandboxFlags(fs *flag.FlagSet) func(harness string) (*supervisor.Supervisor
 				Pids:        *pids,
 				CPUs:        *cpus,
 				TmpBytes:    *tmp << 20,
+				Threads:     *threads,
 			},
+		}
+		if s.Limits.Threads == 0 {
+			s.Limits.Threads = supervisor.Threads(s.Limits.CPUs, runtime.NumCPU(), jobs)
 		}
 		return s, supervisor.PrepareCgroups(s.Cgroups, s.CgroupParent)
 	}
@@ -150,7 +157,8 @@ func run(args []string) (int, error) {
 	fs.StringVar(&job.Workspace, "workspace", "", "fount-runner --workspace")
 	fs.StringVar(&job.JobFile, "job", "", "fount-runner --job")
 	fs.StringVar(&job.Data, "data", "", "fount-runner --data")
-	fs.StringVar(&job.Index, "index", "", "fount-runner --index")
+	fs.StringVar(&job.Index, "index", "", "the kept index: read-only, or written by --mode index")
+	fs.StringVar((*string)(&job.Mode), "mode", "", "empty for an agent job, index for the index step")
 	fs.Parse(args)
 	if *harness == "" {
 		return 2, errors.New("run needs --harness")
@@ -170,7 +178,7 @@ func run(args []string) (int, error) {
 			}
 		}
 	}
-	s, err := newSupervisor(*harness)
+	s, err := newSupervisor(*harness, 1)
 	if err != nil {
 		return 2, err
 	}
@@ -242,7 +250,7 @@ func serve(args []string) error {
 			}
 		}
 	}
-	s, err := newSupervisor(*harness)
+	s, err := newSupervisor(*harness, *maxJobs)
 	if err != nil {
 		return err
 	}
@@ -262,6 +270,6 @@ func serve(args []string) error {
 		Timeout:   *timeout,
 		Owner:     &filetree.Owner{UID: sandboxUID, GID: sandboxUID},
 	}
-	log.Printf("taking jobs on %s", path)
+	log.Printf("taking jobs on %s, up to %d at once, %d threads each", path, *maxJobs, s.Limits.Threads)
 	return srv.Serve(ctx, l)
 }

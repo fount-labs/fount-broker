@@ -268,10 +268,16 @@ customer data, keys or network.
    registry token off the registry's host. `index.json` is written last.
 2. `fount-supervisor serve` waits for it, checks and unpacks the image as
    above, deletes the blobs, and listens on `sockets/supervisor.sock`.
-3. Each job arrives from the coordinator on one TCP connection, as frames
+3. Each job arrives from the coordinator on one connection over the attested
+   link ([`internal/link`](internal/link/link.go)): mutual TLS 1.3 over each
+   enclave's attested per-boot `fount-link` key, then each end sends an
+   attestation document whose nonce is the session's TLS exporter, and checks
+   the other's against the repository it pins and against the TLS key. Then,
+   as frames
    ([`internal/jobwire`](internal/jobwire/jobwire.go)): a header with the
-   job's account and credentials and fount-runner's job file, then the
-   workspace and index as tar streams of plain files and directories
+   job's account, its mode, the credentials the coordinator minted for that
+   job alone ([`internal/jobcred`](internal/jobcred/jobcred.go)) and
+   fount-runner's job file, then the workspace and index as tar streams of plain files and directories
    ([`internal/filetree`](internal/filetree/filetree.go)). The broker
    ([`internal/relay`](internal/relay/relay.go)) keeps the credentials, names
    the job, serves the job's own broker on `sockets/<id>/job.sock` with a vault
@@ -279,17 +285,23 @@ customer data, keys or network.
    rest to the supervisor unread. The supervisor never sees a credential.
 4. The supervisor makes the job's folders from the streams, runs it with
    `sockets/<id>` at `/run/broker` and `--broker-socket /run/broker/job.sock`,
-   streams its output back, and sends back its workspace and index once the
-   sandbox is gone. The coordinator cancels a job by closing the connection.
+   a fair share of the cores as `--threads`, streams its output back, and
+   sends back the one tree the job's mode returns once the sandbox is gone.
+   The coordinator cancels a job by closing the connection.
 
-The job listener is plain TCP, so `runner` is in dev builds only, until the
-coordinator's channel is attested. A local run of all three, with a registry:
+A worker's index is written only by the index step (mode `index`), which the
+coordinator runs first whenever the worker's files changed since the last one.
+An agent job gets the index read-only, searches a private copy, and doesn't
+send it back.
+
+A local run of all three, with a registry, both ends of the link unattested
+(dev builds only):
 
 ```sh
 fount-broker runner --image registry:5000/fount-labs/runner@sha256:<digest> \
-  --listen 0.0.0.0:7400            # FOUNT_BROKER_REGISTRY=http://registry:5000
+  --listen 0.0.0.0:7400 --coordinator-repo unattested   # FOUNT_BROKER_REGISTRY=http://registry:5000
 fount-supervisor serve --image sha256:<digest>   # privileged, --network none
-fount-coordinator --dir /tmp/coordinator --runner-addr 127.0.0.1:7400
+fount-coordinator --dir /tmp/coordinator --runner-addr 127.0.0.1:7400 --runner-repo unattested
 ```
 
 `fount-supervisor run` takes one job as fount-runner's folder flags instead, so
@@ -303,7 +315,8 @@ fount-coordinator --dir /tmp/coordinator -- fount-supervisor run --harness /harn
 Parse surfaces: the image index, manifest and config (JSON, after their digest
 matches, 4 MiB cap), and the layers' tar streams (after their digest matches;
 capped bytes and entries; fuzzed by `FuzzLayer`); each job's first frame
-(strict, both hops; `FuzzDecodeJob`) and its tar streams, in both directions
+(strict, both hops; `FuzzDecodeJob`), the link's peer certificate (Go's
+x509) and its attestation document (tinfoil-go's verifier) and its tar streams, in both directions
 (plain files and directories only, capped; `FuzzExtract`).
 
 ## Verifying the broker in your copy of Fount

@@ -5,7 +5,7 @@
 //
 // Run as "fount-broker mail-verify", it is the offline mail sender verifier the
 // broker starts for each message; see package verify. Run as "fount-broker
-// runner", it is a Cloud runner enclave's broker; see runner_dev.go.
+// runner", it is a Cloud runner enclave's broker; see runner.go.
 package main
 
 import (

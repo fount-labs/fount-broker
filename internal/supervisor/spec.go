@@ -2,8 +2,11 @@ package supervisor
 
 import (
 	"encoding/json"
+	"math"
 	"strconv"
 	"strings"
+
+	"github.com/fount-labs/fount-broker/internal/jobwire"
 )
 
 // The OCI runtime spec, as much of it as a job's sandbox uses.
@@ -90,6 +93,19 @@ type Limits struct {
 	CPUs float64
 	// TmpBytes sizes the sandbox's tmpfs /tmp.
 	TmpBytes int64
+	// Threads is fount-runner's --threads: how many threads ferrules' ONNX
+	// Runtime and a script's numeric libraries start. 0 leaves them one per
+	// core, which oversubscribes an enclave running several jobs.
+	Threads int
+}
+
+// Threads is a job's fair share of the enclave's cores: its CPU cap rounded
+// up, or else the cores divided between the jobs that can run at once.
+func Threads(cpus float64, cores, jobs int) int {
+	if cpus > 0 {
+		return max(1, int(math.Ceil(cpus)))
+	}
+	return max(1, cores/max(jobs, 1))
 }
 
 // Sandbox paths, fixed: the runner sees the same layout in every job.
@@ -108,6 +124,12 @@ func jobSpec(rootfs string, img *Image, uid, gid uint32, limits Limits, job Job,
 	if !hasEnv(env, "HOME") {
 		env = append(env, "HOME=/tmp")
 	}
+	// Only the index step writes the index, so a hijacked job can't poison
+	// the next one's (m4-cloud-runners.md §5.1a).
+	index := "ro"
+	if job.Mode == jobwire.ModeIndex {
+		index = "rw"
+	}
 	mounts := []specMount{
 		{Destination: "/proc", Type: "proc", Source: "proc"},
 		{Destination: "/dev", Type: "tmpfs", Source: "tmpfs"},
@@ -115,7 +137,7 @@ func jobSpec(rootfs string, img *Image, uid, gid uint32, limits Limits, job Job,
 		{Destination: "/tmp", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "nodev", "size=" + strconv.FormatInt(limits.TmpBytes, 10)}},
 		{Destination: sandboxWork, Type: "bind", Source: job.Workspace, Options: []string{"rbind", "rw"}},
 		{Destination: sandboxData, Type: "bind", Source: job.Data, Options: []string{"rbind", "rw"}},
-		{Destination: sandboxIndex, Type: "bind", Source: job.Index, Options: []string{"rbind", "rw"}},
+		{Destination: sandboxIndex, Type: "bind", Source: job.Index, Options: []string{"rbind", index}},
 		{Destination: sandboxJob, Type: "bind", Source: job.JobFile, Options: []string{"rbind", "ro"}},
 	}
 	if job.SocketDir != "" {

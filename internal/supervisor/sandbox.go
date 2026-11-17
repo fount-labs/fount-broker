@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/fount-labs/fount-broker/internal/jobwire"
 )
 
 // Supervisor runs jobs, each in a fresh runsc sandbox whose root is the
@@ -39,9 +41,13 @@ type Supervisor struct {
 }
 
 // Job is one job's folders, prepared by the caller and read back after. They
-// are fount-runner's --workspace, --data, --index and --job.
+// are fount-runner's --workspace, --data, --index (or --index-read-only) and
+// --job.
 type Job struct {
-	ID        string
+	ID string
+	// Mode is jobwire's: an agent job sees Index read-only; the index step
+	// writes it and runs no agent.
+	Mode      jobwire.Mode
 	Workspace string
 	Data      string
 	Index     string
@@ -89,11 +95,18 @@ func (s *Supervisor) Run(ctx context.Context, job Job, stdout, stderr io.Writer)
 		return Result{}, err
 	}
 	defer os.RemoveAll(bundle)
-	args := append(append([]string{}, s.Image.Entrypoint...),
-		"--workspace", sandboxWork, "--job", sandboxJob, "--index", sandboxIndex,
-		"--script-confinement", s.Confinement)
+	args := append(append([]string{}, s.Image.Entrypoint...), "--workspace", sandboxWork)
+	if job.Mode == jobwire.ModeIndex {
+		args = append(args, "--mode", "index", "--index", sandboxIndex)
+	} else {
+		args = append(args, "--job", sandboxJob, "--index-read-only", sandboxIndex,
+			"--script-confinement", s.Confinement)
+	}
 	if job.SocketDir != "" {
 		args = append(args, "--broker-socket", sandboxBroker+"/"+jobSocket)
+	}
+	if s.Limits.Threads > 0 {
+		args = append(args, "--threads", strconv.Itoa(s.Limits.Threads))
 	}
 	cgroupsPath := "/" + filepath.Join(s.CgroupParent, job.ID, "sandbox")
 	spec, err := jobSpec(s.RootFS, s.Image, s.UID, s.GID, s.Limits, job, args, cgroupsPath)
@@ -108,6 +121,11 @@ func (s *Supervisor) Run(ctx context.Context, job Job, stdout, stderr io.Writer)
 	global := []string{"--root=" + runscRoot, "--platform=" + s.Platform, "--network=none"}
 	if job.SocketDir != "" {
 		global = append(global, "--host-uds=open")
+	}
+	// Without it gVisor shows the job every core, whatever its CPU cap, and
+	// anything sizing itself by the core count oversubscribes.
+	if s.Limits.CPUs > 0 {
+		global = append(global, "--cpu-num-from-quota")
 	}
 	cmd := exec.Command(s.Runsc, append(global, "run", "--bundle", bundle, job.ID)...)
 	cmd.Env = []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}

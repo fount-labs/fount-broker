@@ -128,20 +128,20 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		Seconds: res.Duration.Seconds(), PeakBytes: res.PeakBytes, OOMKills: res.OOMKills}, nil); err != nil {
 		return
 	}
-	// The job's folders go back even when it failed or was stopped, as a local
-	// runner's would, so its transcript isn't lost.
-	for _, t := range []struct {
-		dir  string
-		kind jobwire.Kind
-	}{{dirs.Workspace, jobwire.KindWorkspace}, {dirs.Index, jobwire.KindIndex}} {
-		out := jobwire.Chunks{W: w, Kind: t.kind}
-		if err := filetree.Pack(t.dir, out, s.Limits); err != nil {
-			fail(fmt.Errorf("send back the job's %s: %w", t.kind, err))
-			return
-		}
-		if err := out.Close(); err != nil {
-			return
-		}
+	// The job's tree goes back even when it failed or was stopped, as a local
+	// runner's would, so its transcript isn't lost. An agent job's index never
+	// does.
+	back := jobwire.Chunks{W: w, Kind: job.Mode.Returns()}
+	dir := dirs.Workspace
+	if job.Mode == jobwire.ModeIndex {
+		dir = dirs.Index
+	}
+	if err := filetree.Pack(dir, back, s.Limits); err != nil {
+		fail(fmt.Errorf("send back the job's %s: %w", back.Kind, err))
+		return
+	}
+	if err := back.Close(); err != nil {
+		return
 	}
 	if runErr != nil {
 		fail(runErr)
@@ -159,6 +159,7 @@ func (s *Server) prepare(conn net.Conn, job jobwire.Job, jobFile []byte) (Job, e
 	}
 	dirs := Job{
 		ID:        job.ID,
+		Mode:      job.Mode,
 		Workspace: filepath.Join(dir, "work"),
 		Data:      filepath.Join(dir, "data"),
 		Index:     filepath.Join(dir, "index"),

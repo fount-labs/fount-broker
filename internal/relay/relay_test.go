@@ -15,6 +15,8 @@ import (
 	"github.com/fount-labs/fount-broker/internal/broker"
 	"github.com/fount-labs/fount-broker/internal/coordinator"
 	"github.com/fount-labs/fount-broker/internal/frame"
+	"github.com/fount-labs/fount-broker/internal/jobwire"
+	"github.com/fount-labs/fount-broker/internal/link"
 	"github.com/fount-labs/fount-broker/internal/route"
 	"github.com/fount-labs/fount-broker/internal/supervisor"
 )
@@ -56,12 +58,14 @@ func (f *fakeSandbox) Run(ctx context.Context, job supervisor.Job, stdout, stder
 	fmt.Fprint(stderr, "log line")
 	os.WriteFile(filepath.Join(job.Workspace, "files", "in.md"), append(in, " edited"...), 0o644)
 	os.Remove(filepath.Join(job.Workspace, "files", "gone.md"))
-	os.WriteFile(filepath.Join(job.Index, "idx"), []byte("index"), 0o644)
+	os.WriteFile(filepath.Join(job.Index, "idx"), []byte(string(job.Mode)), 0o644)
 	return supervisor.Result{ExitCode: 0, Duration: time.Second, PeakBytes: 300 << 20}, nil
 }
 
 type harness struct {
-	addr    string
+	addr string
+	// linked takes jobs over the link only.
+	linked  string
 	sockets string
 	sandbox *fakeSandbox
 	vaults  chan *broker.Vault
@@ -99,10 +103,24 @@ func start(t *testing.T, account string) *harness {
 	}}
 	relayDone := make(chan struct{})
 	go func() { r.Serve(ctx, jobL); close(relayDone) }()
+	linkedL, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.linked = linkedL.Addr().String()
+	runnerEnd, err := link.Unattested()
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked := *r
+	linked.Link = runnerEnd
+	linkedDone := make(chan struct{})
+	go func() { linked.Serve(ctx, linkedL); close(linkedDone) }()
 	t.Cleanup(func() {
 		cancel()
 		<-supDone
 		<-relayDone
+		<-linkedDone
 	})
 	return h
 }
@@ -119,6 +137,7 @@ func jobDirs(t *testing.T) coordinator.JobDirs {
 	}
 	os.WriteFile(filepath.Join(d.Workspace, "files", "in.md"), []byte("hello"), 0o644)
 	os.WriteFile(filepath.Join(d.Workspace, "files", "gone.md"), []byte("bye"), 0o644)
+	os.WriteFile(filepath.Join(d.Index, "kept"), []byte("kept"), 0o644)
 	os.WriteFile(d.JobFile, []byte(`{"sessionId":"s","prompt":"p","config":{}}`), 0o644)
 	return d
 }
@@ -126,7 +145,8 @@ func jobDirs(t *testing.T) coordinator.JobDirs {
 func TestAJobGoesThroughAndComesBack(t *testing.T) {
 	h := start(t, "")
 	dirs := jobDirs(t)
-	runner := coordinator.RemoteRunner{Addr: h.addr, Credentials: map[string]string{"license": "L-acct1"}}
+	dirs.Credentials = map[string]string{"license": "L-acct1"}
+	runner := coordinator.RemoteRunner{Addr: h.addr}
 	res, err := runner.Run(context.Background(), "runner-1", "acct1", dirs)
 	if err != nil {
 		t.Fatalf("%v\nstdout %s\nstderr %s", err, res.Events, res.Stderr)
@@ -152,12 +172,59 @@ func TestAJobGoesThroughAndComesBack(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dirs.Workspace, "files", "gone.md")); err == nil {
 		t.Error("a file the job deleted came back")
 	}
-	if data, _ := os.ReadFile(filepath.Join(dirs.Index, "idx")); string(data) != "index" {
-		t.Errorf("index came back %q", data)
+	if job.Mode != jobwire.ModeAgent {
+		t.Errorf("mode %q", job.Mode)
+	}
+	// The index went in and stayed behind.
+	if entries, _ := os.ReadDir(dirs.Index); len(entries) != 1 {
+		t.Errorf("index came back %v", entries)
 	}
 	// The job's socket, its folder and its job folder are gone.
 	if entries, _ := os.ReadDir(h.sockets); len(entries) != 1 {
 		t.Errorf("sockets volume holds %v", entries)
+	}
+}
+
+func TestTheIndexStepHandsBackOnlyTheIndex(t *testing.T) {
+	h := start(t, "")
+	dirs := jobDirs(t)
+	dirs.Mode = jobwire.ModeIndex
+	if _, err := (coordinator.RemoteRunner{Addr: h.addr}).Run(context.Background(), "r", "acct1", dirs); err != nil {
+		t.Fatal(err)
+	}
+	if job := <-h.sandbox.sawJob; job.Mode != jobwire.ModeIndex {
+		t.Errorf("mode %q", job.Mode)
+	}
+	if data, _ := os.ReadFile(filepath.Join(dirs.Index, "idx")); string(data) != "index" {
+		t.Errorf("index came back %q", data)
+	}
+	if data, _ := os.ReadFile(filepath.Join(dirs.Index, "kept")); string(data) != "kept" {
+		t.Errorf("the kept index wasn't given to the step: %q", data)
+	}
+	if data, _ := os.ReadFile(filepath.Join(dirs.Workspace, "files", "in.md")); string(data) != "hello" {
+		t.Errorf("the index step's workspace came back: %q", data)
+	}
+}
+
+func TestJobsCrossTheLink(t *testing.T) {
+	h := start(t, "")
+	coordinatorEnd, err := link.Unattested()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (coordinator.RemoteRunner{Addr: h.linked, Link: coordinatorEnd}).Run(context.Background(), "r", "acct1", jobDirs(t)); err != nil {
+		t.Fatal(err)
+	}
+	<-h.sandbox.sawJob
+	// A coordinator that won't do the handshake gets nothing back, not even
+	// an error frame.
+	if _, err := (coordinator.RemoteRunner{Addr: h.linked}).Run(context.Background(), "r", "acct1", jobDirs(t)); err == nil {
+		t.Fatal("a plain connection ran a job")
+	}
+	select {
+	case <-h.sandbox.sawJob:
+		t.Fatal("a plain connection's job reached the supervisor")
+	default:
 	}
 }
 
@@ -183,8 +250,9 @@ func TestTheSupervisorNeverSeesCredentials(t *testing.T) {
 	defer cancel()
 	r := &Relay{Sockets: sockets, NewBroker: func(v *broker.Vault) *broker.Broker { return nil }}
 	go r.Serve(ctx, jobL)
-	coordinator.RemoteRunner{Addr: jobL.Addr().String(), Credentials: map[string]string{"license": "SECRET"}}.
-		Run(context.Background(), "r", "acct1", jobDirs(t))
+	dirs := jobDirs(t)
+	dirs.Credentials = map[string]string{"license": "SECRET"}
+	coordinator.RemoteRunner{Addr: jobL.Addr().String()}.Run(context.Background(), "r", "acct1", dirs)
 	header := <-got
 	var j map[string]any
 	json.Unmarshal(header, &j)

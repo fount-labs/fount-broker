@@ -5,7 +5,7 @@
 //
 // Coordinator to supervisor:
 //
-//	{"kind":"job","account":"…","credentials":{"license":"…"}}  body: fount-runner's job file, unread
+//	{"kind":"job","mode":"…","account":"…","credentials":{"license":"…"}}  body: fount-runner's job file, unread
 //	{"kind":"workspace"}  body: the next piece of the workspace as a filetree stream; an empty body ends it
 //	{"kind":"index"}      the kept index, the same way
 //
@@ -13,7 +13,8 @@
 //
 //	{"kind":"stdout"}, {"kind":"stderr"}  body: the runner's output as it comes
 //	{"kind":"exit","exitCode":0,"seconds":1.5,"peakBytes":N,"oomKills":0}
-//	{"kind":"workspace"} …, {"kind":"index"} …  the job's folders once its sandbox is gone
+//	{"kind":"workspace"} …  an agent job's workspace once its sandbox is gone
+//	{"kind":"index"} …      or, from the index step, the index it built
 //	{"kind":"end"}
 //	{"kind":"error","message":"…"}  in place of anything still to come
 //
@@ -48,9 +49,30 @@ const (
 	KindError     Kind = "error"
 )
 
+// Mode is what a job's sandbox does (m4-cloud-runners.md §5.5).
+type Mode string
+
+const (
+	// ModeAgent runs the agent. It gets the kept index read-only, and only its
+	// workspace comes back.
+	ModeAgent Mode = ""
+	// ModeIndex brings the kept index up to date with the workspace and runs
+	// nothing else. Only the index comes back.
+	ModeIndex Mode = "index"
+)
+
+// Returns is the one tree a job of this mode sends back.
+func (m Mode) Returns() Kind {
+	if m == ModeIndex {
+		return KindIndex
+	}
+	return KindWorkspace
+}
+
 // Job is the first frame's header.
 type Job struct {
 	Kind Kind `json:"kind"`
+	Mode Mode `json:"mode,omitempty"`
 	// ID names the job's sandbox and socket. The broker picks it; the
 	// coordinator never sends one.
 	ID      string `json:"id,omitempty"`
@@ -94,6 +116,9 @@ func DecodeJob(f frame.Frame, hop Hop) (Job, error) {
 	}
 	if j.Kind != KindJob {
 		return Job{}, fmt.Errorf("%w: first frame is %q, not a job", ErrMalformed, j.Kind)
+	}
+	if j.Mode != ModeAgent && j.Mode != ModeIndex {
+		return Job{}, fmt.Errorf("%w: mode %q", ErrMalformed, j.Mode)
 	}
 	if !accountPattern.MatchString(j.Account) {
 		return Job{}, fmt.Errorf("%w: account %q", ErrMalformed, j.Account)

@@ -10,6 +10,7 @@ import (
 	"github.com/fount-labs/fount-broker/internal/filetree"
 	"github.com/fount-labs/fount-broker/internal/frame"
 	"github.com/fount-labs/fount-broker/internal/jobwire"
+	"github.com/fount-labs/fount-broker/internal/link"
 )
 
 // RemoteRunner sends each job to a runner enclave's broker, which relays it to
@@ -17,15 +18,15 @@ import (
 // (m4-cloud-runners.md §5.1c). The job's workspace and index travel with it and
 // come back once its sandbox is gone; the data folder stays behind.
 //
-// Dev only: the connection is plain TCP. In the pool it is attested, both ways.
+// The connection is the attested link (package link): the runner proves its
+// release before the job is sent, and the coordinator proves its own.
 type RemoteRunner struct {
 	// Addr is the runner broker's job listener.
 	Addr string
-	// Credentials are each job's tokens. In the pool the coordinator mints
-	// them per job, scoped to the job's account.
-	Credentials map[string]string
-	Timeout     time.Duration
-	Limits      filetree.Limits
+	// Link is the coordinator's end. Nil dials plain TCP: tests only.
+	Link    *link.Side
+	Timeout time.Duration
+	Limits  filetree.Limits
 }
 
 func (r RemoteRunner) Run(ctx context.Context, _, account string, job JobDirs) (RunResult, error) {
@@ -40,6 +41,13 @@ func (r RemoteRunner) Run(ctx context.Context, _, account string, job JobDirs) (
 		return RunResult{}, fmt.Errorf("reach the runner: %w", err)
 	}
 	defer conn.Close()
+	if r.Link != nil {
+		tc, err := r.Link.Client(ctx, conn)
+		if err != nil {
+			return RunResult{}, fmt.Errorf("the runner's link: %w", err)
+		}
+		conn = tc
+	}
 	// Closing the connection is how a job is cancelled.
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
@@ -58,7 +66,7 @@ func (r RemoteRunner) exchange(conn net.Conn, account string, job JobDirs) (resu
 		return result, err
 	}
 	sendErr := func() error {
-		if err := jobwire.Send(w, jobwire.Job{Kind: jobwire.KindJob, Account: account, Credentials: r.Credentials}, jobFile); err != nil {
+		if err := jobwire.Send(w, jobwire.Job{Kind: jobwire.KindJob, Mode: job.Mode, Account: account, Credentials: job.Credentials}, jobFile); err != nil {
 			return err
 		}
 		for _, t := range []struct {
@@ -102,22 +110,21 @@ func (r RemoteRunner) exchange(conn net.Conn, account string, job JobDirs) (resu
 			return result, fmt.Errorf("runner: %w", reply.Err())
 		case jobwire.KindExit:
 			result.ExitCode = reply.ExitCode
-			// The job's trees replace what the coordinator put there, so a file
-			// the job deleted stays deleted.
-			for _, t := range []struct {
-				dir  string
-				kind jobwire.Kind
-			}{{job.Workspace, jobwire.KindWorkspace}, {job.Index, jobwire.KindIndex}} {
-				if err := emptyDir(t.dir); err != nil {
-					return result, err
-				}
-				in := &jobwire.Stream{R: conn, Kind: t.kind}
-				if _, err := filetree.Extract(in, t.dir, r.Limits, nil); err != nil {
-					return result, fmt.Errorf("the job's %s: %w", t.kind, err)
-				}
-				if err := in.Drain(); err != nil {
-					return result, fmt.Errorf("the job's %s: %w", t.kind, err)
-				}
+			// The tree the job hands back replaces what the coordinator put
+			// there, so a file the job deleted stays deleted.
+			kind, dir := job.Mode.Returns(), job.Workspace
+			if job.Mode == jobwire.ModeIndex {
+				dir = job.Index
+			}
+			if err := emptyDir(dir); err != nil {
+				return result, err
+			}
+			in := &jobwire.Stream{R: conn, Kind: kind}
+			if _, err := filetree.Extract(in, dir, r.Limits, nil); err != nil {
+				return result, fmt.Errorf("the job's %s: %w", kind, err)
+			}
+			if err := in.Drain(); err != nil {
+				return result, fmt.Errorf("the job's %s: %w", kind, err)
 			}
 		case jobwire.KindEnd:
 			return result, nil

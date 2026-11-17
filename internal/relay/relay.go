@@ -27,6 +27,7 @@ import (
 	"github.com/fount-labs/fount-broker/internal/broker"
 	"github.com/fount-labs/fount-broker/internal/frame"
 	"github.com/fount-labs/fount-broker/internal/jobwire"
+	"github.com/fount-labs/fount-broker/internal/link"
 	"github.com/fount-labs/fount-broker/internal/policy"
 )
 
@@ -37,6 +38,10 @@ const (
 
 type Relay struct {
 	Sockets string
+	// Link proves each connection's coordinator, and this enclave to it,
+	// before a job is read (package link). Nil takes plain connections: tests
+	// only.
+	Link *link.Side
 	// NewBroker makes the broker for one connection on a job's socket. It
 	// must set Locked, and give it no mail and no package tunnel.
 	NewBroker func(vault *broker.Vault) *broker.Broker
@@ -61,6 +66,15 @@ func (r *Relay) Serve(ctx context.Context, l net.Listener) error {
 		}
 		wg.Go(func() {
 			defer conn.Close()
+			if r.Link != nil {
+				tc, err := r.Link.Server(ctx, conn)
+				if err != nil {
+					log.Printf("link from %s: %v", conn.RemoteAddr(), err)
+					return
+				}
+				defer tc.Close()
+				conn = tc
+			}
 			if err := r.handle(ctx, conn); err != nil {
 				log.Printf("job: %v", err)
 				w := frame.NewWriter(conn)
@@ -123,7 +137,7 @@ func (r *Relay) handle(ctx context.Context, conn net.Conn) error {
 		return fmt.Errorf("the supervisor isn't taking jobs: %w", err)
 	}
 	defer sup.Close()
-	if err := jobwire.Send(frame.NewWriter(sup), jobwire.Job{Kind: jobwire.KindJob, ID: id, Account: job.Account}, first.Body); err != nil {
+	if err := jobwire.Send(frame.NewWriter(sup), jobwire.Job{Kind: jobwire.KindJob, Mode: job.Mode, ID: id, Account: job.Account}, first.Body); err != nil {
 		return err
 	}
 	log.Printf("job %s: relaying", id)
