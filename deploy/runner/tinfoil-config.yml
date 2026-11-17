@@ -1,7 +1,7 @@
-# DRAFT for review, not deployed: a Cloud runner enclave (m4-cloud-runners.md
+# The working copy of a Cloud runner enclave (m4-cloud-runners.md
 # §5.1c). Its live copy is github.com/fount-labs/fount-cloud-runner, which the
 # coordinator pins with --runner-repo.
-cvm-version: 0.14.17 # https://github.com/tinfoilsh/cvmimage/releases/latest, no `v`
+cvm-version: 0.14.18 # https://github.com/tinfoilsh/cvmimage/releases/latest, no `v`
 cpus: 8
 memory: 32768
 
@@ -25,7 +25,7 @@ networks:
 
 containers:
   - name: broker
-    image: "ghcr.io/fount-labs/fount-broker/broker@sha256:80b7293337d390d15f5bbb681bb729d7b0440879bb8a67f7e7d88a0169707163" # v0.4.0
+    image: "ghcr.io/fount-labs/fount-broker/broker@sha256:97b520db9021958b8fb36c726521dfe0d4529b0f06ec67c0f7897a8ab4ff9b59" # v0.5.2
     networks: [broker-out]
     keys: [fount-link]
     # The link sends this enclave's document; the coordinator checks it.
@@ -36,7 +36,7 @@ containers:
       - harness-blobs:/harness-blobs
       - sockets:/sockets
     env:
-      - FOUNT_COORDINATOR_REPO: "fount-labs/fount-cloud-coordinator" # TODO: the coordinator's config repo
+      - FOUNT_COORDINATOR_REPO: "fount-labs/fount-cloud-coordinator" # its releases are the only coordinator it takes jobs from
       - FOUNT_HARNESS_IMAGE: "ghcr.io/fount-labs/fount-runner@sha256:2984c2c42148d6f3c45120644815f0954e0b8a1ae84a1b3d5e206ae83641cee3" # fount-app be741a3e
     secrets:
       # Read-only, for the private harness (fount's runner-image workflow
@@ -54,13 +54,15 @@ containers:
       start_period: 1m
 
   - name: supervisor
-    image: "ghcr.io/fount-labs/fount-broker/supervisor@sha256:4fa287dd4b95bc37a3dc1f55ed01052530d83d0b086c59061be8a97ded31c7bc" # v0.4.0
+    image: "ghcr.io/fount-labs/fount-broker/supervisor@sha256:6890a96943d546db663c3430fac679f491c044900720e93ce4877ba8a245d325" # v0.5.2
     # runsc needs it (§5.1b). It has authority over the whole enclave,
     # including the broker's fount-link key, so its image is open and pinned.
     cvm_admin: true
     networks: []
     restart: always
-    command: ["serve", "--image", "sha256:2984c2c42148d6f3c45120644815f0954e0b8a1ae84a1b3d5e206ae83641cee3"]
+    # 32 at once with 2 cores each is the ramp's ceiling (fount m4-cloud-runners.md
+    # §5.2a), not a sizing: the caps overcommit memory on purpose, to find the knee.
+    command: ["serve", "--image", "sha256:2984c2c42148d6f3c45120644815f0954e0b8a1ae84a1b3d5e206ae83641cee3", "--max-jobs", "32", "--cpus", "2"]
     volumes:
       - harness-blobs:/harness-blobs
       - sockets:/sockets

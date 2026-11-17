@@ -30,7 +30,7 @@ networks:
 
 containers:
   - name: coordinator
-    image: "ghcr.io/fount-labs/fount-broker/coordinator@sha256:df2229e8a25487afe457a737ac9d4add0ad3582e97f15658a4529400fc286420" # v0.5.1
+    image: "ghcr.io/fount-labs/fount-broker/coordinator@sha256:178e0c73e07b60778e75e2b4d79da2817998a729c657ca348daa8097b80e9f23" # v0.5.2
     networks: [coordinator-out]
     keys: [fount-link, job-signing]
     attestation: true
@@ -43,7 +43,7 @@ containers:
       - "--runners"
       - "1"
       - "--slots"
-      - "8" # the runner's fount-supervisor --max-jobs
+      - "32" # the runner's fount-supervisor --max-jobs
       - "--test-api"
       - "--listen"
       - "0.0.0.0:8790"
