@@ -267,7 +267,10 @@ customer data, keys or network.
    following redirects only to the policy's hosts and never sending the
    registry token off the registry's host. `index.json` is written last.
 2. `fount-supervisor serve` waits for it, checks and unpacks the image as
-   above, deletes the blobs, and listens on `sockets/supervisor.sock`.
+   above, deletes the blobs, and listens on `sockets/supervisor.sock`. Each
+   job's folders go in its own `/jobs` volume. The broker listens from the
+   start, but its `/status` says `ready`, and its link takes jobs, only once
+   the pull is done and that socket answers.
 3. Each job arrives from the coordinator on one connection over the attested
    link ([`internal/link`](internal/link/link.go)). A Tinfoil enclave takes
    only HTTPS through its shim, so the connection is an HTTP upgrade to

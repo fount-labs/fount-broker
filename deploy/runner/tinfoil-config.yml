@@ -44,12 +44,16 @@ containers:
     secrets:
       # Read-only; omit if the harness package is public.
       - FOUNT_BROKER_REGISTRY_TOKEN
+    # /health answers as soon as the broker listens, before its harness pull:
+    # Tinfoil's boot gate wants it within about a minute, whatever
+    # start_period says. /status shows the pull and the supervisor; the link
+    # takes jobs only once both are ready.
     healthcheck:
-      test: ["CMD", "/fount-broker", "health", "http://127.0.0.1:7400/health"] # TODO: no such subcommand yet
+      test: ["CMD", "/fount-broker", "health", "http://127.0.0.1:7400/health"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 2m
+      start_period: 1m
 
   - name: supervisor
     image: "ghcr.io/fount-labs/fount-supervisor@sha256:PLACEHOLDER_DIGEST"
@@ -62,10 +66,12 @@ containers:
     volumes:
       - harness-blobs:/harness-blobs
       - sockets:/sockets
+      - jobs:/jobs # each job's folders (--jobs)
 
 shim:
   upstream-port: 7400
   upstream-container: broker
   paths:
     - /health
+    - /status
     - /fount-link

@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -69,12 +72,13 @@ func runner(args []string) error {
 	if err != nil {
 		return err
 	}
-	status := &pullStatus{State: "pulling", Since: time.Now()}
+	status := &pullStatus{State: "pulling", Since: time.Now(),
+		supervisor: filepath.Join(*sockets, relay.SupervisorSocket)}
 	l := link.NewListener(tl.Addr())
 	mux := http.NewServeMux()
 	mux.HandleFunc(link.Path, func(w http.ResponseWriter, r *http.Request) {
 		if !status.ready() {
-			http.Error(w, "the harness isn't pulled yet", http.StatusServiceUnavailable)
+			http.Error(w, "the runner isn't ready; see /status", http.StatusServiceUnavailable)
 			return
 		}
 		l.ServeHTTP(w, r)
@@ -125,18 +129,74 @@ func runner(args []string) error {
 
 const pullRetry = 30 * time.Second
 
-// pullStatus is /status: how the harness pull is going. It holds nothing
-// secret; a failed pull's error names the registry and the image.
+// health is the runner container's healthcheck, so its image needs no HTTP
+// client:
+//
+//	fount-broker health [http://127.0.0.1:7400/health]
+//
+// It reaches only loopback.
+func health(args []string) error {
+	url := "http://127.0.0.1:7400/health"
+	if len(args) > 0 {
+		url = args[0]
+	}
+	u, err := neturl.Parse(url)
+	if err != nil {
+		return err
+	}
+	if ip := net.ParseIP(u.Hostname()); u.Scheme != "http" || ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("health checks only http://127.0.0.1, not %s", url)
+	}
+	c := &http.Client{Timeout: 5 * time.Second}
+	resp, err := c.Get(url)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%s: %s", url, resp.Status)
+	}
+	return nil
+}
+
+// pullStatus is /status: how the harness pull is going, and whether the
+// supervisor is taking jobs. It holds nothing secret; a failed pull's error
+// names the registry and the image.
+//
+// The supervisor's socket appears only once it has unpacked the pulled
+// harness, so a pulled runner isn't ready until the socket takes a connection.
+// The supervisor drops one that sends nothing.
 type pullStatus struct {
 	mu          sync.Mutex
-	State       string    `json:"state"` // pulling, ready
+	State       string    `json:"state"` // pulling, starting (the supervisor isn't up), ready
 	Since       time.Time `json:"since"`
 	PullSeconds float64   `json:"pullSeconds,omitempty"`
 	Failures    int       `json:"failures,omitempty"`
 	LastError   string    `json:"lastError,omitempty"`
+	Supervisor  string    `json:"supervisor,omitempty"` // why it isn't taking jobs
+
+	pulled     bool
+	supervisor string
+}
+
+// check updates State from the pull and a dial of the supervisor's socket.
+func (s *pullStatus) check() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.pulled {
+		return
+	}
+	c, err := net.DialTimeout("unix", s.supervisor, time.Second)
+	if err != nil {
+		s.State, s.Supervisor = "starting", err.Error()
+		return
+	}
+	c.Close()
+	s.State, s.Supervisor = "ready", ""
 }
 
 func (s *pullStatus) ready() bool {
+	s.check()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.State == "ready"
@@ -145,7 +205,7 @@ func (s *pullStatus) ready() bool {
 func (s *pullStatus) done(took time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.State, s.PullSeconds = "ready", took.Seconds()
+	s.pulled, s.State, s.PullSeconds = true, "starting", took.Seconds()
 }
 
 func (s *pullStatus) failed(err error) {
@@ -156,6 +216,7 @@ func (s *pullStatus) failed(err error) {
 }
 
 func (s *pullStatus) serve(w http.ResponseWriter, _ *http.Request) {
+	s.check()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")

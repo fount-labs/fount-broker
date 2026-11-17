@@ -40,6 +40,12 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "health" {
+		if err := health(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "runner" {
 		log.SetPrefix("fount-broker runner: ")
 		if err := runner(os.Args[2:]); err != nil {

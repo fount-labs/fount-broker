@@ -254,6 +254,11 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Made here, before the socket, so a config without a /jobs mount doesn't
+	// fail every job at its first mkdir.
+	if err := os.MkdirAll(*jobs, 0o755); err != nil {
+		return fmt.Errorf("jobs folder: %w", err)
+	}
 
 	path := filepath.Join(*sockets, "supervisor.sock")
 	os.Remove(path)
