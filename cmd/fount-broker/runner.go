@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"io"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,7 +33,8 @@ import (
 // pull is anonymous.
 //
 // The job listener is HTTP, behind the enclave's shim: each job is a
-// connection upgraded on link.Path (shim paths: /fount-link, /health), and
+// connection upgraded on link.Path (shim paths: /fount-link, /health,
+// /status), and
 // that connection is the attested link (package link):
 // the coordinator must prove it runs a release of --coordinator-repo, and this
 // enclave proves itself back with its attested fount-link key. Dev builds also
@@ -59,32 +62,58 @@ func runner(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The listener comes up before the pull, which takes minutes: the enclave's
+	// boot gate needs /health within about a minute, and /status is the only
+	// way to see from outside how the pull is going.
+	tl, err := net.Listen("tcp", *listen)
+	if err != nil {
+		return err
+	}
+	status := &pullStatus{State: "pulling", Since: time.Now()}
+	l := link.NewListener(tl.Addr())
+	mux := http.NewServeMux()
+	mux.HandleFunc(link.Path, func(w http.ResponseWriter, r *http.Request) {
+		if !status.ready() {
+			http.Error(w, "the harness isn't pulled yet", http.StatusServiceUnavailable)
+			return
+		}
+		l.ServeHTTP(w, r)
+	})
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok\n") })
+	mux.HandleFunc("/status", status.serve)
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	go srv.Serve(tl)
+	defer srv.Close()
+
 	if registry.Complete(*blobs, ref.Digest) {
 		log.Printf("%s is already pulled", ref)
+		status.done(0)
 	} else {
 		p := &registry.Puller{
 			Base:   base,
 			Client: registry.Client(append([]string{ref.Host}, policy.HarnessRegistryRedirectHosts...)...),
 			Token:  os.Getenv("FOUNT_BROKER_REGISTRY_TOKEN"),
 		}
-		start := time.Now()
-		if err := p.Pull(ctx, ref, *blobs); err != nil {
-			return err
+		for {
+			start := time.Now()
+			err := p.Pull(ctx, ref, *blobs)
+			if err == nil {
+				log.Printf("pulled %s in %.0fs", ref, time.Since(start).Seconds())
+				status.done(time.Since(start))
+				break
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			log.Printf("pull %s: %v; retrying in %s", ref, err, pullRetry)
+			status.failed(err)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(pullRetry):
+			}
 		}
-		log.Printf("pulled %s in %.0fs", ref, time.Since(start).Seconds())
 	}
-
-	tl, err := net.Listen("tcp", *listen)
-	if err != nil {
-		return err
-	}
-	l := link.NewListener(tl.Addr())
-	mux := http.NewServeMux()
-	mux.Handle(link.Path, l)
-	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok\n") })
-	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	go srv.Serve(tl)
-	defer srv.Close()
 	log.Printf("taking jobs on http://%s%s", tl.Addr(), link.Path)
 	r := &relay.Relay{Sockets: *sockets, Link: side, NewBroker: func(vault *broker.Vault) *broker.Broker {
 		b := broker.New(version, newRoutes(vault), vault)
@@ -92,4 +121,43 @@ func runner(args []string) error {
 		return b
 	}}
 	return r.Serve(ctx, l)
+}
+
+const pullRetry = 30 * time.Second
+
+// pullStatus is /status: how the harness pull is going. It holds nothing
+// secret; a failed pull's error names the registry and the image.
+type pullStatus struct {
+	mu          sync.Mutex
+	State       string    `json:"state"` // pulling, ready
+	Since       time.Time `json:"since"`
+	PullSeconds float64   `json:"pullSeconds,omitempty"`
+	Failures    int       `json:"failures,omitempty"`
+	LastError   string    `json:"lastError,omitempty"`
+}
+
+func (s *pullStatus) ready() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.State == "ready"
+}
+
+func (s *pullStatus) done(took time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.State, s.PullSeconds = "ready", took.Seconds()
+}
+
+func (s *pullStatus) failed(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Failures++
+	s.LastError = err.Error()
+}
+
+func (s *pullStatus) serve(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(s)
 }
