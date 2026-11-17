@@ -185,8 +185,15 @@ func TestAJobGoesThroughAndComesBack(t *testing.T) {
 	if entries, _ := os.ReadDir(dirs.Index); len(entries) != 1 {
 		t.Errorf("index came back %v", entries)
 	}
-	// The job's socket, its folder and its job folder are gone.
-	if entries, _ := os.ReadDir(h.sockets); len(entries) != 1 {
+	// The job's socket, its folder and its job folder are gone. The relay
+	// removes them as it returns, just after the reply reaches the runner.
+	var entries []os.DirEntry
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if entries, _ = os.ReadDir(h.sockets); len(entries) == 1 {
+			break
+		}
+	}
+	if len(entries) != 1 {
 		t.Errorf("sockets volume holds %v", entries)
 	}
 }
