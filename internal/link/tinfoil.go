@@ -83,6 +83,12 @@ func (a *SocketAttester) Attest(ctx context.Context, nonce []byte) ([]byte, erro
 // TinfoilChecker checks the peer's document against repo, the GitHub
 // repository whose releases the peer must run: hardware, provenance,
 // freshness and the nonce.
+//
+// It keeps nothing: each link verifies afresh and carries one job, so the
+// verification's FreshnessExpiresAt, after which tinfoil-go says it may
+// authorize nothing new, never outlives the one job it admits. VerifyV3
+// already refuses a document whose freshness proofs have lapsed. Caching a
+// peer's key across links would have to honour that deadline.
 func TinfoilChecker(repo string) (Checker, error) {
 	v, err := verify.NewVerifier()
 	if err != nil {
