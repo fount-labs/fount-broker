@@ -1,10 +1,11 @@
 # Enclave configs (drafts)
 
-Not deployed. The broker and supervisor images come from `Dockerfile`, built and attested by the release workflow at each tag. `runner/tinfoil-config.yml` is a runner enclave as m4-cloud-runners.md
-§5.1c describes it. Its placeholders are listed at the top of the file.
+The broker and supervisor images come from `Dockerfile`, built and attested by the release workflow at each tag. `runner/tinfoil-config.yml` is a runner enclave as m4-cloud-runners.md
+§5.1c describes it; the deployed copy is public `fount-labs/fount-cloud-runner` (v0.1.0 runs as `runner-a`). Its placeholders are listed at the top of the file.
 
-The coordinator enclave isn't built yet; it waits on P2 (dev API, dev wrapping key). Its
-config will need:
+The coordinator enclave isn't built yet. It is P2's first slice (m4-cloud-runners.md §7): until
+the key work lands it runs the dev wrapping key with a test-only job endpoint, so it handles test
+data only. Its config, public `fount-labs/fount-cloud-coordinator`, will need:
 
 ```yaml
 attested-keys:
