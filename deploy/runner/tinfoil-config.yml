@@ -39,10 +39,10 @@ containers:
       - sockets:/sockets
     env:
       - FOUNT_COORDINATOR_REPO: "fount-labs/fount-cloud-coordinator" # TODO: the coordinator's config repo
-      - FOUNT_HARNESS_IMAGE: "ghcr.io/zeke-02/fount-runner@sha256:PLACEHOLDER_HARNESS"
+      - FOUNT_HARNESS_IMAGE: "ghcr.io/fount-labs/fount-runner@sha256:PLACEHOLDER_HARNESS"
     secrets:
       # Read-only, for the private harness (fount's runner-image workflow
-      # publishes it under zeke-02).
+      # publishes it).
       - FOUNT_BROKER_REGISTRY_TOKEN
     # /health answers as soon as the broker listens, before its harness pull:
     # Tinfoil's boot gate wants it within about a minute, whatever
