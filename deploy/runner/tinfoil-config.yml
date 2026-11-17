@@ -2,8 +2,8 @@
 # §5.1c). This file's repository is what the coordinator pins with
 # --runner-repo, so it lives in its own public config repo once accepted.
 #
-# Placeholders: both image digests and the harness pin, and the broker's egress
-# list (see below).
+# Placeholders: both image digests (fount-broker's release workflow reports
+# them for each tag) and the harness pin.
 cvm-version: 0.14.17 # https://github.com/tinfoilsh/cvmimage/releases/latest, no `v`
 cpus: 8
 memory: 32768
@@ -22,13 +22,13 @@ networks:
       - websearch.tinfoil.sh
       - ghcr.io # the harness pull
       - pkg-containers.githubusercontent.com
-      # TODO: the hosts verify.NewVerifier and CheckRepoVerifiability reach
-      # (Sigstore, GitHub attestations, Tinfoil's witnesses). The link probe
-      # runs with open egress; confirm these with an allowlist run first.
+      # Checking the coordinator needs no hosts: a V3 document carries its
+      # own collateral (Sigstore bundles, AMD VCEK and CRL, Intel PCS), and
+      # tinfoil-go verifies it offline against embedded roots.
 
 containers:
   - name: broker
-    image: "ghcr.io/fount-labs/fount-broker@sha256:PLACEHOLDER_DIGEST"
+    image: "ghcr.io/fount-labs/fount-broker/broker@sha256:PLACEHOLDER_DIGEST"
     networks: [broker-out]
     keys: [fount-link]
     # The link sends this enclave's document; the coordinator checks it.
@@ -40,9 +40,10 @@ containers:
       - sockets:/sockets
     env:
       - FOUNT_COORDINATOR_REPO: "fount-labs/fount-cloud-coordinator" # TODO: the coordinator's config repo
-      - FOUNT_HARNESS_IMAGE: "ghcr.io/fount-labs/runner@sha256:PLACEHOLDER_HARNESS"
+      - FOUNT_HARNESS_IMAGE: "ghcr.io/zeke-02/fount-runner@sha256:PLACEHOLDER_HARNESS"
     secrets:
-      # Read-only; omit if the harness package is public.
+      # Read-only, for the private harness (fount's runner-image workflow
+      # publishes it under zeke-02).
       - FOUNT_BROKER_REGISTRY_TOKEN
     # /health answers as soon as the broker listens, before its harness pull:
     # Tinfoil's boot gate wants it within about a minute, whatever
@@ -56,7 +57,7 @@ containers:
       start_period: 1m
 
   - name: supervisor
-    image: "ghcr.io/fount-labs/fount-supervisor@sha256:PLACEHOLDER_DIGEST"
+    image: "ghcr.io/fount-labs/fount-broker/supervisor@sha256:PLACEHOLDER_DIGEST"
     # runsc needs it (§5.1b). It has authority over the whole enclave,
     # including the broker's fount-link key, so its image is open and pinned.
     cvm_admin: true

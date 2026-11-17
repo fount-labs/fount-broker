@@ -1,6 +1,6 @@
 # Enclave configs (drafts)
 
-Not deployed. `runner/tinfoil-config.yml` is a runner enclave as m4-cloud-runners.md
+Not deployed. The broker and supervisor images come from `Dockerfile`, built and attested by the release workflow at each tag. `runner/tinfoil-config.yml` is a runner enclave as m4-cloud-runners.md
 §5.1c describes it. Its placeholders are listed at the top of the file.
 
 The coordinator enclave isn't built yet; it waits on P2 (dev API, dev wrapping key). Its

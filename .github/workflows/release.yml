@@ -2,6 +2,9 @@ name: Release
 
 # Builds every binary with scripts/build-release.sh, signs the macOS one with
 # Fount's Developer ID, attests all of them and publishes a GitHub release.
+# Also builds the Cloud runner's two images from the Dockerfile and pushes them
+# to GHCR, attested; pin the digests it reports in the runner's config
+# (deploy/runner/tinfoil-config.yml).
 #
 # Secrets:
 #   APPLE_CERTIFICATE           base64 of the Developer ID Application .p12
@@ -16,6 +19,7 @@ permissions:
   contents: write
   id-token: write
   attestations: write
+  packages: write
 
 jobs:
   release:
@@ -83,3 +87,47 @@ jobs:
           } > "$RUNNER_TEMP/notes.md"
           gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
             --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
+
+  images:
+    needs: release
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [broker, supervisor]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        env:
+          SOURCE_DATE_EPOCH: 0
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          build-args: VERSION=${{ github.ref_name }}
+          push: true
+          tags: ghcr.io/${{ github.repository }}/${{ matrix.target }}:${{ github.ref_name }}
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/${{ github.repository }}/${{ matrix.target }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Report the digest
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}/${{ matrix.target }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: printf '%s@%s\n' "$IMAGE" "$DIGEST" | tee -a "$GITHUB_STEP_SUMMARY"
