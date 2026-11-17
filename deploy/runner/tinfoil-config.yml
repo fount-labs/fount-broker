@@ -1,9 +1,8 @@
 # DRAFT for review, not deployed: a Cloud runner enclave (m4-cloud-runners.md
-# §5.1c). This file's repository is what the coordinator pins with
-# --runner-repo, so it lives in its own public config repo once accepted.
+# §5.1c). Its live copy is github.com/fount-labs/fount-cloud-runner, which the
+# coordinator pins with --runner-repo.
 #
-# Placeholders: both image digests (fount-broker's release workflow reports
-# them for each tag) and the harness pin.
+# Placeholder: the harness pin (fount's runner-image workflow reports it).
 cvm-version: 0.14.17 # https://github.com/tinfoilsh/cvmimage/releases/latest, no `v`
 cpus: 8
 memory: 32768
@@ -28,7 +27,7 @@ networks:
 
 containers:
   - name: broker
-    image: "ghcr.io/fount-labs/fount-broker/broker@sha256:PLACEHOLDER_DIGEST"
+    image: "ghcr.io/fount-labs/fount-broker/broker@sha256:80b7293337d390d15f5bbb681bb729d7b0440879bb8a67f7e7d88a0169707163" # v0.4.0
     networks: [broker-out]
     keys: [fount-link]
     # The link sends this enclave's document; the coordinator checks it.
@@ -57,7 +56,7 @@ containers:
       start_period: 1m
 
   - name: supervisor
-    image: "ghcr.io/fount-labs/fount-broker/supervisor@sha256:PLACEHOLDER_DIGEST"
+    image: "ghcr.io/fount-labs/fount-broker/supervisor@sha256:4fa287dd4b95bc37a3dc1f55ed01052530d83d0b086c59061be8a97ded31c7bc" # v0.4.0
     # runsc needs it (§5.1b). It has authority over the whole enclave,
     # including the broker's fount-link key, so its image is open and pinned.
     cvm_admin: true
