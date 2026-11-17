@@ -4,21 +4,36 @@
 //
 //	fount-coordinator --dir <folder> [--listen 127.0.0.1:8790] [--runners 2] [--slots 2]
 //	  [--job-timeout 30m] -- <runner command...>
+//	fount-coordinator --dir <folder> [flags] --runner-addr https://<domain> --runner-repo <owner/repo>
+//	  [--credentials <file.json>]
 //
 // The runner command is started once per job with fount-runner's --workspace,
-// --job, --data and --index added: fount-runner itself, or scripts/dev-runner.sh
-// for the runner image in Docker.
+// --job, --data and --index-read-only added (or --mode index and --index for
+// the index step): fount-runner itself, or scripts/dev-runner.sh for the
+// runner image in Docker. With --runner-addr, each job goes instead to a
+// runner enclave's broker (fount-broker runner) over the attested link, an
+// upgrade on its /fount-link path, which checks the runner runs a release of
+// --runner-repo; dev builds also take "unattested", a link no hardware vouches
+// for, to a dev build's runner. Each job carries credentials
+// minted for that job (package jobcred), signed by the enclave's attested
+// job-signing key, which the proxy learns from this enclave's attestation; a
+// dev build signs with a key kept in --dir instead. The key is logged. --credentials gives every job the
+// file's tokens instead, by the broker's names: a device credential, to reach
+// a proxy that doesn't take job credentials yet.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
 	"log"
+	"maps"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -26,6 +41,7 @@ import (
 	"time"
 
 	"github.com/fount-labs/fount-broker/internal/coordinator"
+	"github.com/fount-labs/fount-broker/internal/jobcred"
 )
 
 func main() {
@@ -42,9 +58,47 @@ func run() error {
 	runners := flag.Int("runners", 2, "runners in the pool")
 	slots := flag.Int("slots", 2, "jobs at once per runner")
 	timeout := flag.Duration("job-timeout", 30*time.Minute, "longest a job may run")
+	runnerAddr := flag.String("runner-addr", "", "a runner enclave broker's origin, https://<domain>, in place of a runner command")
+	credentials := flag.String("credentials", "", "JSON file of every job's broker credentials, with --runner-addr")
+	runnerRepo := flag.String("runner-repo", os.Getenv("FOUNT_RUNNER_REPO"), "GitHub repository whose releases the runner enclave must run, or unattested")
 	flag.Parse()
-	if *dir == "" || flag.NArg() == 0 {
-		return errors.New("usage: fount-coordinator --dir <folder> [flags] -- <runner command...>")
+	if *dir == "" || (flag.NArg() == 0) == (*runnerAddr == "") {
+		return errors.New("usage: fount-coordinator --dir <folder> [flags] (-- <runner command...> | --runner-addr <host:port>)")
+	}
+	var runner coordinator.Runner = coordinator.LocalRunner{Command: flag.Args(), Timeout: *timeout}
+	var mint func(account, workerID, jobID string) (map[string]string, error)
+	if *runnerAddr != "" {
+		if u, err := url.Parse(*runnerAddr); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			return fmt.Errorf("--runner-addr %s: the runner broker's origin, https://<domain>", *runnerAddr)
+		}
+		side, err := linkSide(*runnerRepo)
+		if err != nil {
+			return err
+		}
+		runner = coordinator.RemoteRunner{Addr: *runnerAddr, Timeout: *timeout, Link: side}
+		if *credentials != "" {
+			data, err := os.ReadFile(*credentials)
+			if err != nil {
+				return err
+			}
+			var fixed map[string]string
+			if err := json.Unmarshal(data, &fixed); err != nil {
+				return fmt.Errorf("%s: %w", *credentials, err)
+			}
+			mint = func(string, string, string) (map[string]string, error) { return maps.Clone(fixed), nil }
+		} else {
+			key, cacheSecret, err := jobKeys(*dir)
+			if err != nil {
+				return fmt.Errorf("the job-signing key: %w", err)
+			}
+			// Each is minted as its job starts: the job's timeout, and the
+			// time to reach the runner.
+			m := &jobcred.Minter{Key: key, CacheSecret: cacheSecret, Lifetime: *timeout + 5*time.Minute}
+			mint = m.Mint
+			log.Printf("job credentials are signed by %s", jobcred.PublicKey(key))
+		}
+	} else if *credentials != "" {
+		return errors.New("--credentials needs --runner-addr")
 	}
 	if err := loopbackOnly(*listen); err != nil {
 		return err
@@ -59,7 +113,9 @@ func run() error {
 		Store:    coordinator.DirStore{Root: filepath.Join(*dir, "objects")},
 		Key:      key,
 		Pool:     coordinator.NewPool(*runners, *slots, nil),
-		Runner:   coordinator.LocalRunner{Command: flag.Args(), Timeout: *timeout},
+		Runner:   runner,
+
+		Credentials: mint,
 	})
 	if err != nil {
 		return err

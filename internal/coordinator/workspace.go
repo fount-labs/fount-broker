@@ -19,6 +19,8 @@ const (
 	prefixFount = "fount/" // the workspace's .fount folder: sessions and transcripts
 	prefixIndex = "index/" // the kept index (§5.5), opaque
 	prefixJobs  = "jobs/"  // per job: the runner's events and stderr, and proposed file versions
+	// pathIndexed is rootDigest of the files the kept index was built from.
+	pathIndexed = "indexed"
 )
 
 const fountDir = ".fount"
@@ -81,7 +83,8 @@ func writeInto(dir, rel string, data []byte) error {
 type Results struct {
 	// Writes maps tree paths to their new contents.
 	Writes map[string][]byte
-	// Index is the runner's index, which replaces the kept one whole.
+	// Index, from the index step only, replaces the kept index whole. Nil
+	// keeps it.
 	Index map[string][]byte
 	// Dropped lists files the runner wrote where a job may not.
 	Dropped []string
@@ -96,11 +99,12 @@ const (
 )
 
 // collect reads back what a job left and keeps only what a job may write
-// (§5.5): the thread's outputs/<job id>/, the workspace's .fount folder, changes
-// to files/ as proposals, and the index. scratch/ is thrown away. Anything else
-// the runner changed or added is dropped and counted.
+// (§5.5): the thread's outputs/<job id>/, the workspace's .fount folder and
+// changes to files/ as proposals. scratch/ is thrown away, and so is the index,
+// which only the index step writes. Anything else the runner changed or added
+// is dropped and counted.
 func collect(dirs JobDirs, given map[string]string, threadID, jobID string) (*Results, error) {
-	r := &Results{Writes: map[string][]byte{}, Index: map[string][]byte{}}
+	r := &Results{Writes: map[string][]byte{}}
 	budget := &budget{}
 	outputs := "threads/" + threadID + "/outputs/" + jobID + "/"
 	err := walkFiles(dirs.Workspace, budget, func(rel string, data []byte) {
@@ -122,8 +126,24 @@ func collect(dirs JobDirs, given map[string]string, threadID, jobID string) (*Re
 	if err != nil {
 		return nil, err
 	}
-	err = walkFiles(dirs.Index, budget, func(rel string, data []byte) { r.Index[rel] = data }, &r.Dropped)
+	return r, nil
+}
+
+// collectIndex reads back the index the index step built.
+func collectIndex(dirs JobDirs) (*Results, error) {
+	r := &Results{Writes: map[string][]byte{}, Index: map[string][]byte{}}
+	err := walkFiles(dirs.Index, &budget{}, func(rel string, data []byte) { r.Index[rel] = data }, &r.Dropped)
 	return r, err
+}
+
+// rootDigest names the worker's files as they are: their paths and contents.
+func rootDigest(t *Tree) string {
+	h := sha256.New()
+	for _, p := range t.List(prefixRoot) {
+		hash, _ := t.Hash(p)
+		fmt.Fprintf(h, "%q %s\n", p, hash)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 type budget struct{ files, bytes int64 }

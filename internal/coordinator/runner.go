@@ -9,24 +9,34 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/fount-labs/fount-broker/internal/jobwire"
 )
 
-// A Runner runs one job in folders the coordinator prepared and reads back after
-// (m4-cloud-runners.md §5.1). Everything it leaves there is treated as hostile.
+// A Runner runs one job, for account, in folders the coordinator prepared and
+// reads back after (m4-cloud-runners.md §5.1). Everything it leaves there is
+// treated as hostile.
 type Runner interface {
-	Run(ctx context.Context, runnerID string, job JobDirs) (RunResult, error)
+	Run(ctx context.Context, runnerID, account string, job JobDirs) (RunResult, error)
 }
 
 // JobDirs are the folders of one job, in fount-runner's terms.
 type JobDirs struct {
+	// Mode is an agent job or the index step (jobwire.Mode).
+	Mode jobwire.Mode
 	// Workspace is the worker root (§5.5): --workspace.
 	Workspace string
-	// Index is the worker's kept index: --index.
+	// Index is the worker's kept index: --index-read-only for an agent job,
+	// which never hands it back, and --index for the index step, the only one
+	// that writes it.
 	Index string
 	// Data is the runner's own scratch state: --data. Nothing in it is kept.
 	Data string
 	// JobFile is the runner's job spec: --job.
 	JobFile string
+	// Credentials are the job's, for a runner enclave's broker to hold. They
+	// are never written to the job's folders.
+	Credentials map[string]string
 }
 
 type RunResult struct {
@@ -51,7 +61,7 @@ type LocalRunner struct {
 	Timeout time.Duration
 }
 
-func (l LocalRunner) Run(ctx context.Context, _ string, job JobDirs) (RunResult, error) {
+func (l LocalRunner) Run(ctx context.Context, _, _ string, job JobDirs) (RunResult, error) {
 	if len(l.Command) == 0 {
 		return RunResult{}, errors.New("no runner command")
 	}
@@ -60,8 +70,12 @@ func (l LocalRunner) Run(ctx context.Context, _ string, job JobDirs) (RunResult,
 		ctx, cancel = context.WithTimeout(ctx, l.Timeout)
 		defer cancel()
 	}
-	args := append(l.Command[1:len(l.Command):len(l.Command)],
-		"--workspace", job.Workspace, "--job", job.JobFile, "--data", job.Data, "--index", job.Index)
+	args := append(l.Command[1:len(l.Command):len(l.Command)], "--workspace", job.Workspace, "--data", job.Data)
+	if job.Mode == jobwire.ModeIndex {
+		args = append(args, "--mode", "index", "--index", job.Index)
+	} else {
+		args = append(args, "--job", job.JobFile, "--index-read-only", job.Index)
+	}
 	cmd := exec.CommandContext(ctx, l.Command[0], args...)
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME")}
 	stdout := &capped{max: maxEventBytes}

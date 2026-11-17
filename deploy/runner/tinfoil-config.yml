@@ -1,0 +1,71 @@
+# DRAFT for review, not deployed: a Cloud runner enclave (m4-cloud-runners.md
+# §5.1c). This file's repository is what the coordinator pins with
+# --runner-repo, so it lives in its own public config repo once accepted.
+#
+# Placeholders: both image digests and the harness pin, and the broker's egress
+# list (see below).
+cvm-version: 0.14.17 # https://github.com/tinfoilsh/cvmimage/releases/latest, no `v`
+cpus: 8
+memory: 32768
+
+# The link's per-boot key (internal/link). The coordinator's enclave declares
+# the same id for its own end.
+attested-keys:
+  - id: fount-link
+    key: ed25519
+
+networks:
+  broker-out:
+    egress: allowlist
+    allow:
+      - api.fount.sh # the proxy: inference with the job's minted license
+      - websearch.tinfoil.sh
+      - ghcr.io # the harness pull
+      - pkg-containers.githubusercontent.com
+      # TODO: the hosts verify.NewVerifier and CheckRepoVerifiability reach
+      # (Sigstore, GitHub attestations, Tinfoil's witnesses). The link probe
+      # runs with open egress; confirm these with an allowlist run first.
+
+containers:
+  - name: broker
+    image: "ghcr.io/fount-labs/fount-broker@sha256:PLACEHOLDER_DIGEST"
+    networks: [broker-out]
+    keys: [fount-link]
+    # The link sends this enclave's document; the coordinator checks it.
+    attestation: true
+    restart: always
+    command: ["runner", "--listen", "0.0.0.0:7400"]
+    volumes:
+      - harness-blobs:/harness-blobs
+      - sockets:/sockets
+    env:
+      - FOUNT_COORDINATOR_REPO: "fount-labs/fount-cloud-coordinator" # TODO: the coordinator's config repo
+      - FOUNT_HARNESS_IMAGE: "ghcr.io/fount-labs/runner@sha256:PLACEHOLDER_HARNESS"
+    secrets:
+      # Read-only; omit if the harness package is public.
+      - FOUNT_BROKER_REGISTRY_TOKEN
+    healthcheck:
+      test: ["CMD", "/fount-broker", "health", "http://127.0.0.1:7400/health"] # TODO: no such subcommand yet
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 2m
+
+  - name: supervisor
+    image: "ghcr.io/fount-labs/fount-supervisor@sha256:PLACEHOLDER_DIGEST"
+    # runsc needs it (§5.1b). It has authority over the whole enclave,
+    # including the broker's fount-link key, so its image is open and pinned.
+    cvm_admin: true
+    networks: []
+    restart: always
+    command: ["serve", "--image", "sha256:PLACEHOLDER_HARNESS"]
+    volumes:
+      - harness-blobs:/harness-blobs
+      - sockets:/sockets
+
+shim:
+  upstream-port: 7400
+  upstream-container: broker
+  paths:
+    - /health
+    - /fount-link

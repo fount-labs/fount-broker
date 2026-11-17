@@ -235,7 +235,11 @@ func TestCollectKeepsOnlyWhatAJobMayWrite(t *testing.T) {
 	if !slices.Equal(r.Dropped, wantDropped) {
 		t.Fatalf("dropped %v\nwant %v", r.Dropped, wantDropped)
 	}
-	if string(r.Index["content.lance/data/0.lance"]) != "index" || len(r.Index) != 1 {
-		t.Fatalf("index: %v", r.Index)
+	if r.Index != nil {
+		t.Fatalf("a job handed back an index: %v", r.Index)
+	}
+	r, err = collectIndex(dirs)
+	if err != nil || string(r.Index["content.lance/data/0.lance"]) != "index" || len(r.Index) != 1 {
+		t.Fatalf("index: %v %v", r.Index, err)
 	}
 }
