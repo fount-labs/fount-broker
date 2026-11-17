@@ -61,6 +61,18 @@ type Job struct {
 	// Dropped what the runner wrote where a job may not.
 	Kept    int `json:"kept,omitempty"`
 	Dropped int `json:"dropped,omitempty"`
+	// Steps is what each sandbox the job ran took: the index step, if it ran,
+	// then the agent. It sizes the pool (m4-cloud-runners.md §5.2a).
+	Steps []StepUsage `json:"steps,omitempty"`
+}
+
+// StepUsage is one sandbox's run, as its runner reported it.
+type StepUsage struct {
+	Mode     string  `json:"mode"`
+	Exit     int     `json:"exit"`
+	Seconds  float64 `json:"seconds"`
+	PeakMiB  int64   `json:"peakMiB"`
+	OOMKills int64   `json:"oomKills,omitempty"`
 }
 
 func statePath(dir string) string { return filepath.Join(dir, "state.json") }

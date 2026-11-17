@@ -121,6 +121,7 @@ func (r RemoteRunner) exchange(conn net.Conn, account string, job JobDirs) (resu
 			return result, fmt.Errorf("runner: %w", reply.Err())
 		case jobwire.KindExit:
 			result.ExitCode = reply.ExitCode
+			result.Seconds, result.PeakBytes, result.OOMKills = reply.Seconds, reply.PeakBytes, reply.OOMKills
 			log.Printf("runner: %s job for %s: exit %d in %.1fs, peak %d MiB, %d OOM kills",
 				cmp.Or(string(job.Mode), "agent"), account, reply.ExitCode, reply.Seconds, reply.PeakBytes>>20, reply.OOMKills)
 			// The tree the job hands back replaces what the coordinator put

@@ -141,6 +141,10 @@ func TestAJobRunsAndKeepsOnlyItsResults(t *testing.T) {
 	if done.State != JobFinished {
 		t.Fatalf("job %s: %s", done.State, done.Error)
 	}
+	// The files changed, so the index step ran first.
+	if len(done.Steps) != 2 || done.Steps[0].Mode != "index" || done.Steps[1].Mode != "agent" {
+		t.Errorf("steps %+v", done.Steps)
+	}
 
 	reply, err := c.ReadFile(w.ID, "root/threads/t1/outputs/"+job.ID+"/reply.md")
 	if err != nil || string(reply) != "reply to: Answer Ann\ninstructions: be brief" {

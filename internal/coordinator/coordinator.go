@@ -339,6 +339,7 @@ func (c *Coordinator) runJob(ctx context.Context, job Job, w Worker, spec JobSpe
 	}
 
 	result, runErr := c.cfg.Runner.Run(ctx, job.Runner, w.Account, dirs)
+	c.recordStep(job.ID, jobwire.ModeAgent, result)
 	results, collectErr := collect(dirs, given, job.ThreadID, job.ID)
 	if collectErr != nil {
 		results = &Results{Writes: map[string][]byte{
@@ -404,6 +405,7 @@ func (c *Coordinator) refreshIndex(ctx context.Context, job Job, w Worker) error
 		return err
 	}
 	result, err := c.cfg.Runner.Run(ctx, job.Runner, w.Account, dirs)
+	c.recordStep(job.ID, jobwire.ModeIndex, result)
 	logs := map[string][]byte{prefixJobs + job.ID + "/index-events.jsonl": result.Events}
 	if len(result.Stderr) > 0 {
 		logs[prefixJobs+job.ID+"/index-stderr.txt"] = result.Stderr
@@ -425,6 +427,16 @@ func (c *Coordinator) refreshIndex(ctx context.Context, job Job, w Worker) error
 		err = errors.New("couldn't keep the index")
 	}
 	return err
+}
+
+// recordStep keeps a sandbox's usage on its job; it is metadata, never the
+// job's content.
+func (c *Coordinator) recordStep(jobID string, mode jobwire.Mode, r RunResult) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if j := c.state.Jobs[jobID]; j != nil {
+		j.Steps = append(j.Steps, StepUsage{Mode: cmp.Or(string(mode), "agent"), Exit: r.ExitCode, Seconds: r.Seconds, PeakMiB: r.PeakBytes >> 20, OOMKills: r.OOMKills})
+	}
 }
 
 func (c *Coordinator) credentials(w Worker, job Job) (map[string]string, error) {

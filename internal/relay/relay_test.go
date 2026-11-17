@@ -168,6 +168,9 @@ func TestAJobGoesThroughAndComesBack(t *testing.T) {
 	if string(res.Stderr) != "log line" {
 		t.Errorf("stderr %q", res.Stderr)
 	}
+	if res.Seconds != 1 || res.PeakBytes != 300<<20 {
+		t.Errorf("usage %.1fs, peak %d", res.Seconds, res.PeakBytes)
+	}
 	vault := <-h.vaults
 	if v, _ := vault.Get("license"); v != "L-acct1" {
 		t.Errorf("the job's vault holds license %q", v)

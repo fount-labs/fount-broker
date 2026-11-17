@@ -46,6 +46,11 @@ type RunResult struct {
 	// Events is the runner's stdout, JSON lines, kept unread.
 	Events []byte
 	Stderr []byte
+	// Seconds, PeakBytes and OOMKills are the sandbox's, as a runner enclave's
+	// supervisor reports them; a local runner leaves them zero.
+	Seconds   float64
+	PeakBytes int64
+	OOMKills  int64
 }
 
 const (
