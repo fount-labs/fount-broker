@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
-	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
-	neturl "net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -18,6 +16,7 @@ import (
 	"time"
 
 	"github.com/fount-labs/fount-broker/internal/broker"
+	"github.com/fount-labs/fount-broker/internal/healthcheck"
 	"github.com/fount-labs/fount-broker/internal/link"
 	"github.com/fount-labs/fount-broker/internal/policy"
 	"github.com/fount-labs/fount-broker/internal/registry"
@@ -129,34 +128,15 @@ func runner(args []string) error {
 
 const pullRetry = 30 * time.Second
 
-// health is the runner container's healthcheck, so its image needs no HTTP
-// client:
+// health is the runner container's healthcheck:
 //
 //	fount-broker health [http://127.0.0.1:7400/health]
-//
-// It reaches only loopback.
 func health(args []string) error {
 	url := "http://127.0.0.1:7400/health"
 	if len(args) > 0 {
 		url = args[0]
 	}
-	u, err := neturl.Parse(url)
-	if err != nil {
-		return err
-	}
-	if ip := net.ParseIP(u.Hostname()); u.Scheme != "http" || ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("health checks only http://127.0.0.1, not %s", url)
-	}
-	c := &http.Client{Timeout: 5 * time.Second}
-	resp, err := c.Get(url)
-	if err != nil {
-		return err
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s: %s", url, resp.Status)
-	}
-	return nil
+	return healthcheck.Check(url)
 }
 
 // pullStatus is /status: how the harness pull is going, and whether the

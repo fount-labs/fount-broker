@@ -93,7 +93,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        target: [broker, supervisor]
+        target: [broker, supervisor, coordinator]
     steps:
       - uses: actions/checkout@v4
         with:

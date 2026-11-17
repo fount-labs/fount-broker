@@ -1,0 +1,72 @@
+# A Fount Cloud coordinator enclave, P2's first slice (fount m4-cloud-runners.md
+# §7): it queues jobs and sends each over the attested link to a runner enclave
+# measured from FOUNT_RUNNER_REPO's releases. The deployed copy is public
+# fount-labs/fount-cloud-coordinator, the repo runners pin with
+# FOUNT_COORDINATOR_REPO.
+#
+# TEST DATA ONLY. Its way in is the dev API behind a bearer token (--test-api)
+# and its wrapping key is the dev one, made at boot in the state volume, until
+# the vault-held wrapping key and the attested client channel land.
+#
+# Placeholders: the coordinator image digest (fount-broker's release workflow
+# reports it).
+cvm-version: 0.14.18 # https://github.com/tinfoilsh/cvmimage/releases/latest, no `v`
+cpus: 4
+memory: 16384
+
+attested-keys:
+  # Its end of the link to runners (internal/link); runners declare the same id.
+  - id: fount-link
+    key: ed25519
+  # Signs each job's credential (internal/jobcred). The proxy learns it from
+  # this enclave's attestation (fount-infra proxy-server/coordinator-keys.ts).
+  - id: job-signing
+    key: ed25519
+
+networks:
+  coordinator-out:
+    egress: allowlist
+    allow:
+      # The runner enclaves. Checking a runner needs no other hosts: a V3
+      # document carries its own collateral, verified offline.
+      - runner-a.fount.containers.tinfoil.dev
+
+containers:
+  - name: coordinator
+    image: "ghcr.io/fount-labs/fount-broker/coordinator@sha256:PLACEHOLDER"
+    networks: [coordinator-out]
+    keys: [fount-link, job-signing]
+    attestation: true
+    restart: always
+    command:
+      - "--dir"
+      - "/state"
+      - "--runner-addr"
+      - "https://runner-a.fount.containers.tinfoil.dev"
+      - "--runners"
+      - "1"
+      - "--slots"
+      - "8" # the runner's fount-supervisor --max-jobs
+      - "--test-api"
+      - "--listen"
+      - "0.0.0.0:8790"
+    volumes:
+      - state:/state
+    env:
+      - FOUNT_RUNNER_REPO: "fount-labs/fount-cloud-runner"
+    secrets:
+      # The test API's bearer token, 32 random bytes as hex.
+      - FOUNT_TEST_API_TOKEN
+    healthcheck:
+      test: ["CMD", "/fount-coordinator", "health", "http://127.0.0.1:8790/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 1m
+
+shim:
+  upstream-port: 8790
+  upstream-container: coordinator
+  paths:
+    - /health
+    - /v0/* # the test API, behind its bearer token

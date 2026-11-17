@@ -5,7 +5,8 @@
 //	fount-coordinator --dir <folder> [--listen 127.0.0.1:8790] [--runners 2] [--slots 2]
 //	  [--job-timeout 30m] -- <runner command...>
 //	fount-coordinator --dir <folder> [flags] --runner-addr https://<domain> --runner-repo <owner/repo>
-//	  [--credentials <file.json>]
+//	  [--credentials <file.json>] [--test-api --listen 0.0.0.0:8790]
+//	fount-coordinator health [http://127.0.0.1:8790/health]
 //
 // The runner command is started once per job with fount-runner's --workspace,
 // --job, --data and --index-read-only added (or --mode index and --index for
@@ -20,6 +21,11 @@
 // dev build signs with a key kept in --dir instead. The key is logged. --credentials gives every job the
 // file's tokens instead, by the broker's names: a device credential, to reach
 // a proxy that doesn't take job credentials yet.
+//
+// --test-api lets the dev API listen beyond loopback behind a bearer token in
+// $FOUNT_TEST_API_TOKEN: the coordinator enclave's way in until the attested
+// client channel (m4-cloud-runners.md §7, P2). Test data only, while the
+// wrapping key is the dev one.
 package main
 
 import (
@@ -41,12 +47,23 @@ import (
 	"time"
 
 	"github.com/fount-labs/fount-broker/internal/coordinator"
+	"github.com/fount-labs/fount-broker/internal/healthcheck"
 	"github.com/fount-labs/fount-broker/internal/jobcred"
 )
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	log.SetPrefix("fount-coordinator: ")
+	if len(os.Args) > 1 && os.Args[1] == "health" {
+		url := "http://127.0.0.1:8790/health"
+		if len(os.Args) > 2 {
+			url = os.Args[2]
+		}
+		if err := healthcheck.Check(url); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		log.Fatal(err)
 	}
@@ -60,6 +77,7 @@ func run() error {
 	timeout := flag.Duration("job-timeout", 30*time.Minute, "longest a job may run")
 	runnerAddr := flag.String("runner-addr", "", "a runner enclave broker's origin, https://<domain>, in place of a runner command")
 	credentials := flag.String("credentials", "", "JSON file of every job's broker credentials, with --runner-addr")
+	test := flag.Bool("test-api", false, "listen beyond loopback, behind the bearer token in $"+testTokenEnv+"; test data only")
 	runnerRepo := flag.String("runner-repo", os.Getenv("FOUNT_RUNNER_REPO"), "GitHub repository whose releases the runner enclave must run, or unattested")
 	flag.Parse()
 	if *dir == "" || (flag.NArg() == 0) == (*runnerAddr == "") {
@@ -100,8 +118,10 @@ func run() error {
 	} else if *credentials != "" {
 		return errors.New("--credentials needs --runner-addr")
 	}
-	if err := loopbackOnly(*listen); err != nil {
-		return err
+	if !*test {
+		if err := loopbackOnly(*listen); err != nil {
+			return err
+		}
 	}
 	key, err := devWrappingKey(filepath.Join(*dir, "wrapping.key"))
 	if err != nil {
@@ -123,7 +143,13 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	srv := &http.Server{Addr: *listen, Handler: c.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	api := c.Handler()
+	if *test {
+		if api, err = testAPI(api); err != nil {
+			return err
+		}
+	}
+	srv := &http.Server{Addr: *listen, Handler: api, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -135,7 +161,11 @@ func run() error {
 		c.Run(ctx)
 		close(done)
 	}()
-	log.Printf("dev API on http://%s, no client authentication", *listen)
+	if *test {
+		log.Printf("test API on http://%s behind its bearer token; test data only", *listen)
+	} else {
+		log.Printf("dev API on http://%s, no client authentication", *listen)
+	}
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

@@ -2,8 +2,6 @@ package main
 
 import (
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -39,23 +37,5 @@ func TestRunnerIsReadyOnlyOnceTheSupervisorTakesConnections(t *testing.T) {
 	l.Close()
 	if s.ready() || s.State != "starting" {
 		t.Fatalf("still ready once the supervisor is gone: %q", s.State)
-	}
-}
-
-func TestHealthReachesOnlyLoopback(t *testing.T) {
-	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
-	defer ok.Close()
-	if err := health([]string{ok.URL}); err != nil {
-		t.Fatal(err)
-	}
-	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer down.Close()
-	if err := health([]string{down.URL}); err == nil {
-		t.Fatal("a 503 passed")
-	}
-	if err := health([]string{"http://example.com/health"}); err == nil {
-		t.Fatal("reached a non-loopback host")
 	}
 }
