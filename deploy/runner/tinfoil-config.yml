@@ -1,8 +1,6 @@
 # DRAFT for review, not deployed: a Cloud runner enclave (m4-cloud-runners.md
 # §5.1c). Its live copy is github.com/fount-labs/fount-cloud-runner, which the
 # coordinator pins with --runner-repo.
-#
-# Placeholder: the harness pin (fount's runner-image workflow reports it).
 cvm-version: 0.14.17 # https://github.com/tinfoilsh/cvmimage/releases/latest, no `v`
 cpus: 8
 memory: 32768
@@ -39,7 +37,7 @@ containers:
       - sockets:/sockets
     env:
       - FOUNT_COORDINATOR_REPO: "fount-labs/fount-cloud-coordinator" # TODO: the coordinator's config repo
-      - FOUNT_HARNESS_IMAGE: "ghcr.io/fount-labs/fount-runner@sha256:PLACEHOLDER_HARNESS"
+      - FOUNT_HARNESS_IMAGE: "ghcr.io/fount-labs/fount-runner@sha256:2984c2c42148d6f3c45120644815f0954e0b8a1ae84a1b3d5e206ae83641cee3" # fount-app be741a3e
     secrets:
       # Read-only, for the private harness (fount's runner-image workflow
       # publishes it).
@@ -62,7 +60,7 @@ containers:
     cvm_admin: true
     networks: []
     restart: always
-    command: ["serve", "--image", "sha256:PLACEHOLDER_HARNESS"]
+    command: ["serve", "--image", "sha256:2984c2c42148d6f3c45120644815f0954e0b8a1ae84a1b3d5e206ae83641cee3"]
     volumes:
       - harness-blobs:/harness-blobs
       - sockets:/sockets
