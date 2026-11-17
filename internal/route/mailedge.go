@@ -32,13 +32,13 @@ func NewMailEdge() *MailEdge {
 	return &MailEdge{host: policy.MailEdgeHost, repo: policy.MailEdgeRepo}
 }
 
-func (m *MailEdge) current() (*tinfoil.EnclaveHTTPClient, error) {
+func (m *MailEdge) current(ctx context.Context) (*tinfoil.EnclaveHTTPClient, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.client != nil {
 		return m.client, nil
 	}
-	c, err := tinfoil.NewEnclaveHTTPClient(m.host, m.repo, &tinfoil.EnclaveOptions{
+	c, err := tinfoil.NewEnclaveHTTPClient(ctx, m.host, tinfoil.Pin{Repo: m.repo}, &tinfoil.EnclaveOptions{
 		TransportMode:     tinfoil.TransportModeTLS,
 		VerificationCheck: checkRepo(m.repo),
 	})
@@ -54,7 +54,7 @@ func (m *MailEdge) current() (*tinfoil.EnclaveHTTPClient, error) {
 func (m *MailEdge) Base() string { return "https://" + m.host + "/" }
 
 func (m *MailEdge) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
-	c, err := m.current()
+	c, err := m.current(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +68,7 @@ func (m *MailEdge) Do(ctx context.Context, req *http.Request) (*http.Response, e
 // AttestedSigningKey verifies the edge, if its last verification has lapsed,
 // and returns the mail-sign key its attestation endorses.
 func (m *MailEdge) AttestedSigningKey(ctx context.Context) (ed25519.PublicKey, error) {
-	c, err := m.current()
+	c, err := m.current(ctx)
 	if err != nil {
 		return nil, err
 	}
