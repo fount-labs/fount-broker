@@ -142,18 +142,28 @@ func (r *Relay) handle(ctx context.Context, conn net.Conn) error {
 	}
 	log.Printf("job %s: relaying", id)
 	start := time.Now()
-	// Either side closing ends the job: the coordinator's is a cancel, which
-	// the supervisor sees as its side closing.
-	done := make(chan struct{}, 2)
-	go func() { io.Copy(sup, conn); done <- struct{}{} }()
-	go func() { io.Copy(conn, sup); done <- struct{}{} }()
+	// The job ends when the supervisor's replies do. The coordinator closing
+	// is a cancel, which the supervisor sees as its side closing. The
+	// supervisor refusing a job stops it reading mid-upload; the rest of the
+	// upload is drained, so its reason still reaches the coordinator rather
+	// than a reset.
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		io.Copy(sup, conn)
+		sup.(*net.UnixConn).CloseWrite()
+		io.Copy(io.Discard, conn)
+	}()
+	replied := make(chan struct{})
+	go func() { defer close(replied); io.Copy(conn, sup) }()
 	select {
-	case <-done:
+	case <-replied:
 	case <-ctx.Done():
 	}
 	conn.Close()
 	sup.Close()
-	<-done
+	<-replied
+	<-drained
 	log.Printf("job %s: ended after %.1fs", id, time.Since(start).Seconds())
 	return nil
 }
