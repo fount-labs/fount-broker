@@ -103,7 +103,7 @@ func TestTheProxysVector(t *testing.T) {
 	}
 	const (
 		public = "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
-		token  = "eyJ2IjoxLCJ0eXAiOiJmb3VudC1qb2IiLCJhY2N0IjoiYWNjdF8xIiwid2tyIjoid18xIiwiam9iIjoial8xIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDIxMDB9.9abtkfioDcwVppnFRdNV9VgFkzNvxmBPeP-2WnJrvK0PpwGlpsDlb5qcJOaXSudZIZvz6aMsSEG4tkv-5Zq5AA"
+		token  = "eyJ2IjoxLCJ0eXAiOiJmb3VudC1qb2IiLCJhY2N0IjoiYWNjdF8xIiwid2tyIjoid18xIiwiam9iIjoial8xIiwiaWF0IjoxODAwMDAwMDAwLCJleHAiOjE4MDAwMDIxMDAsImtpZCI6IkE2RUh2X1BPRUw0ZGNOMFk1MHZBbVdmazFqQ2JwUTFmSGR5R1pCSlZNYmcifQ.NYx62Q2FCMwMnnfbx50c2GC-ZAdtatgSyq7ZsrHIoAX7i2V9RKQBPHQ842_uHhEyKYGferri4845N_bzJoCXCQ"
 	)
 	if PublicKey(key) != public || creds["license"] != token {
 		t.Errorf("the vector changed: update job-auth.test.ts too\n%s\n%s", PublicKey(key), creds["license"])

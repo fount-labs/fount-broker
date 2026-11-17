@@ -3,14 +3,17 @@ package main
 import (
 	"context"
 	"flag"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/fount-labs/fount-broker/internal/broker"
+	"github.com/fount-labs/fount-broker/internal/link"
 	"github.com/fount-labs/fount-broker/internal/policy"
 	"github.com/fount-labs/fount-broker/internal/registry"
 	"github.com/fount-labs/fount-broker/internal/relay"
@@ -27,7 +30,9 @@ import (
 // FOUNT_BROKER_REGISTRY_TOKEN is a read-only registry token; without it the
 // pull is anonymous.
 //
-// Every connection to the job listener is the attested link (package link):
+// The job listener is HTTP, behind the enclave's shim: each job is a
+// connection upgraded on link.Path (shim paths: /fount-link, /health), and
+// that connection is the attested link (package link):
 // the coordinator must prove it runs a release of --coordinator-repo, and this
 // enclave proves itself back with its attested fount-link key. Dev builds also
 // take --coordinator-repo unattested, a link no hardware vouches for.
@@ -69,11 +74,18 @@ func runner(args []string) error {
 		log.Printf("pulled %s in %.0fs", ref, time.Since(start).Seconds())
 	}
 
-	l, err := net.Listen("tcp", *listen)
+	tl, err := net.Listen("tcp", *listen)
 	if err != nil {
 		return err
 	}
-	log.Printf("taking jobs on %s", l.Addr())
+	l := link.NewListener(tl.Addr())
+	mux := http.NewServeMux()
+	mux.Handle(link.Path, l)
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok\n") })
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	go srv.Serve(tl)
+	defer srv.Close()
+	log.Printf("taking jobs on http://%s%s", tl.Addr(), link.Path)
 	r := &relay.Relay{Sockets: *sockets, Link: side, NewBroker: func(vault *broker.Vault) *broker.Broker {
 		b := broker.New(version, newRoutes(vault), vault)
 		b.Locked = true

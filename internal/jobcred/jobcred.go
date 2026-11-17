@@ -45,6 +45,10 @@ type Claims struct {
 	Job    string `json:"job"`
 	Iat    int64  `json:"iat"`
 	Exp    int64  `json:"exp"`
+	// Kid is the signing key, as PublicKey writes it. A coordinator's key
+	// is its enclave's attested job-signing key, new each boot, so the proxy
+	// learns it from the coordinator's attestation the first time it sees it.
+	Kid string `json:"kid"`
 }
 
 // Minter is the coordinator's half.
@@ -74,7 +78,7 @@ func (m *Minter) Mint(account, worker, job string) (map[string]string, error) {
 		now = m.Now
 	}
 	iat := now().Unix()
-	payload, err := json.Marshal(Claims{V: Version, Typ: Type, Acct: account, Worker: worker, Job: job, Iat: iat, Exp: iat + int64(m.Lifetime/time.Second)})
+	payload, err := json.Marshal(Claims{V: Version, Typ: Type, Acct: account, Worker: worker, Job: job, Iat: iat, Exp: iat + int64(m.Lifetime/time.Second), Kid: PublicKey(m.Key)})
 	if err != nil {
 		return nil, err
 	}
@@ -109,6 +113,9 @@ func Verify(token string, key ed25519.PublicKey, now time.Time) (Claims, error) 
 	if c.V != Version || c.Typ != Type || c.Acct == "" || c.Worker == "" || c.Job == "" {
 		return Claims{}, errors.New("malformed")
 	}
+	if c.Kid != encode(key) {
+		return Claims{}, errors.New("signed by another key")
+	}
 	if c.Exp-c.Iat > int64(MaxLifetime/time.Second) {
 		return Claims{}, errors.New("lasts too long")
 	}
@@ -118,9 +125,14 @@ func Verify(token string, key ed25519.PublicKey, now time.Time) (Claims, error) 
 	return c, nil
 }
 
+// AttestedKeyID is the coordinator enclave's signing key (tinfoil-config.yml's
+// attested-keys). The proxy trusts a key the coordinator's attestation
+// endorses under this id.
+const AttestedKeyID = "job-signing"
+
 // DevKeys reads the dev signing key and cache secret from path, making them
-// the first time. In the pool both live only in enclave memory, held between
-// updates the way the wrapping key is (m4-cloud-runners.md §4).
+// the first time. In an enclave the key is AttestedKeyID and the cache secret
+// is drawn each boot.
 func DevKeys(path string) (ed25519.PrivateKey, []byte, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {

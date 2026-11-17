@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/fount-labs/fount-broker/internal/filetree"
@@ -21,7 +22,9 @@ import (
 // The connection is the attested link (package link): the runner proves its
 // release before the job is sent, and the coordinator proves its own.
 type RemoteRunner struct {
-	// Addr is the runner broker's job listener.
+	// Addr is the runner broker's origin, https://<domain> for an enclave,
+	// where the link is an upgrade on link.Path. A bare host:port is a plain
+	// TCP listener: tests only.
 	Addr string
 	// Link is the coordinator's end. Nil dials plain TCP: tests only.
 	Link    *link.Side
@@ -35,8 +38,14 @@ func (r RemoteRunner) Run(ctx context.Context, _, account string, job JobDirs) (
 		ctx, cancel = context.WithTimeout(ctx, r.Timeout)
 		defer cancel()
 	}
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "tcp", r.Addr)
+	var conn net.Conn
+	var err error
+	if strings.Contains(r.Addr, "://") {
+		conn, err = link.Dial(ctx, r.Addr)
+	} else {
+		var d net.Dialer
+		conn, err = d.DialContext(ctx, "tcp", r.Addr)
+	}
 	if err != nil {
 		return RunResult{}, fmt.Errorf("reach the runner: %w", err)
 	}

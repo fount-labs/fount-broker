@@ -269,14 +269,19 @@ customer data, keys or network.
 2. `fount-supervisor serve` waits for it, checks and unpacks the image as
    above, deletes the blobs, and listens on `sockets/supervisor.sock`.
 3. Each job arrives from the coordinator on one connection over the attested
-   link ([`internal/link`](internal/link/link.go)): mutual TLS 1.3 over each
+   link ([`internal/link`](internal/link/link.go)). A Tinfoil enclave takes
+   only HTTPS through its shim, so the connection is an HTTP upgrade to
+   `fount-link/1` on `/fount-link` ([`upgrade.go`](internal/link/upgrade.go)),
+   inside the shim's TLS. The link itself is mutual TLS 1.3 over each
    enclave's attested per-boot `fount-link` key, then each end sends an
    attestation document whose nonce is the session's TLS exporter, and checks
    the other's against the repository it pins and against the TLS key. Then,
    as frames
    ([`internal/jobwire`](internal/jobwire/jobwire.go)): a header with the
    job's account, its mode, the credentials the coordinator minted for that
-   job alone ([`internal/jobcred`](internal/jobcred/jobcred.go)) and
+   job alone ([`internal/jobcred`](internal/jobcred/jobcred.go), signed by
+   the coordinator enclave's attested `job-signing` key, new each boot and
+   named in the credential's `kid`) and
    fount-runner's job file, then the workspace and index as tar streams of plain files and directories
    ([`internal/filetree`](internal/filetree/filetree.go)). The broker
    ([`internal/relay`](internal/relay/relay.go)) keeps the credentials, names
@@ -301,7 +306,7 @@ A local run of all three, with a registry, both ends of the link unattested
 fount-broker runner --image registry:5000/fount-labs/runner@sha256:<digest> \
   --listen 0.0.0.0:7400 --coordinator-repo unattested   # FOUNT_BROKER_REGISTRY=http://registry:5000
 fount-supervisor serve --image sha256:<digest>   # privileged, --network none
-fount-coordinator --dir /tmp/coordinator --runner-addr 127.0.0.1:7400 --runner-repo unattested
+fount-coordinator --dir /tmp/coordinator --runner-addr http://127.0.0.1:7400 --runner-repo unattested
 ```
 
 `fount-supervisor run` takes one job as fount-runner's folder flags instead, so

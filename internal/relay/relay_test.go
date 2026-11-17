@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,7 +108,12 @@ func start(t *testing.T, account string) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.linked = linkedL.Addr().String()
+	// As in an enclave: HTTP, the link an upgrade on its path.
+	h.linked = "http://" + linkedL.Addr().String()
+	upgrades := link.NewListener(linkedL.Addr())
+	web := &http.Server{Handler: upgrades}
+	go web.Serve(linkedL)
+	t.Cleanup(func() { web.Close() })
 	runnerEnd, err := link.Unattested()
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +121,7 @@ func start(t *testing.T, account string) *harness {
 	linked := *r
 	linked.Link = runnerEnd
 	linkedDone := make(chan struct{})
-	go func() { linked.Serve(ctx, linkedL); close(linkedDone) }()
+	go func() { linked.Serve(ctx, upgrades); close(linkedDone) }()
 	t.Cleanup(func() {
 		cancel()
 		<-supDone

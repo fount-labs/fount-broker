@@ -5,16 +5,14 @@ import (
 	"crypto/ed25519"
 	"crypto/x509"
 	"encoding/hex"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"time"
 
+	"github.com/fount-labs/fount-broker/internal/attested"
 	"github.com/tinfoilsh/tinfoil-go/verify"
 	"github.com/tinfoilsh/tinfoil-go/verify/document"
 )
@@ -25,29 +23,10 @@ const AttestationSocket = "/tinfoil/attestation.sock"
 
 // KeyDir is where Tinfoil puts the private halves of a container's attested
 // keys.
-const KeyDir = "/run/tinfoil/keys"
+const KeyDir = attested.Dir
 
 // LoadKey reads the attested link key from dir.
-func LoadKey(dir string) (ed25519.PrivateKey, error) {
-	path := filepath.Join(dir, KeyID, "private_key.pem")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	block, _ := pem.Decode(raw)
-	if block == nil {
-		return nil, fmt.Errorf("%s holds no PEM", path)
-	}
-	k, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	key, ok := k.(ed25519.PrivateKey)
-	if !ok {
-		return nil, fmt.Errorf("%s isn't an Ed25519 key", path)
-	}
-	return key, nil
-}
+func LoadKey(dir string) (ed25519.PrivateKey, error) { return attested.LoadEd25519(dir, KeyID) }
 
 // SocketAttester asks the enclave's attestation socket for documents.
 type SocketAttester struct{ client *http.Client }
