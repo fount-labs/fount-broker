@@ -274,12 +274,14 @@ customer data, keys or network.
 3. Each job arrives from the coordinator on one connection over the attested
    link ([`internal/link`](internal/link/link.go)). A Tinfoil enclave takes
    only HTTPS through its shim, so the connection is an HTTP upgrade to
-   `fount-link/1` on `/fount-link` ([`upgrade.go`](internal/link/upgrade.go)),
+   `fount-link/2` on `/fount-link` ([`upgrade.go`](internal/link/upgrade.go)),
    inside the shim's TLS. The link itself is mutual TLS 1.3 over each
    enclave's attested per-boot `fount-link` key, then each end sends an
    attestation document whose nonce is the session's TLS exporter, and checks
-   the other's against the repository it pins and against the TLS key. Then,
-   as frames
+   the other's against the repository it pins and against the TLS key. From
+   then on each end pings the other every 15 s, under the frames, and drops a
+   link that's been quiet for a minute
+   ([`keepalive.go`](internal/link/keepalive.go)). Then, as frames
    ([`internal/jobwire`](internal/jobwire/jobwire.go)): a header with the
    job's account, its mode, the credentials the coordinator minted for that
    job alone ([`internal/jobcred`](internal/jobcred/jobcred.go), signed by

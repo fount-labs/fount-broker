@@ -11,6 +11,8 @@
 // against the release it pins and that the key it endorses is the one the TLS
 // peer proved it holds. The exporter ties the document to this session, so it
 // can't be replayed or relayed into another.
+//
+// Once both have, each end pings the other while the link is up (keepalive.go).
 package link
 
 import (
@@ -57,13 +59,13 @@ type Side struct {
 var ErrPeer = errors.New("the link's peer didn't prove its release")
 
 // Client runs the handshake as the coordinator, on a connection it dialled.
-func (s *Side) Client(ctx context.Context, conn net.Conn) (*tls.Conn, error) {
+func (s *Side) Client(ctx context.Context, conn net.Conn) (net.Conn, error) {
 	return s.handshake(ctx, conn, true)
 }
 
 // Server runs the handshake as the runner's broker, on a connection it
 // accepted.
-func (s *Side) Server(ctx context.Context, conn net.Conn) (*tls.Conn, error) {
+func (s *Side) Server(ctx context.Context, conn net.Conn) (net.Conn, error) {
 	return s.handshake(ctx, conn, false)
 }
 
@@ -72,7 +74,7 @@ const (
 	labelServer = "EXPORTER-fount-link server"
 )
 
-func (s *Side) handshake(ctx context.Context, conn net.Conn, client bool) (*tls.Conn, error) {
+func (s *Side) handshake(ctx context.Context, conn net.Conn, client bool) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(ctx, HandshakeTimeout)
 	defer cancel()
 	cert, err := selfSigned(s.Key)
@@ -157,7 +159,7 @@ func (s *Side) handshake(ctx context.Context, conn net.Conn, client bool) (*tls.
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	return tc, nil
+	return keepalive(tc, PingInterval, IdleTimeout), nil
 }
 
 var attestationHeader = []byte(`{"kind":"attestation"}`)

@@ -23,8 +23,8 @@ import (
 // Path is the runner broker's link endpoint, listed in its shim paths.
 const Path = "/fount-link"
 
-// Protocol is the Upgrade token.
-const Protocol = "fount-link/1"
+// Protocol is the Upgrade token. 2 added the keepalive's records.
+const Protocol = "fount-link/2"
 
 // roots are the system's, but in tests.
 var roots *x509.CertPool
