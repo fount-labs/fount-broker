@@ -8,7 +8,8 @@
 //	  [--credentials <file.json>] [--wrapping-key dev --test-api --listen 0.0.0.0:8790]
 //	  [--wrapping-key vault --vaults <host,host> --vault-repo <owner/repo> --keyset-commitment <hex>
 //	   --status-listen 0.0.0.0:8791]
-//	  [--client-listen 0.0.0.0:8792 --account-keys <base64 SPKI,...> [--client-attestation tinfoil]]
+//	  [--client-listen 0.0.0.0:8792 --account-keys <base64 SPKI,...> [--client-attestation tinfoil]
+//	   [--cloud-credentials-only]]
 //	fount-coordinator health [http://127.0.0.1:8790/health]
 //
 // The runner command is started once per job with fount-runner's --workspace,
@@ -28,11 +29,14 @@
 // --client-listen serves the attested client channel (package channel) on
 // its /fount-client upgrade, with /health and /status, so the shim needs one
 // port: the way Desktop's broker reaches an account's workers, files and jobs.
-// The coordinator proves itself with its attested fount-link key, and each
-// client its account with a device credential that one of --account-keys,
-// fount-infra's, signed, and its device with that device key's grant. Each
-// channel serves coordinator.AccountHandler for the account it proved. Dev
-// builds also take --client-attestation unattested, for a dev broker.
+// The coordinator proves itself with its attested fount-client key, and each
+// client its account with a credential that one of --account-keys,
+// fount-infra's, signed and whose subscription includes Cloud, and its device
+// with that device key's grant. Each channel serves coordinator.AccountHandler
+// for the account and device it proved; a worker opens only to the devices
+// its DEK grant names. --cloud-credentials-only refuses 7-day device
+// credentials, for when fount-infra issues hour-long Cloud ones. Dev builds
+// also take --client-attestation unattested, for a dev broker.
 //
 // --test-api lets the dev API listen beyond loopback behind a bearer token in
 // $FOUNT_TEST_API_TOKEN: the test coordinator enclave's way in, which the
@@ -113,6 +117,7 @@ func run() error {
 	clientListen := flag.String("client-listen", "", "address for the attested client channel ("+channel.Path+"), /health and /status, which may be beyond loopback")
 	accountKeys := flag.String("account-keys", "", "with --client-listen: fount-infra's device-credential keys, SPKI DER as base64, comma-separated (default $"+accountKeysEnv+")")
 	clientAttest := flag.String("client-attestation", attestTinfoil, "with --client-listen: how the coordinator proves itself: tinfoil, or unattested in a dev build")
+	cloudOnly := flag.Bool("cloud-credentials-only", false, "with --client-listen: take only hour-long Cloud credentials, not device credentials")
 	flag.Parse()
 	if *dir == "" || (flag.NArg() == 0) == (*runnerAddr == "") {
 		return errors.New("usage: fount-coordinator --dir <folder> [flags] (-- <runner command...> | --runner-addr <host:port>)")
@@ -163,7 +168,7 @@ func run() error {
 	if err := keys.check(); err != nil {
 		return err
 	}
-	clients, err := clientFlags{listen: *clientListen, accountKeys: *accountKeys, attestation: *clientAttest}.server()
+	clients, err := clientFlags{listen: *clientListen, accountKeys: *accountKeys, attestation: *clientAttest, cloudOnly: *cloudOnly}.server()
 	if err != nil {
 		return err
 	}
@@ -215,7 +220,7 @@ func run() error {
 	}
 
 	if clients != nil {
-		clients.Handler = func(p channel.Peer) http.Handler { return c.AccountHandler(p.Account) }
+		clients.Handler = handler(c)
 		h, err := clients.Start(ctx)
 		if err != nil {
 			return err

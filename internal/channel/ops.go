@@ -16,9 +16,9 @@ import (
 //
 //	POST v1/workers                       GET v1/workers
 //	GET  v1/workers/{id}                  POST v1/workers/{id}/grant
-//	PUT  v1/workers/{id}/root/{path...}   POST v1/workers/{id}/jobs
-//	GET  v1/workers/{id}/files?prefix=…   GET  v1/workers/{id}/files/{path...}
-//	GET  v1/jobs/{id}
+//	POST v1/workers/{id}/revoke           POST v1/workers/{id}/jobs
+//	PUT  v1/workers/{id}/root/{path...}   GET  v1/workers/{id}/files?prefix=…
+//	GET  v1/workers/{id}/files/{path...}  GET  v1/jobs/{id}
 //
 // The coordinator checks every path again; this keeps the broker from
 // carrying anything else.
@@ -53,7 +53,7 @@ func checkRequest(method, target string) (*url.URL, error) {
 			switch {
 			case len(seg) == 3:
 				ok = method == http.MethodGet
-			case len(seg) == 4 && (seg[3] == "grant" || seg[3] == "jobs"):
+			case len(seg) == 4 && (seg[3] == "grant" || seg[3] == "revoke" || seg[3] == "jobs"):
 				ok = method == http.MethodPost
 			case len(seg) == 4 && seg[3] == "files":
 				ok, listing = method == http.MethodGet, true

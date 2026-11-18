@@ -8,9 +8,10 @@
 // This is the P2 skeleton. It runs on a laptop with a local folder for storage
 // and a command per runner. Its wrapping key comes from the caller: a dev file,
 // or the Cloud vault pair (package vaultkey). Clients reach it over the
-// attested client channel (package channel), one account per channel. Not
-// built yet: the DEK grant, the buckets sidecar, mail intake, inference relay,
-// and the thread record.
+// attested client channel (package channel), one account and device per
+// channel, and move workers in with a DEK grant their device keys sign
+// (grant.go). Not built yet: the buckets sidecar, mail intake, inference
+// relay, and the thread record.
 package coordinator
 
 import (
@@ -91,6 +92,9 @@ func New(cfg Config) (*Coordinator, error) {
 // otherwise fail only when each worker's next job starts.
 func checkKey(key WrappingKey, state *State) error {
 	for _, id := range slices.Sorted(maps.Keys(state.Workers)) {
+		if state.Workers[id].WrappedDEK == nil {
+			continue
+		}
 		dek, err := key.Unwrap(id, state.Workers[id].WrappedDEK)
 		clear(dek[:])
 		if err != nil {
@@ -109,12 +113,10 @@ var (
 	ErrReserved  = errors.New("the path is reserved")
 )
 
-// CreateWorker takes a worker into the coordinator. dek is the key Desktop sends
-// when it moves a worker (§3.1, step 4); nil makes a new one.
+// CreateWorker takes a worker into the coordinator for the dev API. dek is a
+// key to keep its files under; nil makes a new one. Over the client channel a
+// worker comes from CreateWorkerFor, and its DEK from a grant.
 func (c *Coordinator) CreateWorker(account string, dek *DEK) (Worker, error) {
-	if err := checkID("account", account); err != nil {
-		return Worker{}, err
-	}
 	key := DEK{}
 	if dek != nil {
 		key = *dek
@@ -132,12 +134,18 @@ func (c *Coordinator) CreateWorker(account string, dek *DEK) (Worker, error) {
 	if err != nil {
 		return Worker{}, err
 	}
-	w := &Worker{ID: id, Account: account, WrappedDEK: wrapped, Created: time.Now().UTC()}
+	return c.add(&Worker{ID: id, Account: account, WrappedDEK: wrapped, Created: time.Now().UTC()})
+}
+
+func (c *Coordinator) add(w *Worker) (Worker, error) {
+	if err := checkID("account", w.Account); err != nil {
+		return Worker{}, err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.state.Workers[id] = w
+	c.state.Workers[w.ID] = w
 	if err := c.state.Save(c.cfg.StateDir); err != nil {
-		delete(c.state.Workers, id)
+		delete(c.state.Workers, w.ID)
 		return Worker{}, err
 	}
 	return *w, nil
@@ -213,9 +221,12 @@ func (c *Coordinator) Enqueue(workerID string, spec JobSpec) (Job, error) {
 		return Job{}, err
 	}
 	c.mu.Lock()
-	if _, ok := c.state.Workers[workerID]; !ok {
+	if w, ok := c.state.Workers[workerID]; !ok {
 		c.mu.Unlock()
 		return Job{}, ErrNoWorker
+	} else if w.WrappedDEK == nil {
+		c.mu.Unlock()
+		return Job{}, ErrNotGranted
 	}
 	c.state.Seq++
 	j := &Job{ID: id, WorkerID: workerID, Seq: c.state.Seq, State: JobQueued, Spec: &spec, ThreadID: spec.ThreadID, Queued: time.Now().UTC()}
@@ -545,7 +556,11 @@ func (c *Coordinator) change(workerID string, fn func(*Tree) error) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.state.Workers[workerID].Version = version
+	held, ok := c.state.Workers[workerID]
+	if !ok {
+		return ErrNoWorker
+	}
+	held.Version = version
 	return c.state.Save(c.cfg.StateDir)
 }
 
@@ -568,9 +583,21 @@ func (c *Coordinator) workerLock(workerID string) (*sync.Mutex, Worker, error) {
 // predate a commit made while its caller waited for the lock.
 func (c *Coordinator) loadTree(w Worker) (*Tree, error) {
 	c.mu.Lock()
-	version := c.state.Workers[w.ID].Version
+	held, ok := c.state.Workers[w.ID]
+	var version uint64
+	var wrapped []byte
+	if ok {
+		version, wrapped = held.Version, held.WrappedDEK
+	}
 	c.mu.Unlock()
-	dek, err := c.cfg.Key.Unwrap(w.ID, w.WrappedDEK)
+	switch {
+	case !ok:
+		// Revoked while its caller waited for the lock.
+		return nil, ErrNoWorker
+	case wrapped == nil:
+		return nil, ErrNotGranted
+	}
+	dek, err := c.cfg.Key.Unwrap(w.ID, wrapped)
 	if err != nil {
 		return nil, err
 	}

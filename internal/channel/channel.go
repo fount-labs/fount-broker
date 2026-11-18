@@ -7,29 +7,32 @@
 // hardware vouches for. A connection crosses the coordinator's Tinfoil shim
 // as an HTTP/1.1 upgrade to Protocol on Path, like the link. Inside it:
 //
-//  1. TLS 1.3. The coordinator's certificate carries its attested fount-link
-//     key; the client sends none.
+//  1. TLS 1.3. The coordinator's certificate carries its attested KeyID key,
+//     its own and not the runner link's; the client sends none.
 //  2. The coordinator sends an attestation document whose nonce is the
 //     session's exporter (labelServer). The client checks it against the
 //     coordinator's config repo, which it pins, and that the key it endorses
 //     is the TLS one. Until then the client sends nothing, so a coordinator
-//     that isn't a release of that repo never sees a credential.
+//     that isn't a release of that repo never sees a credential. The client
+//     sends no request on the channel at or after the verification's
+//     freshness deadline: it closes the channel then, and the next request
+//     dials and verifies afresh.
 //  3. The client sends a hello: its device credential (fount-infra's, which
 //     names the account), its device's public key, the device key's grant of a
 //     session key (identity.go), and the session key's signature over the
 //     session's other exporter (labelClient).
 //  4. The coordinator checks the credential against fount-infra's public key,
-//     pinned in its measured config; that the device key is the one the
-//     credential names; the grant; and the binding. It answers with the
-//     account, which the client never states.
+//     pinned in its measured config, and that its claims include Cloud; that
+//     the device key is the one the credential names; the grant; and the
+//     binding. It answers with the account, which the client never states.
 //
 // The binding ties the hello to this TLS session, so it can't be replayed
 // into another. The device credential alone, a bearer token the proxy also
 // sees, opens nothing: the hello needs the device key's grant too.
 //
 // After that the connection carries HTTP/1.1, the coordinator's account API
-// (coordinator.AccountHandler), for that account only. It closes when the
-// credential or the grant expires, whichever is first.
+// (coordinator.AccountHandler), for that account and device only. It closes
+// when the credential, its paid period or the grant ends, whichever is first.
 package channel
 
 import (
@@ -47,6 +50,13 @@ const Path = "/fount-client"
 
 // Protocol is the Upgrade token.
 const Protocol = "fount-client/1"
+
+// KeyID is the coordinator's attested key for the channel
+// (tinfoil-config.yml's attested-keys). It is apart from the runner link's
+// fount-link, so the key that does TLS with anyone on the internet isn't the
+// one runners trust, and a client checks for this id, not just any key the
+// enclave's document endorses.
+const KeyID = "fount-client"
 
 const (
 	labelServer = "EXPORTER-fount-client server"
@@ -81,6 +91,9 @@ var (
 type Peer struct {
 	Account string
 	Device  string
+	// DeviceKey is the device's Ed25519 public key, whose id is Device. The
+	// coordinator only has it.
+	DeviceKey ed25519.PublicKey
 	// Expires is when the credential or the session grant runs out; the
 	// channel closes then.
 	Expires time.Time
@@ -140,13 +153,13 @@ func readMsg(r io.Reader, max int) ([]byte, error) {
 
 // verifyHello is the coordinator's check of a hello, given the session's
 // client exporter.
-func verifyHello(h hello, exporter []byte, keys []*rsa.PublicKey, now time.Time) (Peer, error) {
+func verifyHello(h hello, exporter []byte, keys []*rsa.PublicKey, cloudOnly bool, now time.Time) (Peer, error) {
 	if h.Kind != "hello" {
 		return Peer{}, fmt.Errorf("it sent %q, not a hello", h.Kind)
 	}
-	cred, err := VerifyDeviceCredential(h.Credential, keys, now)
+	cred, err := VerifyAccountCredential(h.Credential, keys, now, cloudOnly)
 	if err != nil {
-		return Peer{}, fmt.Errorf("device credential: %w", err)
+		return Peer{}, fmt.Errorf("credential: %w", err)
 	}
 	if len(h.DeviceKey) != ed25519.PublicKeySize {
 		return Peer{}, errors.New("the device key isn't Ed25519")
@@ -162,5 +175,5 @@ func verifyHello(h hello, exporter []byte, keys []*rsa.PublicKey, now time.Time)
 	if !ed25519.Verify(sessionKey, bindingMessage(exporter), h.Binding) {
 		return Peer{}, errors.New("the binding isn't the session key's, for this session")
 	}
-	return Peer{Account: cred.Acct, Device: cred.Dev, Expires: time.Unix(min(cred.Exp, grant.Exp), 0)}, nil
+	return Peer{Account: cred.Acct, Device: cred.Dev, DeviceKey: device, Expires: time.Unix(min(cred.Exp, *cred.Pe, grant.Exp), 0)}, nil
 }

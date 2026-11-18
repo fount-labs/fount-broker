@@ -237,8 +237,11 @@ or `--client-listen`, which serves them too; point the healthcheck there, since
 the API's `/health` answers only once the key has come. Test coordinators and the dev build say `--wrapping-key dev`, a
 key file in `--dir`.
 
-Its parse surfaces are the JobSpec and the API's small JSON bodies. File
-contents, and everything a runner leaves behind, are stored as opaque bytes.
+Its parse surfaces are the JobSpec, the API's small JSON bodies and, over the
+client channel, a worker's DEK grant: claims signed by a device key
+([`grant.go`](internal/coordinator/grant.go)) naming the devices that may act
+for the worker from then on. File contents, everything a runner leaves behind,
+and the DEK as Desktop wraps it to each device are stored as opaque bytes.
 
 The coordinator never checks a sender itself. It reads mail only in format 3,
 takes who sent it from the edge's sealed check, and decides what the mail may do

@@ -1,13 +1,16 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"sync/atomic"
 
+	"github.com/fount-labs/fount-broker/internal/attested"
 	"github.com/fount-labs/fount-broker/internal/channel"
+	"github.com/fount-labs/fount-broker/internal/coordinator"
 )
 
 // accountKeysEnv names fount-infra's device-credential keys in the measured
@@ -19,6 +22,7 @@ type clientFlags struct {
 	listen      string
 	accountKeys string
 	attestation string
+	cloudOnly   bool
 }
 
 const (
@@ -31,8 +35,8 @@ const (
 // socket. Its Handler is set once the coordinator is up.
 func (f clientFlags) server() (*channel.Server, error) {
 	if f.listen == "" {
-		if f.accountKeys != "" || f.attestation != attestTinfoil {
-			return nil, errors.New("--account-keys and --client-attestation need --client-listen")
+		if f.accountKeys != "" || f.attestation != attestTinfoil || f.cloudOnly {
+			return nil, errors.New("--account-keys, --client-attestation and --cloud-credentials-only need --client-listen")
 		}
 		return nil, nil
 	}
@@ -48,7 +52,24 @@ func (f clientFlags) server() (*channel.Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &channel.Server{Key: key, Attester: attester, AccountKeys: keys}, nil
+	return &channel.Server{Key: key, Attester: attester, AccountKeys: keys, CloudCredentialsOnly: f.cloudOnly}, nil
+}
+
+// handler serves each channel the account API for the account and device it
+// proved.
+func handler(c *coordinator.Coordinator) func(channel.Peer) http.Handler {
+	return func(p channel.Peer) http.Handler {
+		return c.AccountHandler(coordinator.Caller{Account: p.Account, Device: p.Device, DeviceKey: p.DeviceKey})
+	}
+}
+
+// loadClientKey reads the enclave's attested channel key.
+func loadClientKey() (ed25519.PrivateKey, error) {
+	key, err := attested.LoadEd25519(attested.Dir, channel.KeyID)
+	if err != nil {
+		return nil, fmt.Errorf("the attested %s key (attested-keys in the enclave's config): %w", channel.KeyID, err)
+	}
+	return key, nil
 }
 
 // clientAPI is what --client-listen serves: /health and /status, which answer

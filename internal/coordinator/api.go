@@ -21,43 +21,47 @@ import (
 //	POST /v0/workers/{id}/jobs            a JobSpec: queue a job
 //	GET  /v0/jobs/{id}                    a job's state
 func (c *Coordinator) Handler() http.Handler {
-	a := &api{c: c, dev: true}
+	a := &api{c: c}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v0/workers", a.createWorker)
 	a.routes(mux, "/v0")
 	return mux
 }
 
-// AccountHandler is the API for one account, as the attested client channel
-// (package channel) serves it: the account is the one the channel
-// authenticated, never one the client names. Another account's workers and
-// jobs don't exist here. It is the dev API's operations under /v1, plus:
+// AccountHandler is the API for one caller, as the attested client channel
+// (package channel) serves it: the account and device are the ones the
+// channel authenticated, never ones the client names. Only workers of that
+// account that list that device exist here (grant.go). It is the dev API's
+// operations under /v1, plus:
 //
-//	POST /v1/workers                      {"dek"?}: take in a worker for this account
-//	GET  /v1/workers                      this account's workers
-//	POST /v1/workers/{id}/grant           {"v":1,"dek"}: the DEK grant (§3.1 step 4); not built, 501
+//	POST /v1/workers                      {}: an empty worker, the caller's device's
+//	GET  /v1/workers                      the workers the caller's device may act for
+//	POST /v1/workers/{id}/grant           {"v":1,"dek","grant","wraps"?}: the DEK grant (§3.1 step 4)
+//	POST /v1/workers/{id}/revoke          {"v":1,"grant"}: move the worker back to Desktop
 //
-// An empty account panics: it would be no account's API, and never the dev
-// API's every account.
-func (c *Coordinator) AccountHandler(account string) http.Handler {
-	if account == "" {
-		panic("coordinator: AccountHandler for no account")
+// A caller without an account or device panics: it would be no one's API,
+// and never the dev API's every account.
+func (c *Coordinator) AccountHandler(caller Caller) http.Handler {
+	if caller.Account == "" || caller.Device == "" {
+		panic("coordinator: AccountHandler for no account or device")
 	}
-	a := &api{c: c, account: account}
+	a := &api{c: c, account: caller.Account, caller: &caller}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/workers", a.createWorker)
 	mux.HandleFunc("GET /v1/workers", a.listWorkers)
 	mux.HandleFunc("POST /v1/workers/{id}/grant", a.grant)
+	mux.HandleFunc("POST /v1/workers/{id}/revoke", a.revoke)
 	a.routes(mux, "/v1")
 	return mux
 }
 
-// api serves both. dev is the dev API, which takes the account from the
-// request; otherwise every worker it touches must be account's.
+// api serves both. caller is nil for the dev API, which takes the account
+// from the request; otherwise every worker it touches must be account's and
+// list caller's device.
 type api struct {
 	c       *Coordinator
-	dev     bool
 	account string
+	caller  *Caller
 }
 
 func (a *api) routes(mux *http.ServeMux, prefix string) {
@@ -69,8 +73,9 @@ func (a *api) routes(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc("GET "+prefix+"/jobs/{id}", a.getJob)
 }
 
-// worker is the request's worker, if this API may touch it. Another account's
-// is ErrNoWorker, so a client can't tell it from one that doesn't exist.
+// worker is the request's worker, if this API may touch it. Another account's,
+// or one the caller's device may not act for, is ErrNoWorker, so a client
+// can't tell it from one that doesn't exist.
 func (a *api) worker(r *http.Request) (Worker, error) {
 	return a.workerByID(r.PathValue("id"))
 }
@@ -80,7 +85,7 @@ func (a *api) workerByID(id string) (Worker, error) {
 	if err != nil {
 		return Worker{}, err
 	}
-	if !a.dev && w.Account != a.account {
+	if a.caller != nil && (w.Account != a.account || !w.authorizes(a.caller.Device)) {
 		return Worker{}, ErrNoWorker
 	}
 	return w, nil
@@ -88,6 +93,7 @@ func (a *api) workerByID(id string) (Worker, error) {
 
 const (
 	maxCreateBody = 4 << 10
+	maxGrantBody  = 32 << 10
 	maxFileBody   = 64 << 20
 )
 
@@ -96,47 +102,68 @@ type workerView struct {
 	Account string `json:"account"`
 	Version uint64 `json:"version"`
 	Created string `json:"created"`
+	// The account API's alone: whether the DEK is granted, the last grant's
+	// number, the devices that may act for the worker, and the caller's
+	// device's wrap of the DEK, if Desktop left one.
+	Granted  *bool    `json:"granted,omitempty"`
+	GrantSeq *uint64  `json:"grantSeq,omitempty"`
+	Devices  []string `json:"devices,omitempty"`
+	Wrap     []byte   `json:"wrap,omitempty"`
 }
 
-func viewOf(w Worker) workerView {
-	return workerView{ID: w.ID, Account: w.Account, Version: w.Version, Created: w.Created.Format("2006-01-02T15:04:05Z")}
+func (a *api) viewOf(w Worker) workerView {
+	v := workerView{ID: w.ID, Account: w.Account, Version: w.Version, Created: w.Created.Format("2006-01-02T15:04:05Z")}
+	if a.caller == nil {
+		return v
+	}
+	granted := w.WrappedDEK != nil
+	v.Granted, v.GrantSeq = &granted, &w.GrantSeq
+	for _, d := range w.Devices {
+		v.Devices = append(v.Devices, d.ID)
+		if d.ID == a.caller.Device {
+			v.Wrap = d.Wrap
+		}
+	}
+	return v
 }
 
 func (a *api) createWorker(rw http.ResponseWriter, r *http.Request) {
-	// DEK is the worker's key, base64: Desktop's when it moves a worker in.
-	var dekField []byte
-	account := a.account
-	var err error
-	if a.dev {
-		var req struct {
-			Account string `json:"account"`
-			DEK     []byte `json:"dek"`
+	if a.caller != nil {
+		// No account and no DEK: the channel says whose worker it is, and
+		// the DEK comes signed, in a grant.
+		var req struct{}
+		if err := decodeStrict(r.Body, maxCreateBody, &req); err != nil {
+			fail(rw, http.StatusBadRequest, err)
+			return
 		}
-		err = decodeStrict(r.Body, maxCreateBody, &req)
-		account, dekField = req.Account, req.DEK
-	} else {
-		// No account field: the channel says whose worker it is.
-		var req struct {
-			DEK []byte `json:"dek"`
+		w, err := a.c.CreateWorkerFor(*a.caller)
+		if err != nil {
+			fail(rw, statusOf(err), err)
+			return
 		}
-		err = decodeStrict(r.Body, maxCreateBody, &req)
-		dekField = req.DEK
+		reply(rw, http.StatusCreated, a.viewOf(w))
+		return
 	}
+	// DEK is the worker's key, base64.
+	var req struct {
+		Account string `json:"account"`
+		DEK     []byte `json:"dek"`
+	}
+	if err := decodeStrict(r.Body, maxCreateBody, &req); err != nil {
+		fail(rw, http.StatusBadRequest, err)
+		return
+	}
+	dek, err := parseDEK(req.DEK)
 	if err != nil {
 		fail(rw, http.StatusBadRequest, err)
 		return
 	}
-	dek, err := parseDEK(dekField)
-	if err != nil {
-		fail(rw, http.StatusBadRequest, err)
-		return
-	}
-	w, err := a.c.CreateWorker(account, dek)
+	w, err := a.c.CreateWorker(req.Account, dek)
 	if err != nil {
 		fail(rw, statusOf(err), err)
 		return
 	}
-	reply(rw, http.StatusCreated, viewOf(w))
+	reply(rw, http.StatusCreated, a.viewOf(w))
 }
 
 func parseDEK(b []byte) (*DEK, error) {
@@ -154,20 +181,25 @@ func parseDEK(b []byte) (*DEK, error) {
 func (a *api) listWorkers(rw http.ResponseWriter, _ *http.Request) {
 	views := []workerView{}
 	for _, w := range a.c.Workers(a.account) {
-		views = append(views, viewOf(w))
+		if w.authorizes(a.caller.Device) {
+			views = append(views, a.viewOf(w))
+		}
 	}
 	reply(rw, http.StatusOK, map[string][]workerView{"workers": views})
 }
 
-// grant is where Desktop will grant a worker's DEK to the coordinator when it
-// moves the worker in (m4-cloud-runners.md §3.1 step 4). The message is fixed
-// so both ends can be built against it; taking it isn't built yet.
+// grant is how Desktop moves a worker in (m4-cloud-runners.md §3.1 step 4):
+// the worker's DEK, base64; the grant its device key signed (grant.go); and
+// each named device's wrap of the DEK, by device id, which the coordinator
+// only keeps.
 func (a *api) grant(rw http.ResponseWriter, r *http.Request) {
 	var req struct {
-		V   int    `json:"v"`
-		DEK []byte `json:"dek"`
+		V     int               `json:"v"`
+		DEK   []byte            `json:"dek"`
+		Grant string            `json:"grant"`
+		Wraps map[string][]byte `json:"wraps"`
 	}
-	if err := decodeStrict(r.Body, maxCreateBody, &req); err != nil {
+	if err := decodeStrict(r.Body, maxGrantBody, &req); err != nil {
 		fail(rw, http.StatusBadRequest, err)
 		return
 	}
@@ -175,15 +207,47 @@ func (a *api) grant(rw http.ResponseWriter, r *http.Request) {
 		fail(rw, http.StatusBadRequest, fmt.Errorf("grant version %d: want 1", req.V))
 		return
 	}
-	if len(req.DEK) != KeySize {
+	dek, err := parseDEK(req.DEK)
+	if err != nil || dek == nil {
 		fail(rw, http.StatusBadRequest, fmt.Errorf("dek must be %d bytes", KeySize))
+		return
+	}
+	defer clear(dek[:])
+	if _, err := a.worker(r); err != nil {
+		fail(rw, statusOf(err), err)
+		return
+	}
+	w, err := a.c.Grant(*a.caller, r.PathValue("id"), *dek, req.Grant, req.Wraps)
+	if err != nil {
+		fail(rw, statusOf(err), err)
+		return
+	}
+	reply(rw, http.StatusOK, a.viewOf(w))
+}
+
+// revoke moves a worker back to Desktop, on a revoke its device key signed.
+func (a *api) revoke(rw http.ResponseWriter, r *http.Request) {
+	var req struct {
+		V     int    `json:"v"`
+		Grant string `json:"grant"`
+	}
+	if err := decodeStrict(r.Body, maxCreateBody, &req); err != nil {
+		fail(rw, http.StatusBadRequest, err)
+		return
+	}
+	if req.V != 1 {
+		fail(rw, http.StatusBadRequest, fmt.Errorf("revoke version %d: want 1", req.V))
 		return
 	}
 	if _, err := a.worker(r); err != nil {
 		fail(rw, statusOf(err), err)
 		return
 	}
-	fail(rw, http.StatusNotImplemented, errors.New("the DEK grant isn't built yet (m4-cloud-runners.md §3.1 step 4)"))
+	if err := a.c.Revoke(*a.caller, r.PathValue("id"), req.Grant); err != nil {
+		fail(rw, statusOf(err), err)
+		return
+	}
+	rw.WriteHeader(http.StatusNoContent)
 }
 
 func (a *api) getWorker(rw http.ResponseWriter, r *http.Request) {
@@ -192,7 +256,7 @@ func (a *api) getWorker(rw http.ResponseWriter, r *http.Request) {
 		fail(rw, statusOf(err), err)
 		return
 	}
-	reply(rw, http.StatusOK, viewOf(w))
+	reply(rw, http.StatusOK, a.viewOf(w))
 }
 
 func (a *api) putFile(rw http.ResponseWriter, r *http.Request) {
@@ -304,8 +368,11 @@ func statusOf(err error) int {
 	switch {
 	case errors.Is(err, ErrNoWorker), errors.Is(err, ErrNoJob), errors.Is(err, ErrNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, ErrWriteOnce):
+	case errors.Is(err, ErrWriteOnce), errors.Is(err, ErrNotGranted), errors.Is(err, ErrGrantSeq),
+		errors.Is(err, ErrDEKChanged), errors.Is(err, ErrBusy):
 		return http.StatusConflict
+	case errors.Is(err, ErrGrantRefused):
+		return http.StatusForbidden
 	case errors.Is(err, ErrInvalid), errors.Is(err, ErrReserved):
 		return http.StatusBadRequest
 	default:

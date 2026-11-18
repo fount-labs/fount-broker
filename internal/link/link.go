@@ -49,6 +49,19 @@ type Attester interface {
 // side pins, and returns the link key it endorses.
 type Checker func(doc, nonce []byte) (ed25519.PublicKey, error)
 
+// An Endorsement is what a verified document vouches for: the peer's key,
+// and Fresh, the verification's freshness deadline, at and after which it
+// may authorize nothing new (tinfoil-go's FreshnessExpiresAt). Zero is no
+// deadline, an unattested document's.
+type Endorsement struct {
+	Key   ed25519.PublicKey
+	Fresh time.Time
+}
+
+// A KeyChecker is a Checker that also says how long its verification stays
+// fresh.
+type KeyChecker func(doc, nonce []byte) (Endorsement, error)
+
 // Side is one end's key, how it attests, and how it checks the other end.
 type Side struct {
 	Key      ed25519.PrivateKey

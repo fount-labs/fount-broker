@@ -415,31 +415,32 @@ func TestEachRunGetsCredentialsMintedForItsJob(t *testing.T) {
 
 func TestTheAccountAPIServesOnlyItsAccount(t *testing.T) {
 	c, _ := newTestCoordinator(t, "ok", 0)
-	acme := httptest.NewServer(c.AccountHandler("acme"))
+	me := newTestDevice(t)
+	acme := httptest.NewServer(c.AccountHandler(me.caller("acme")))
 	defer acme.Close()
-	other := httptest.NewServer(c.AccountHandler("other"))
+	// The other account's device, and the same device's credential for the
+	// other account: neither reaches acme's worker.
+	other := httptest.NewServer(c.AccountHandler(newTestDevice(t).caller("other")))
 	defer other.Close()
-	do := func(srv *httptest.Server, method, path, body string) (int, map[string]any) {
-		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		var out map[string]any
-		json.NewDecoder(resp.Body).Decode(&out)
-		return resp.StatusCode, out
-	}
+	mine := httptest.NewServer(c.AccountHandler(me.caller("other")))
+	defer mine.Close()
 
-	if code, out := do(acme, "POST", "/v1/workers", `{"account":"other"}`); code != http.StatusBadRequest {
+	if code, out := do(t, acme, "POST", "/v1/workers", `{"account":"other"}`); code != http.StatusBadRequest {
 		t.Fatalf("a client-named account: %d %v", code, out)
 	}
-	code, w := do(acme, "POST", "/v1/workers", `{}`)
-	if code != http.StatusCreated || w["account"] != "acme" {
+	if code, out := do(t, acme, "POST", "/v1/workers", `{"dek":"`+strings.Repeat("A", 43)+`="}`); code != http.StatusBadRequest {
+		t.Fatalf("a DEK outside a grant: %d %v", code, out)
+	}
+	code, w := do(t, acme, "POST", "/v1/workers", `{}`)
+	if code != http.StatusCreated || w["account"] != "acme" || w["granted"] != false {
 		t.Fatalf("create: %d %v", code, w)
 	}
 	id := w["id"].(string)
-	code, j := do(acme, "POST", "/v1/workers/"+id+"/jobs", `{"threadId":"t1","sessionId":"s1","instruction":"hi","config":{}}`)
+	dek := mustDEK(t)
+	if code, out := do(t, acme, "POST", "/v1/workers/"+id+"/grant", me.grantBody(t, "acme", id, 1, dek)); code != http.StatusOK || out["granted"] != true {
+		t.Fatalf("grant: %d %v", code, out)
+	}
+	code, j := do(t, acme, "POST", "/v1/workers/"+id+"/jobs", `{"threadId":"t1","sessionId":"s1","instruction":"hi","config":{}}`)
 	if code != http.StatusAccepted {
 		t.Fatalf("enqueue: %d %v", code, j)
 	}
@@ -456,14 +457,16 @@ func TestTheAccountAPIServesOnlyItsAccount(t *testing.T) {
 		{"GET", "/v1/workers/" + id + "/files/root/instructions.md", "", 200, 404},
 		{"POST", "/v1/workers/" + id + "/jobs", `{"threadId":"t2","sessionId":"s2","instruction":"hi","config":{}}`, 202, 404},
 		{"GET", "/v1/jobs/" + jobID, "", 200, 404},
-		{"POST", "/v1/workers/" + id + "/grant", `{"v":1,"dek":"` + strings.Repeat("A", 43) + `="}`, 501, 404},
+		{"POST", "/v1/workers/" + id + "/grant", `{"v":1,"dek":"` + strings.Repeat("A", 43) + `=","grant":"x.y"}`, 403, 404},
 		{"POST", "/v1/workers/" + id + "/grant", `{"v":2,"dek":"` + strings.Repeat("A", 43) + `="}`, 400, 400},
 		{"GET", "/v0/workers/" + id, "", 404, 404},
 	} {
-		if code, out := do(other, tc.method, tc.path, tc.body); code != tc.other {
-			t.Errorf("other: %s %s: %d %v, want %d", tc.method, tc.path, code, out, tc.other)
+		for name, srv := range map[string]*httptest.Server{"other": other, "mine": mine} {
+			if code, out := do(t, srv, tc.method, tc.path, tc.body); code != tc.other {
+				t.Errorf("%s: %s %s: %d %v, want %d", name, tc.method, tc.path, code, out, tc.other)
+			}
 		}
-		if code, out := do(acme, tc.method, tc.path, tc.body); code != tc.acme {
+		if code, out := do(t, acme, tc.method, tc.path, tc.body); code != tc.acme {
 			t.Errorf("acme: %s %s: %d %v, want %d", tc.method, tc.path, code, out, tc.acme)
 		}
 	}
@@ -476,20 +479,35 @@ func TestTheAccountAPIServesOnlyItsAccount(t *testing.T) {
 	for _, id := range jobs {
 		waitJob(t, c, id)
 	}
-	if _, list := do(acme, "GET", "/v1/workers", ""); len(list["workers"].([]any)) != 1 {
+	if _, list := do(t, acme, "GET", "/v1/workers", ""); len(list["workers"].([]any)) != 1 {
 		t.Errorf("acme's workers: %v", list)
 	}
-	if _, list := do(other, "GET", "/v1/workers", ""); len(list["workers"].([]any)) != 0 {
-		t.Errorf("other's workers: %v", list)
+	for _, srv := range []*httptest.Server{other, mine} {
+		if _, list := do(t, srv, "GET", "/v1/workers", ""); len(list["workers"].([]any)) != 0 {
+			t.Errorf("other's workers: %v", list)
+		}
 	}
+}
+
+func do(t *testing.T, srv *httptest.Server, method, path, body string) (int, map[string]any) {
+	t.Helper()
+	req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	json.NewDecoder(resp.Body).Decode(&out)
+	return resp.StatusCode, out
 }
 
 func TestAnAccountAPIForNoAccountPanics(t *testing.T) {
 	c, _ := newTestCoordinator(t, "ok", 0)
 	defer func() {
 		if recover() == nil {
-			t.Error("AccountHandler(\"\") made a handler")
+			t.Error("AccountHandler made a handler for no account")
 		}
 	}()
-	c.AccountHandler("")
+	c.AccountHandler(Caller{Device: "d"})
 }

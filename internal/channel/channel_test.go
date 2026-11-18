@@ -133,7 +133,7 @@ func unattested(t *testing.T) *link.Side {
 	return s
 }
 
-func client(origin string, check link.Checker, id Identity) *Client {
+func client(origin string, check link.KeyChecker, id Identity) *Client {
 	return &Client{Origin: origin, Check: check, Identity: func() (Identity, error) { return id, nil }}
 }
 
@@ -141,7 +141,7 @@ func TestAChannelCarriesItsAccountAndNoOther(t *testing.T) {
 	side := unattested(t)
 	origin := coordinator(t, side)
 	d := newDevice(t, "acct_1")
-	c := client(origin, side.Check, d.identity(t, accountKey(t, 0), time.Hour))
+	c := client(origin, link.CheckUnattestedKey, d.identity(t, accountKey(t, 0), time.Hour))
 
 	conn, peer, err := c.Dial(context.Background())
 	if err != nil {
@@ -174,14 +174,23 @@ func TestTheClientSendsNothingToAnUnprovenCoordinator(t *testing.T) {
 
 	// A coordinator that isn't a release of the pinned repo, and one whose
 	// document endorses another key than its TLS one.
-	refuse := func(doc, nonce []byte) (ed25519.PublicKey, error) { return nil, errors.New("another repo") }
+	refuse := func(doc, nonce []byte) (link.Endorsement, error) {
+		return link.Endorsement{}, errors.New("another repo")
+	}
+	// And one whose verification is no longer fresh.
+	stale := func(doc, nonce []byte) (link.Endorsement, error) {
+		e, err := link.CheckUnattestedKey(doc, nonce)
+		e.Fresh = time.Now().Add(-time.Second)
+		return e, err
+	}
 	impostor := &link.Side{Key: side.Key, Attester: unattested(t).Attester}
 	for name, c := range map[string]struct {
 		server *link.Side
-		check  link.Checker
+		check  link.KeyChecker
 	}{
 		"wrong release": {side, refuse},
-		"other key":     {impostor, side.Check},
+		"stale":         {side, stale},
+		"other key":     {impostor, link.CheckUnattestedKey},
 	} {
 		got := make(chan []byte, 1)
 		srv := spy(t, c.server, got)
@@ -260,7 +269,7 @@ func TestTheCoordinatorRefusesWhatItCantVerify(t *testing.T) {
 		d := newDevice(t, "acct_1")
 		id := d.identity(t, accountKey(t, 0), time.Hour)
 		c.change(d, &id)
-		_, _, err := client(origin, side.Check, id).Dial(context.Background())
+		_, _, err := client(origin, link.CheckUnattestedKey, id).Dial(context.Background())
 		if !errors.Is(err, ErrRefused) {
 			t.Errorf("%s: %v", c.name, err)
 		}
@@ -275,10 +284,10 @@ func TestAHelloDoesntReplayIntoAnotherSession(t *testing.T) {
 	rand.Read(first)
 	rand.Read(second)
 	h := hello{Kind: "hello", Credential: id.Credential, DeviceKey: id.DeviceKey, Session: id.Session, Binding: ed25519.Sign(id.SessionKey, bindingMessage(first))}
-	if _, err := verifyHello(h, first, keys, time.Now()); err != nil {
+	if _, err := verifyHello(h, first, keys, false, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := verifyHello(h, second, keys, time.Now()); err == nil {
+	if _, err := verifyHello(h, second, keys, false, time.Now()); err == nil {
 		t.Fatal("a hello verified in another session")
 	}
 }
@@ -287,7 +296,7 @@ func TestAChannelClosesWhenItsGrantRunsOut(t *testing.T) {
 	side := unattested(t)
 	origin := coordinator(t, side)
 	d := newDevice(t, "acct_1")
-	conn, peer, err := client(origin, side.Check, d.identity(t, accountKey(t, 0), 2*time.Second)).Dial(context.Background())
+	conn, peer, err := client(origin, link.CheckUnattestedKey, d.identity(t, accountKey(t, 0), 2*time.Second)).Dial(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,6 +315,7 @@ func TestCheckRequest(t *testing.T) {
 	w := "w_0123456789abcdef01234567"
 	for _, ok := range []string{
 		"POST v1/workers", "GET v1/workers", "GET v1/workers/" + w, "POST v1/workers/" + w + "/grant",
+		"POST v1/workers/" + w + "/revoke",
 		"PUT v1/workers/" + w + "/root/notes/a b.md", "POST v1/workers/" + w + "/jobs",
 		"GET v1/workers/" + w + "/files", "GET v1/workers/" + w + "/files?prefix=root/",
 		"GET v1/workers/" + w + "/files/root/a.md", "GET v1/jobs/j_0123456789abcdef01234567",
@@ -321,6 +331,7 @@ func TestCheckRequest(t *testing.T) {
 		"GET v1/workers/" + w + "/files?prefix=a&other=b", "GET v1/workers/" + w + "?prefix=a",
 		"GET v1/workers/" + w + "/files/a\x00b", "POST v1/workers/" + w + "/root/a.md",
 		"GET v1/jobs/j_0123456789abcdef01234567/x", "PUT v1/workers/" + w + "/root",
+		"GET v1/workers/" + w + "/revoke", "POST v1/workers/" + w + "/grant/x",
 	} {
 		method, target, _ := strings.Cut(bad, " ")
 		if _, err := CheckRequest(method, target); err == nil {
@@ -384,7 +395,7 @@ func TestResetRetiresAChannelInFlight(t *testing.T) {
 	b := newDevice(t, "acct_b").identity(t, accountKey(t, 0), time.Hour)
 	var mu sync.Mutex
 	current := a
-	c := &Client{Origin: origin, Check: side.Check, Identity: func() (Identity, error) {
+	c := &Client{Origin: origin, Check: link.CheckUnattestedKey, Identity: func() (Identity, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		return current, nil
@@ -459,7 +470,7 @@ func TestIdleConnectionsDontLockOutClients(t *testing.T) {
 	}
 	d := newDevice(t, "acct_1")
 	start := time.Now()
-	conn, _, err := client(origin, side.Check, d.identity(t, accountKey(t, 0), time.Hour)).Dial(context.Background())
+	conn, _, err := client(origin, link.CheckUnattestedKey, d.identity(t, accountKey(t, 0), time.Hour)).Dial(context.Background())
 	if err != nil {
 		t.Fatalf("after %s: %v", time.Since(start), err)
 	}
@@ -472,5 +483,184 @@ func TestIdleConnectionsDontLockOutClients(t *testing.T) {
 		if _, err := conn.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
 			t.Errorf("idle connection %d: %v", i, err)
 		}
+	}
+}
+
+// coordinatorWith is coordinator with a server configured by opt, whose
+// handler answers with the peer it was given.
+func coordinatorWith(t *testing.T, side *link.Side, opt func(*Server)) string {
+	t.Helper()
+	keys, _ := ParseAccountKeys(spki(t, accountKey(t, 0)))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	s := &Server{Key: side.Key, Attester: side.Attester, AccountKeys: keys, Handler: func(p Peer) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(map[string]any{"account": p.Account, "device": p.Device, "key_id": DeviceID(p.DeviceKey), "expires": p.Expires.Unix()})
+		})
+	}}
+	if opt != nil {
+		opt(s)
+	}
+	h, err := s.Start(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+func peerOf(t *testing.T, c *Client) (map[string]any, error) {
+	t.Helper()
+	resp, err := c.Do(context.Background(), "GET", "v1/workers", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	return out, json.NewDecoder(resp.Body).Decode(&out)
+}
+
+func TestTheCoordinatorRefusesAccountsWithoutCloud(t *testing.T) {
+	side := unattested(t)
+	origin := coordinator(t, side)
+	now := time.Now().Unix()
+	for name, change := range map[string]map[string]any{
+		"no subscription":   {"tier": nil, "status": nil, "pe": nil},
+		"an unknown tier":   {"tier": "free"},
+		"cancelled":         {"status": "canceled"},
+		"no status":         {"status": nil},
+		"an unknown status": {"status": "incomplete"},
+		"the period ended":  {"pe": now - 60},
+		"no period end":     {"pe": nil},
+	} {
+		d := newDevice(t, "acct_1")
+		for k, v := range change {
+			d.claims[k] = v
+		}
+		_, _, err := client(origin, link.CheckUnattestedKey, d.identity(t, accountKey(t, 0), time.Hour)).Dial(context.Background())
+		if !errors.Is(err, ErrRefused) || !strings.Contains(err.Error(), "Cloud") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	d := newDevice(t, "acct_1")
+	d.claims["tier"], d.claims["status"] = "plus", "past_due"
+	if _, _, err := client(origin, link.CheckUnattestedKey, d.identity(t, accountKey(t, 0), time.Hour)).Dial(context.Background()); err != nil {
+		t.Errorf("plus, past_due, in its period: %v", err)
+	}
+}
+
+func TestAChannelEndsWithThePaidPeriodAndCarriesTheDeviceKey(t *testing.T) {
+	side := unattested(t)
+	origin := coordinatorWith(t, side, nil)
+	d := newDevice(t, "acct_1")
+	pe := time.Now().Add(30 * time.Minute).Unix()
+	d.claims["pe"] = pe
+	got, err := peerOf(t, client(origin, link.CheckUnattestedKey, d.identity(t, accountKey(t, 0), time.Hour)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["expires"] != float64(pe) || got["key_id"] != d.claims["dev"] || got["device"] != d.claims["dev"] {
+		t.Errorf("peer %v, want expiry %d", got, pe)
+	}
+}
+
+func TestCloudCredentials(t *testing.T) {
+	side := unattested(t)
+	cloud := func(d *device, lasts time.Duration) {
+		now := time.Now()
+		d.claims["typ"], d.claims["iat"], d.claims["exp"] = CloudCredentialType, now.Unix(), now.Add(lasts).Unix()
+	}
+	for _, cloudOnly := range []bool{false, true} {
+		origin := coordinatorWith(t, side, func(s *Server) { s.CloudCredentialsOnly = cloudOnly })
+		d := newDevice(t, "acct_1")
+		cloud(d, MaxCloudCredential)
+		got, err := peerOf(t, client(origin, link.CheckUnattestedKey, d.identity(t, accountKey(t, 0), 24*time.Hour)))
+		if err != nil || got["expires"] != float64(d.claims["exp"].(int64)) {
+			t.Errorf("cloudOnly %v: an hour's Cloud credential: %v %v", cloudOnly, got, err)
+		}
+		long := newDevice(t, "acct_1")
+		cloud(long, MaxCloudCredential+time.Minute)
+		if _, _, err := client(origin, link.CheckUnattestedKey, long.identity(t, accountKey(t, 0), time.Hour)).Dial(context.Background()); !errors.Is(err, ErrRefused) {
+			t.Errorf("cloudOnly %v: a longer Cloud credential: %v", cloudOnly, err)
+		}
+		_, _, err = client(origin, link.CheckUnattestedKey, newDevice(t, "acct_1").identity(t, accountKey(t, 0), time.Hour)).Dial(context.Background())
+		if cloudOnly != errors.Is(err, ErrRefused) {
+			t.Errorf("cloudOnly %v: a device credential: %v", cloudOnly, err)
+		}
+	}
+}
+
+func TestTheClientReattestsAtTheFreshnessDeadline(t *testing.T) {
+	side := unattested(t)
+	origin := coordinator(t, side)
+	var mu sync.Mutex
+	checks := 0
+	fresh := func(doc, nonce []byte) (link.Endorsement, error) {
+		e, err := link.CheckUnattestedKey(doc, nonce)
+		mu.Lock()
+		checks++
+		mu.Unlock()
+		e.Fresh = time.Now().Add(time.Second)
+		return e, err
+	}
+	c := client(origin, fresh, newDevice(t, "acct_1").identity(t, accountKey(t, 0), time.Hour))
+	get := func() {
+		t.Helper()
+		resp, err := c.Do(context.Background(), "POST", "v1/workers", []byte("{}"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return checks
+	}
+	get()
+	get()
+	if n := count(); n != 1 {
+		t.Fatalf("%d verifications before the deadline, want 1", n)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	get()
+	if n := count(); n != 2 {
+		t.Fatalf("%d verifications after the deadline, want 2", n)
+	}
+
+	// A channel past its deadline writes nothing, whether or not its timer
+	// has fired yet.
+	conn, _, err := c.Dial(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fc := conn.(*freshConn)
+	fc.timer.Stop()
+	fc.fresh = time.Now()
+	if _, err := conn.Write([]byte("GET / HTTP/1.1\r\n\r\n")); !errors.Is(err, errStale) {
+		t.Errorf("a write past the deadline: %v", err)
+	}
+}
+
+func TestParseIdentityTakesACloudCredential(t *testing.T) {
+	d := newDevice(t, "acct_1")
+	id := d.identity(t, accountKey(t, 0), time.Hour)
+	d.claims["typ"] = CloudCredentialType
+	cloud := credential(t, accountKey(t, 0), d.claims)
+	session, _ := json.Marshal(SessionCredential{
+		DeviceKey: b64.EncodeToString(id.DeviceKey), Session: id.Session, SessionSeed: b64.EncodeToString(d.session.Seed()), Credential: cloud,
+	})
+	for _, license := range []string{"", id.Credential} {
+		got, err := ParseIdentity(license, string(session))
+		if err != nil || got.Credential != cloud {
+			t.Errorf("license %q: %v, credential %q", license, err, got.Credential)
+		}
+	}
+	bad := strings.Replace(string(session), cloud, "nope", 1)
+	if _, err := ParseIdentity(id.Credential, bad); err == nil {
+		t.Error("a malformed Cloud credential parsed")
 	}
 }

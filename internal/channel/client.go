@@ -26,9 +26,9 @@ type Client struct {
 	// Origin is the coordinator's, https://<domain>.
 	Origin string
 	// Check verifies the coordinator's document against the config repo it
-	// must be a release of (link.TinfoilChecker), and returns the key it
-	// endorses.
-	Check link.Checker
+	// must be a release of (link.TinfoilKeyChecker for KeyID), and returns the
+	// key it endorses and until when.
+	Check link.KeyChecker
 	// Identity is read for each new connection, so a renewed credential
 	// takes effect on the next one.
 	Identity func() (Identity, error)
@@ -41,7 +41,8 @@ type Client struct {
 }
 
 // Dial opens a channel and returns it, ready for HTTP, with the peer the
-// coordinator says the client is.
+// coordinator says the client is. The channel closes, and refuses to send,
+// at the coordinator's verification's freshness deadline.
 func (c *Client) Dial(ctx context.Context) (net.Conn, Peer, error) {
 	id, err := c.Identity()
 	if err != nil {
@@ -69,6 +70,7 @@ func (c *Client) Dial(ctx context.Context) (net.Conn, Peer, error) {
 
 func (c *Client) handshake(ctx context.Context, raw net.Conn, id Identity) (net.Conn, Peer, error) {
 	var server ed25519.PublicKey
+	now := time.Now()
 	tc := tls.Client(raw, &tls.Config{
 		MinVersion: tls.VersionTLS13,
 		// The certificate is only a carrier for the key; the attestation
@@ -110,7 +112,10 @@ func (c *Client) handshake(ctx context.Context, raw net.Conn, id Identity) (net.
 	if err != nil {
 		return nil, Peer{}, fmt.Errorf("%w: %v", ErrCoordinator, err)
 	}
-	if !endorsed.Equal(server) {
+	if !endorsed.Fresh.IsZero() && !now.Before(endorsed.Fresh) {
+		return nil, Peer{}, fmt.Errorf("%w: its attestation is no longer fresh", ErrCoordinator)
+	}
+	if !endorsed.Key.Equal(server) {
 		return nil, Peer{}, fmt.Errorf("%w: its attestation endorses another key than its TLS one", ErrCoordinator)
 	}
 	h, err := json.Marshal(hello{
@@ -140,7 +145,41 @@ func (c *Client) handshake(ctx context.Context, raw net.Conn, id Identity) (net.
 	case a.Kind != "welcome" || a.Account == "":
 		return nil, Peer{}, fmt.Errorf("the coordinator answered %q", a.Kind)
 	}
-	return tc, Peer{Account: a.Account, Device: a.Device, Expires: time.Unix(a.Expires, 0)}, nil
+	return freshUntil(tc, endorsed.Fresh), Peer{Account: a.Account, Device: a.Device, Expires: time.Unix(a.Expires, 0)}, nil
+}
+
+// errStale is a write on a channel past its coordinator's freshness
+// deadline. Nothing is written, so the HTTP transport sends the request again
+// on a new channel, which verifies the coordinator afresh.
+var errStale = errors.New("the coordinator's attestation is no longer fresh")
+
+// freshConn is a channel that closes at its coordinator's freshness
+// deadline. Writes check it too, since a pooled channel can be picked for a
+// request just before its timer fires.
+type freshConn struct {
+	net.Conn
+	fresh time.Time
+	timer *time.Timer
+}
+
+func freshUntil(conn net.Conn, fresh time.Time) net.Conn {
+	if fresh.IsZero() {
+		return conn
+	}
+	return &freshConn{Conn: conn, fresh: fresh, timer: time.AfterFunc(time.Until(fresh), func() { conn.Close() })}
+}
+
+func (c *freshConn) Write(p []byte) (int, error) {
+	if !time.Now().Before(c.fresh) {
+		c.Conn.Close()
+		return 0, errStale
+	}
+	return c.Conn.Write(p)
+}
+
+func (c *freshConn) Close() error {
+	c.timer.Stop()
+	return c.Conn.Close()
 }
 
 // host stands for the coordinator in the URLs of requests on the channel,

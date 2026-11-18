@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -18,11 +19,21 @@ import (
 // A device credential is fount-infra's (packages/shared/src/devices.ts):
 // base64url(claims JSON) "." base64url(signature), RSASSA-PKCS1-v1_5 SHA-256
 // over the exact claims bytes, by the KMS certificate-signing key. It names
-// the account and the device; entitlement and revocation are checked by
-// whoever serves it, live.
+// the account and the device, and the subscription as it was when it was
+// signed. It lasts up to 7 days; the proxy checks entitlement and revocation
+// live, which the coordinator can't, so it trusts the claims until exp.
+//
+// A Cloud credential is the same, typed CloudCredentialType, and lasts at most
+// MaxCloudCredential: fount-infra would sign it only after checking the
+// device and the subscription live, so a revoked device or a cancelled
+// subscription loses Cloud within the hour, not the week. fount-infra
+// doesn't issue it yet; the coordinator takes both until told to take only
+// the short one (Server.CloudCredentialsOnly).
 const (
 	DeviceCredentialVersion = 1
 	DeviceCredentialType    = "fount-device"
+	CloudCredentialType     = "fount-cloud"
+	MaxCloudCredential      = time.Hour
 )
 
 // DeviceClaims are the device credential's claims the coordinator reads.
@@ -32,8 +43,33 @@ type DeviceClaims struct {
 	Typ  string `json:"typ"`
 	Acct string `json:"acct"`
 	Dev  string `json:"dev"`
-	Iat  int64  `json:"iat"`
-	Exp  int64  `json:"exp"`
+	// Tier and Status are the subscription's, or null without one; Pe is the
+	// end of its paid period, Unix seconds, or null.
+	Tier   *string `json:"tier"`
+	Status *string `json:"status"`
+	Pe     *int64  `json:"pe"`
+	Iat    int64   `json:"iat"`
+	Exp    int64   `json:"exp"`
+}
+
+// cloudTiers are the plans that include Cloud: every paid one (pricing.md).
+var cloudTiers = []string{"plus", "pro"}
+
+// ErrNotEntitled is a credential whose claims don't include Cloud.
+var ErrNotEntitled = errors.New("the account's subscription doesn't include Cloud")
+
+// Entitled is fount-infra's evaluateSubscriptionAccess over the claims: a
+// paid tier, active or past_due, inside its period.
+func (c DeviceClaims) Entitled(now time.Time) error {
+	switch {
+	case c.Tier == nil || !slices.Contains(cloudTiers, *c.Tier):
+		return fmt.Errorf("%w: no paid plan", ErrNotEntitled)
+	case c.Status == nil || (*c.Status != "active" && *c.Status != "past_due"):
+		return fmt.Errorf("%w: the subscription isn't active", ErrNotEntitled)
+	case c.Pe == nil || now.Unix() >= *c.Pe:
+		return fmt.Errorf("%w: the paid period ended", ErrNotEntitled)
+	}
+	return nil
 }
 
 // A session grant is the device key's signature over a session key the
@@ -120,6 +156,39 @@ func split(token string) (payload, sig []byte, err error) {
 // VerifyDeviceCredential checks a device credential as fount-infra's
 // verifyDeviceCredential does: signature by one of keys, shape and expiry.
 func VerifyDeviceCredential(token string, keys []*rsa.PublicKey, now time.Time) (DeviceClaims, error) {
+	c, err := verifyCredential(token, keys, now)
+	if err == nil && c.Typ != DeviceCredentialType {
+		return DeviceClaims{}, errors.New("malformed")
+	}
+	return c, err
+}
+
+// VerifyAccountCredential checks what a client proves its account with: a
+// Cloud credential, or unless cloudOnly a device credential; either entitled
+// to Cloud.
+func VerifyAccountCredential(token string, keys []*rsa.PublicKey, now time.Time, cloudOnly bool) (DeviceClaims, error) {
+	c, err := verifyCredential(token, keys, now)
+	if err != nil {
+		return DeviceClaims{}, err
+	}
+	switch {
+	case c.Typ == CloudCredentialType:
+		if c.Exp <= c.Iat || time.Duration(c.Exp-c.Iat)*time.Second > MaxCloudCredential {
+			return DeviceClaims{}, fmt.Errorf("a Cloud credential lasts up to %s", MaxCloudCredential)
+		}
+		if c.Iat > now.Add(clockSkew).Unix() {
+			return DeviceClaims{}, errors.New("the Cloud credential is from the future")
+		}
+	case cloudOnly:
+		return DeviceClaims{}, errors.New("this coordinator takes only a Cloud credential, not a device credential")
+	}
+	if err := c.Entitled(now); err != nil {
+		return DeviceClaims{}, err
+	}
+	return c, nil
+}
+
+func verifyCredential(token string, keys []*rsa.PublicKey, now time.Time) (DeviceClaims, error) {
 	payload, sig, err := split(token)
 	if err != nil {
 		return DeviceClaims{}, err
@@ -139,7 +208,7 @@ func VerifyDeviceCredential(token string, keys []*rsa.PublicKey, now time.Time) 
 	if err := json.Unmarshal(payload, &c); err != nil {
 		return DeviceClaims{}, errors.New("malformed")
 	}
-	if c.V != DeviceCredentialVersion || c.Typ != DeviceCredentialType || c.Acct == "" || c.Dev == "" || c.Exp == 0 {
+	if c.V != DeviceCredentialVersion || (c.Typ != DeviceCredentialType && c.Typ != CloudCredentialType) || c.Acct == "" || c.Dev == "" || c.Exp == 0 {
 		return DeviceClaims{}, errors.New("malformed")
 	}
 	if now.Unix() >= c.Exp {
@@ -208,17 +277,20 @@ type Identity struct {
 // SessionCredential is the cloud_session credential the app hands the broker,
 // JSON: the device's public key, the grant, and the session key's seed, each
 // base64url. The device credential is the license credential, as for the
-// proxy.
+// proxy, unless Credential holds a Cloud credential, which goes in its place.
+// The app renews it before it expires, and each renewal reaches the next
+// channel.
 type SessionCredential struct {
 	DeviceKey   string `json:"device_key"`
 	Session     string `json:"session"`
 	SessionSeed string `json:"session_seed"`
+	Credential  string `json:"credential,omitempty"`
 }
 
 // ParseIdentity reads the license credential and the cloud_session credential.
 func ParseIdentity(license, session string) (Identity, error) {
-	if license == "" || session == "" {
-		return Identity{}, errors.New("Cloud needs the license and cloud_session credentials")
+	if session == "" {
+		return Identity{}, errors.New("Cloud needs the cloud_session credential")
 	}
 	var s SessionCredential
 	dec := json.NewDecoder(strings.NewReader(session))
@@ -236,6 +308,15 @@ func ParseIdentity(license, session string) (Identity, error) {
 	}
 	if _, _, err := split(s.Session); err != nil {
 		return Identity{}, errors.New("cloud_session: session is malformed")
+	}
+	if s.Credential != "" {
+		if _, _, err := split(s.Credential); err != nil {
+			return Identity{}, errors.New("cloud_session: credential is malformed")
+		}
+		license = s.Credential
+	}
+	if license == "" {
+		return Identity{}, errors.New("Cloud needs the license credential, or a Cloud credential in cloud_session")
 	}
 	return Identity{Credential: license, DeviceKey: dev, Session: s.Session, SessionKey: ed25519.NewKeyFromSeed(seed)}, nil
 }

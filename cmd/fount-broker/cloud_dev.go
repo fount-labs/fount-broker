@@ -5,6 +5,7 @@ package main
 import (
 	"log"
 
+	"github.com/fount-labs/fount-broker/internal/channel"
 	"github.com/fount-labs/fount-broker/internal/link"
 	"github.com/fount-labs/fount-broker/internal/policy"
 )
@@ -17,16 +18,13 @@ func coordinator() (origin, repo string) {
 	return policy.CoordinatorOrigin, policy.CoordinatorRepo
 }
 
-// coordinatorCheck checks a coordinator built from repo; "unattested" takes
-// a dev coordinator's document, which no hardware vouches for.
-func coordinatorCheck(repo string) (link.Checker, error) {
+// coordinatorCheck checks a coordinator built from repo, for its channel
+// key; "unattested" takes a dev coordinator's document, which no hardware
+// vouches for.
+func coordinatorCheck(repo string) (link.KeyChecker, error) {
 	if repo == "unattested" {
 		log.Printf("the coordinator's channel is unattested: nothing vouches for it")
-		side, err := link.Unattested()
-		if err != nil {
-			return nil, err
-		}
-		return side.Check, nil
+		return link.CheckUnattestedKey, nil
 	}
-	return link.TinfoilChecker(repo)
+	return link.TinfoilKeyChecker(repo, channel.KeyID)
 }

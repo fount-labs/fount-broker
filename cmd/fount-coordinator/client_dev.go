@@ -11,14 +11,14 @@ import (
 )
 
 // clientAttestation is the channel's key and attester: the enclave's attested
-// fount-link key and its attestation socket, or with unattested, a fresh key
+// fount-client key and its attestation socket, or with unattested, a fresh key
 // and a document no hardware vouches for, for a dev build's broker.
 func clientAttestation(mode string) (ed25519.PrivateKey, link.Attester, error) {
 	switch mode {
 	case attestTinfoil:
-		key, err := link.LoadKey(link.KeyDir)
+		key, err := loadClientKey()
 		if err != nil {
-			return nil, nil, fmt.Errorf("the attested link key: %w", err)
+			return nil, nil, err
 		}
 		return key, link.NewSocketAttester(link.AttestationSocket), nil
 	case attestUnattested:

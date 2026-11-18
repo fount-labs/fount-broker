@@ -24,15 +24,16 @@ import (
 	"github.com/fount-labs/fount-broker/internal/link"
 )
 
-// identity is a device of account, signed in with fount-infra's key.
-func identity(t *testing.T, infra *rsa.PrivateKey, account string) channel.Identity {
+// identity is a device of account, signed in with fount-infra's key, and the
+// device's key.
+func identity(t *testing.T, infra *rsa.PrivateKey, account string) (channel.Identity, ed25519.PrivateKey) {
 	t.Helper()
 	_, device, _ := ed25519.GenerateKey(rand.Reader)
 	_, session, _ := ed25519.GenerateKey(rand.Reader)
 	now := time.Now()
 	payload, _ := json.Marshal(map[string]any{
 		"v": 1, "typ": "fount-device", "acct": account, "dev": channel.DeviceID(device.Public().(ed25519.PublicKey)),
-		"tier": "pro", "status": "active", "pe": nil, "iat": now.Unix(), "exp": now.Add(time.Hour).Unix(),
+		"tier": "pro", "status": "active", "pe": now.Add(24 * time.Hour).Unix(), "iat": now.Unix(), "exp": now.Add(time.Hour).Unix(),
 	})
 	digest := sha256.Sum256(payload)
 	sig, _ := rsa.SignPKCS1v15(rand.Reader, infra, crypto.SHA256, digest[:])
@@ -41,7 +42,7 @@ func identity(t *testing.T, infra *rsa.PrivateKey, account string) channel.Ident
 		t.Fatal(err)
 	}
 	enc := base64.RawURLEncoding.EncodeToString
-	return channel.Identity{Credential: enc(payload) + "." + enc(sig), DeviceKey: device.Public().(ed25519.PublicKey), Session: grant, SessionKey: session}
+	return channel.Identity{Credential: enc(payload) + "." + enc(sig), DeviceKey: device.Public().(ed25519.PublicKey), Session: grant, SessionKey: session}, device
 }
 
 func TestDesktopReachesItsAccountOverTheChannel(t *testing.T) {
@@ -84,19 +85,21 @@ func TestDesktopReachesItsAccountOverTheChannel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s := &channel.Server{Key: side.Key, Attester: side.Attester, AccountKeys: keys,
-		Handler: func(p channel.Peer) http.Handler { return c.AccountHandler(p.Account) }}
+	s := &channel.Server{Key: side.Key, Attester: side.Attester, AccountKeys: keys, Handler: handler(c)}
 	h, err := s.Start(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ready.Store(&h)
 
-	client := func(account string) *channel.Client {
-		id := identity(t, infra, account)
-		return &channel.Client{Origin: srv.URL, Check: side.Check, Identity: func() (channel.Identity, error) { return id, nil }}
+	client := func(account string) (*channel.Client, ed25519.PrivateKey) {
+		id, device := identity(t, infra, account)
+		return &channel.Client{Origin: srv.URL, Check: link.CheckUnattestedKey, Identity: func() (channel.Identity, error) { return id, nil }}, device
 	}
-	acme, other := client("acct_acme"), client("acct_other")
+	acme, device := client("acct_acme")
+	other, _ := client("acct_other")
+	// Another device of the same account, as fount-infra alone could sign in.
+	stranger, _ := client("acct_acme")
 	do := func(cl *channel.Client, method, target, body string) (int, string) {
 		t.Helper()
 		resp, err := cl.Do(context.Background(), method, target, []byte(body))
@@ -113,6 +116,20 @@ func TestDesktopReachesItsAccountOverTheChannel(t *testing.T) {
 	json.Unmarshal([]byte(body), &w)
 	if code != http.StatusCreated || w.Account != "acct_acme" {
 		t.Fatalf("create: %d %s", code, body)
+	}
+	if code, body := do(acme, "PUT", "v1/workers/"+w.ID+"/root/instructions.md", "be brief"); code != http.StatusConflict {
+		t.Fatalf("put before the grant: %d %s", code, body)
+	}
+	dek, _ := coordinator.NewDEK()
+	grant, err := coordinator.SignGrant(device, coordinator.GrantClaims{
+		Op: coordinator.OpGrant, Acct: "acct_acme", Worker: w.ID, Seq: 1, DEK: coordinator.DEKCommitment(w.ID, dek),
+		Devices: []string{base64.RawURLEncoding.EncodeToString(device.Public().(ed25519.PublicKey))}, Iat: time.Now().Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, body := do(acme, "POST", "v1/workers/"+w.ID+"/grant", `{"v":1,"dek":"`+base64.StdEncoding.EncodeToString(dek[:])+`","grant":"`+grant+`"}`); code != http.StatusOK || !strings.Contains(body, `"granted":true`) {
+		t.Fatalf("grant: %d %s", code, body)
 	}
 	if code, body := do(acme, "PUT", "v1/workers/"+w.ID+"/root/instructions.md", "be brief"); code != http.StatusNoContent {
 		t.Fatalf("put: %d %s", code, body)
@@ -132,14 +149,25 @@ func TestDesktopReachesItsAccountOverTheChannel(t *testing.T) {
 	if code, body := do(acme, "GET", "v1/jobs/"+j.ID, ""); code != 200 || !strings.Contains(body, `"queued"`) {
 		t.Fatalf("job: %d %s", code, body)
 	}
-	if code, _ := do(acme, "POST", "v1/workers/"+w.ID+"/grant", `{"v":1,"dek":"`+base64.StdEncoding.EncodeToString(make([]byte, 32))+`"}`); code != http.StatusNotImplemented {
-		t.Fatalf("grant: %d", code)
-	}
 
 	for _, target := range []string{"v1/workers/" + w.ID, "v1/workers/" + w.ID + "/files/root/instructions.md", "v1/jobs/" + j.ID} {
 		if code, body := do(other, "GET", target, ""); code != http.StatusNotFound {
 			t.Errorf("another account's %s: %d %s", target, code, body)
 		}
+		if code, body := do(stranger, "GET", target, ""); code != http.StatusNotFound {
+			t.Errorf("an unnamed device's %s: %d %s", target, code, body)
+		}
+	}
+	// Moving a worker back, before it was ever granted.
+	_, body = do(acme, "POST", "v1/workers", `{}`)
+	var back struct{ ID string }
+	json.Unmarshal([]byte(body), &back)
+	revoke, _ := coordinator.SignGrant(device, coordinator.GrantClaims{Op: coordinator.OpRevoke, Acct: "acct_acme", Worker: back.ID, Seq: 1, Iat: time.Now().Unix()})
+	if code, body := do(acme, "POST", "v1/workers/"+back.ID+"/revoke", `{"v":1,"grant":"`+revoke+`"}`); code != http.StatusNoContent {
+		t.Fatalf("revoke: %d %s", code, body)
+	}
+	if code, _ := do(acme, "GET", "v1/workers/"+back.ID, ""); code != http.StatusNotFound {
+		t.Errorf("a revoked worker: %d", code)
 	}
 	if code, body := do(other, "GET", "v1/workers", ""); code != 200 || !strings.Contains(body, `"workers":[]`) {
 		t.Errorf("another account's workers: %d %s", code, body)
@@ -154,6 +182,7 @@ func TestClientFlags(t *testing.T) {
 	for _, f := range []clientFlags{
 		{accountKeys: keys, attestation: attestTinfoil},
 		{attestation: attestUnattested},
+		{attestation: attestTinfoil, cloudOnly: true},
 		{listen: ":8791", attestation: attestTinfoil},
 		{listen: ":8791", accountKeys: "bm90IGEga2V5", attestation: attestTinfoil},
 		{listen: ":8791", accountKeys: keys, attestation: "none"},

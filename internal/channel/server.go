@@ -19,13 +19,16 @@ import (
 
 // Server is the coordinator's end.
 type Server struct {
-	// Key is the enclave's attested fount-link key, which its TLS
-	// certificate carries and its attestation endorses.
+	// Key is the enclave's attested KeyID key, which its TLS certificate
+	// carries and its attestation endorses.
 	Key      ed25519.PrivateKey
 	Attester link.Attester
-	// AccountKeys verify device credentials: fount-infra's signing key,
-	// pinned in the coordinator's measured config.
+	// AccountKeys verify device and Cloud credentials: fount-infra's signing
+	// key, pinned in the coordinator's measured config.
 	AccountKeys []*rsa.PublicKey
+	// CloudCredentialsOnly refuses 7-day device credentials, once
+	// fount-infra issues short Cloud ones.
+	CloudCredentialsOnly bool
 	// Handler serves one client's requests, for the account it proved.
 	Handler func(Peer) http.Handler
 	// MaxHandshakes bounds handshakes in progress, each of which asks the
@@ -168,7 +171,7 @@ func (s *Server) handshake(ctx context.Context, cert tls.Certificate, raw net.Co
 	if s.Now != nil {
 		now = s.Now
 	}
-	peer, err := verifyHello(h, binding, s.AccountKeys, now())
+	peer, err := verifyHello(h, binding, s.AccountKeys, s.CloudCredentialsOnly, now())
 	if err != nil {
 		a, _ := json.Marshal(answer{Kind: "refused", Reason: err.Error()})
 		writeMsg(tc, a)
