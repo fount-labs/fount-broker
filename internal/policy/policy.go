@@ -211,6 +211,15 @@ var Destinations = map[string]Destination{
 		Accept:        []string{"", "application/json"},
 		ClientHeaders: deviceSignatureHeaders,
 	},
+	// Trades the device's signature for an hour-long Cloud credential, the one
+	// a cloud_session carries to the coordinator. Signed like a renewal.
+	"fount.device_cloud_credential": {
+		Route:         RouteFountAPI,
+		Method:        "POST",
+		Path:          "device/cloud-credential",
+		Accept:        []string{"", "application/json"},
+		ClientHeaders: deviceSignatureHeaders,
+	},
 	// Lists the account's devices, with the device credential.
 	"fount.devices": {
 		Route:      RouteFountAPI,

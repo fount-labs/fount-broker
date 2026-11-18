@@ -178,6 +178,7 @@ func TestDeviceDestinations(t *testing.T) {
 	}{
 		{"fount.device_credential", "POST", "device/credential", true, CredentialNone},
 		{"fount.device_renew", "POST", "device/renew", true, CredentialNone},
+		{"fount.device_cloud_credential", "POST", "device/cloud-credential", true, CredentialNone},
 		{"fount.devices", "GET", "devices", false, CredentialLicense},
 		{"fount.device_revoke", "DELETE", "devices/", false, CredentialLicense},
 	} {
@@ -208,8 +209,10 @@ func TestDeviceDestinations(t *testing.T) {
 			t.Errorf("device_credential body %q: %v, want ok=%v", body, err, ok)
 		}
 	}
-	if err := Destinations["fount.device_renew"].Body.Check([]byte("{}")); err == nil {
-		t.Error("device_renew took a body")
+	for _, name := range []string{"fount.device_renew", "fount.device_cloud_credential"} {
+		if err := Destinations[name].Body.Check([]byte("{}")); err == nil {
+			t.Errorf("%s took a body", name)
+		}
 	}
 
 	revoke := Destinations["fount.device_revoke"].PathPattern

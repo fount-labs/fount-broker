@@ -101,22 +101,27 @@ func TestDeviceCredentialForwardsTheSignedRequestAsSent(t *testing.T) {
 }
 
 func TestDeviceRenewSendsTheHeadersAndNoBody(t *testing.T) {
-	var got []route.Request
-	s := start(t, recordingRoute(&got))
-	s.vault.Set(policy.CredentialLicense, deviceCredential)
-	s.send(`{"kind":"fetch","id":1,"dest":"fount.device_renew","accept":"application/json","headers":`+signedHeaders+`}`, "")
-	drain(t, s, 1)
-	if len(got) != 1 {
-		t.Fatalf("route saw %d requests, want 1", len(got))
-	}
-	r := got[0]
-	if r.Credential != "" || len(r.Body) != 0 || r.Dest.Method != "POST" || r.Dest.Path != "device/renew" || !maps.Equal(r.Dest.Headers, signed) {
-		t.Fatalf("route got %+v", r)
-	}
+	for dest, path := range map[string]string{
+		"fount.device_renew":            "device/renew",
+		"fount.device_cloud_credential": "device/cloud-credential",
+	} {
+		var got []route.Request
+		s := start(t, recordingRoute(&got))
+		s.vault.Set(policy.CredentialLicense, deviceCredential)
+		s.send(`{"kind":"fetch","id":1,"dest":"`+dest+`","accept":"application/json","headers":`+signedHeaders+`}`, "")
+		drain(t, s, 1)
+		if len(got) != 1 {
+			t.Fatalf("%s: route saw %d requests, want 1", dest, len(got))
+		}
+		r := got[0]
+		if r.Credential != "" || len(r.Body) != 0 || r.Dest.Method != "POST" || r.Dest.Path != path || !maps.Equal(r.Dest.Headers, signed) {
+			t.Fatalf("%s: route got %+v", dest, r)
+		}
 
-	s.send(`{"kind":"fetch","id":2,"dest":"fount.device_renew","headers":`+signedHeaders+`}`, "{}")
-	if r, _ := s.recv(); r.Kind != protocol.KindError || r.Code != protocol.CodePolicy {
-		t.Fatalf("renew with a body: got %+v, want a policy error", r)
+		s.send(`{"kind":"fetch","id":2,"dest":"`+dest+`","headers":`+signedHeaders+`}`, "{}")
+		if r, _ := s.recv(); r.Kind != protocol.KindError || r.Code != protocol.CodePolicy {
+			t.Fatalf("%s with a body: got %+v, want a policy error", dest, r)
+		}
 	}
 }
 
@@ -151,6 +156,7 @@ func TestDeviceSignedHeadersAreCheckedStrictly(t *testing.T) {
 		for _, d := range []struct{ dest, body string }{
 			{"fount.device_credential", `{"code":"abc"}`},
 			{"fount.device_renew", ""},
+			{"fount.device_cloud_credential", ""},
 		} {
 			id++
 			s.send(fmt.Sprintf(`{"kind":"fetch","id":%d,"dest":%q,"headers":%s}`, id, d.dest, h), d.body)
@@ -159,7 +165,7 @@ func TestDeviceSignedHeadersAreCheckedStrictly(t *testing.T) {
 			}
 		}
 	}
-	for _, d := range []string{"fount.device_credential", "fount.device_renew"} {
+	for _, d := range []string{"fount.device_credential", "fount.device_renew", "fount.device_cloud_credential"} {
 		id++
 		s.send(fmt.Sprintf(`{"kind":"fetch","id":%d,"dest":%q}`, id, d), "")
 		if r, _ := s.recv(); r.Kind != protocol.KindError || r.Code != protocol.CodePolicy {
