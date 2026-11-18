@@ -353,6 +353,9 @@ customer data, keys or network.
    the job, serves the job's own broker on `sockets/<id>/job.sock` with a vault
    holding only those credentials (which the job can't change), and relays the
    rest to the supervisor unread. The supervisor never sees a credential.
+   The job brokers share only the Tinfoil router the first one discovered:
+   each verifies it again with its own client and cache secret, and one
+   discovers again only when that router fails.
 4. The supervisor makes the job's folders from the streams, runs it with
    `sockets/<id>` at `/run/broker` and `--broker-socket /run/broker/job.sock`,
    a fair share of the cores as `--threads`, streams its output back, and

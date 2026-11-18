@@ -21,6 +21,7 @@ import (
 	"github.com/fount-labs/fount-broker/internal/policy"
 	"github.com/fount-labs/fount-broker/internal/registry"
 	"github.com/fount-labs/fount-broker/internal/relay"
+	"github.com/fount-labs/fount-broker/internal/route"
 )
 
 // runner is a Cloud runner enclave's broker (m4-cloud-runners.md §5.1c):
@@ -118,8 +119,12 @@ func runner(args []string) error {
 		}
 	}
 	log.Printf("taking jobs on http://%s%s", tl.Addr(), link.Path)
+	// Each job's broker is new, so without this every job would find Tinfoil's
+	// router again: about 30 s, or a failed job, whenever the router list
+	// names a router this enclave can't reach.
+	routers := &route.RouterMemory{}
 	r := &relay.Relay{Sockets: *sockets, Link: side, NewBroker: func(vault *broker.Vault) *broker.Broker {
-		b := broker.New(version, newRoutes(vault), vault)
+		b := broker.New(version, newRoutes(vault, routers), vault)
 		b.Locked = true
 		return b
 	}}

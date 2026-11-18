@@ -58,7 +58,7 @@ func main() {
 	defer stop()
 
 	vault := broker.NewVault()
-	b := broker.New(version, newRoutes(vault), vault)
+	b := broker.New(version, newRoutes(vault, nil), vault)
 	if m, err := newMail(); err != nil {
 		log.Printf("mail unavailable: %v", err)
 	} else {
@@ -87,12 +87,18 @@ func main() {
 	}
 }
 
-// newRoutes is every route, holding vault's credentials.
-func newRoutes(vault *broker.Vault) map[string]route.Route {
-	tinfoil := route.NewTinfoil(policy.TinfoilProxyBase(), func() string {
+// newRoutes is every route, holding vault's credentials. Routes made with the
+// same routers share the Tinfoil router discovery chose, and nil discovers
+// for these routes alone.
+func newRoutes(vault *broker.Vault, routers *route.RouterMemory) map[string]route.Route {
+	cacheSecret := func() string {
 		s, _ := vault.Get(policy.CredentialTinfoilCacheSecret)
 		return s
-	})
+	}
+	tinfoil := route.NewTinfoil(policy.TinfoilProxyBase(), cacheSecret)
+	if routers != nil {
+		tinfoil = route.NewTinfoilRemembering(policy.TinfoilProxyBase(), cacheSecret, routers)
+	}
 	vault.OnChange(policy.CredentialTinfoilCacheSecret, tinfoil.Reset)
 	return map[string]route.Route{
 		policy.RouteTinfoil: tinfoil,

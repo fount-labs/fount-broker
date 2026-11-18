@@ -3,6 +3,8 @@ package route
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -22,6 +24,10 @@ type Tinfoil struct {
 	base string
 	// discover returns a client bound to a verified enclave.
 	discover func(ctx context.Context) (enclave, error)
+
+	// memory, when set, is shared with other routes: it holds the router
+	// discovery last chose, and forgetting a client forgets that router.
+	memory *RouterMemory
 
 	mu     sync.Mutex
 	client enclave
@@ -48,6 +54,99 @@ func NewTinfoil(base string, cacheSecret func() string) *Tinfoil {
 			})
 		},
 	}
+}
+
+// RouterMemory is the router that discovery last chose, for routes that each
+// start with no client: a runner makes one route per job. Only the router's
+// host is shared; each route verifies it again and keeps its own client and
+// cache secret.
+type RouterMemory struct {
+	mu   sync.Mutex
+	host string
+}
+
+func (m *RouterMemory) get() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.host
+}
+
+func (m *RouterMemory) set(host string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.host = host
+}
+
+// forget drops host, unless another route already chose a different one.
+func (m *RouterMemory) forget(host string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.host == host {
+		m.host = ""
+	}
+}
+
+// NewTinfoilRemembering is NewTinfoil for one of many routes that share m.
+// The route goes straight to the router m holds, and discovers only when m
+// holds none or that router fails, so a slow or unreachable router list costs
+// once per process rather than once per route.
+func NewTinfoilRemembering(base string, cacheSecret func() string, m *RouterMemory) *Tinfoil {
+	t := NewTinfoil(base, cacheSecret)
+	t.memory = m
+	t.discover = m.discoverWith(t.discover, func(ctx context.Context, host string) (enclave, error) {
+		return tinfoil.NewEnclaveHTTPClient(ctx, host, tinfoil.Pin{Repo: policy.TinfoilRouterRepo}, &tinfoil.EnclaveOptions{
+			TransportMode:     tinfoil.TransportModeEHBP,
+			BaseURL:           base,
+			UserCacheSecret:   orProcessSecret(cacheSecret()),
+			VerificationCheck: checkRepo(policy.TinfoilRouterRepo),
+		})
+	})
+	return t
+}
+
+// discoverWith tries the remembered router with known, and otherwise
+// discovers with fresh and remembers what it chose.
+func (m *RouterMemory) discoverWith(fresh func(context.Context) (enclave, error), known func(context.Context, string) (enclave, error)) func(context.Context) (enclave, error) {
+	return func(ctx context.Context) (enclave, error) {
+		if host := m.get(); host != "" {
+			c, err := known(ctx, host)
+			if err == nil {
+				return c, nil
+			}
+			if ctx.Err() != nil {
+				return nil, err
+			}
+			m.forget(host)
+		}
+		c, err := fresh(ctx)
+		if err != nil {
+			return nil, err
+		}
+		m.set(c.Enclave())
+		return c, nil
+	}
+}
+
+var (
+	processSecretOnce sync.Once
+	processSecret     string
+)
+
+// orProcessSecret is tinfoil-go's rule for a router client without a cache
+// secret, which a client for a named enclave doesn't apply: a random secret
+// made once per process.
+func orProcessSecret(s string) string {
+	if s != "" {
+		return s
+	}
+	processSecretOnce.Do(func() {
+		b := make([]byte, 32)
+		if _, err := rand.Read(b); err != nil {
+			panic(err)
+		}
+		processSecret = hex.EncodeToString(b)
+	})
+	return processSecret
 }
 
 // NewTinfoilEnclave returns a route to the one enclave at host, which must be
@@ -97,6 +196,9 @@ func (t *Tinfoil) forget(c enclave) {
 	defer t.mu.Unlock()
 	if t.client == c {
 		t.client = nil
+	}
+	if t.memory != nil {
+		t.memory.forget(c.Enclave())
 	}
 }
 
