@@ -25,7 +25,7 @@ import (
 //     the coordinator (Config.Audience), the worker, the DEK (by
 //     DEKCommitment), a sequence number one past the worker's last, the
 //     device keys that may act for the worker from now on (the granting
-//     device and the admin devices it names) and, by WrapsDigest, the DEK
+//     device and the other devices it names) and, by WrapsDigest, the DEK
 //     wrapped to each of them. The signer must be one of the worker's devices
 //     already, and name itself. Each device named signs its own inclusion
 //     (devicekey.go), which the grant carries. The coordinator wraps the DEK
@@ -122,7 +122,7 @@ type Device struct {
 	Since     uint64 `json:"since,omitempty"`
 	Inclusion string `json:"inclusion,omitempty"`
 	// Wrap is the worker's DEK wrapped to Enc by Desktop, which the
-	// coordinator keeps for the device and never opens: how an admin device
+	// coordinator keeps for the device and never opens: how a listed device
 	// gets the key back without Desktop at hand.
 	Wrap []byte `json:"wrap,omitempty"`
 }
