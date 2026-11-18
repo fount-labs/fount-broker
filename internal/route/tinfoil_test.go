@@ -165,3 +165,98 @@ func TestTinfoilSendsConvertFileWithFixedModeAndBoundary(t *testing.T) {
 		t.Fatalf("headers: %v", got.Header)
 	}
 }
+
+// remembering is a route sharing m, whose discovery and remembered-router
+// clients are fakes that count their calls.
+type remembering struct {
+	fresh, known []string // the hosts each was asked for, in order
+	knownErr     error
+	sendErr      error
+}
+
+func (f *remembering) route(m *RouterMemory, discovered string) *Tinfoil {
+	ok := func(host string) enclave {
+		return &fakeEnclave{host: host, do: func(*http.Request) (*http.Response, error) {
+			if f.sendErr != nil {
+				err := f.sendErr
+				f.sendErr = nil
+				return nil, err
+			}
+			return &http.Response{StatusCode: 200, Body: http.NoBody}, nil
+		}}
+	}
+	tf := &Tinfoil{base: "https://proxy.example/proxy/v1/", memory: m}
+	tf.discover = m.discoverWith(func(context.Context) (enclave, error) {
+		f.fresh = append(f.fresh, discovered)
+		return ok(discovered), nil
+	}, func(_ context.Context, host string) (enclave, error) {
+		f.known = append(f.known, host)
+		if f.knownErr != nil {
+			return nil, f.knownErr
+		}
+		return ok(host), nil
+	})
+	return tf
+}
+
+func TestRemembersTheRouterAcrossRoutes(t *testing.T) {
+	m := &RouterMemory{}
+	f := &remembering{}
+	for range 3 {
+		if _, err := f.route(m, "router-0.tinfoil.sh").Do(context.Background(), chat); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(f.fresh) != 1 || fmt.Sprint(f.known) != "[router-0.tinfoil.sh router-0.tinfoil.sh]" {
+		t.Fatalf("discovered %v, went straight to %v", f.fresh, f.known)
+	}
+}
+
+func TestDiscoversAgainWhenTheRememberedRouterFails(t *testing.T) {
+	m := &RouterMemory{}
+	m.set("router-0.tinfoil.sh")
+	f := &remembering{knownErr: fmt.Errorf("%w: timeout", tinfoil.ErrNetwork)}
+	if _, err := f.route(m, "inference.tinfoil.sh").Do(context.Background(), chat); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.fresh) != 1 || m.get() != "inference.tinfoil.sh" {
+		t.Fatalf("discovered %v, remembers %q", f.fresh, m.get())
+	}
+}
+
+func TestForgetsTheRouterASendFailedOn(t *testing.T) {
+	m := &RouterMemory{}
+	m.set("router-0.tinfoil.sh")
+	f := &remembering{sendErr: fmt.Errorf("%w: connection reset", tinfoil.ErrNetwork)}
+	if _, err := f.route(m, "inference.tinfoil.sh").Do(context.Background(), chat); err != nil {
+		t.Fatal(err)
+	}
+	// The retry discovers rather than going back to the router that failed.
+	if fmt.Sprint(f.known) != "[router-0.tinfoil.sh]" || len(f.fresh) != 1 || m.get() != "inference.tinfoil.sh" {
+		t.Fatalf("went straight to %v, discovered %v, remembers %q", f.known, f.fresh, m.get())
+	}
+}
+
+func TestKeepsTheRouterWhenTheRouteIsCancelled(t *testing.T) {
+	m := &RouterMemory{}
+	m.set("router-0.tinfoil.sh")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	f := &remembering{knownErr: context.Canceled}
+	if _, err := f.route(m, "inference.tinfoil.sh").Do(ctx, chat); err == nil {
+		t.Fatal("a cancelled route succeeded")
+	}
+	if len(f.fresh) != 0 || m.get() != "router-0.tinfoil.sh" {
+		t.Fatalf("discovered %v, remembers %q", f.fresh, m.get())
+	}
+}
+
+func TestProcessSecretOnlyWhenNoneIsSet(t *testing.T) {
+	if orProcessSecret("mine") != "mine" {
+		t.Fatal("replaced a set secret")
+	}
+	a, b := orProcessSecret(""), orProcessSecret("")
+	if a == "" || a != b {
+		t.Fatalf("process secrets %q, %q", a, b)
+	}
+}
