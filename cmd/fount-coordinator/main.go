@@ -30,11 +30,12 @@
 // wrapping key is the dev one.
 //
 // --wrapping-key says where the key that wraps every worker's DEK comes from:
-// dev (the default) is a file in --dir, made on first run; vault is Fount
-// Cloud's vault pair, which hands it only to an attested release of this
-// coordinator's config repo (package vaultkey). The vault's key lives in
-// memory only, and a coordinator waits for a vault before it loads the volume.
-// It refuses --test-api. --status-listen serves /health and /status, which
+// vault (the default) is Fount Cloud's vault pair, which hands it only to an
+// attested release of the real coordinators' config repo (package vaultkey);
+// dev is a file in --dir, made on first run, for test coordinators
+// (fount-labs/fount-cloud-coordinator), which must say --wrapping-key dev. The
+// vault's key lives in memory only, and a coordinator waits for a vault before
+// it loads the volume. It refuses --test-api. --status-listen serves /health and /status, which
 // says where the key came from, on an address the shim can reach.
 package main
 
@@ -89,7 +90,7 @@ func run() error {
 	credentials := flag.String("credentials", "", "JSON file of every job's broker credentials, with --runner-addr")
 	test := flag.Bool("test-api", false, "listen beyond loopback, behind the bearer token in $"+testTokenEnv+"; test data only")
 	runnerRepo := flag.String("runner-repo", os.Getenv("FOUNT_RUNNER_REPO"), "GitHub repository whose releases the runner enclave must run, or unattested")
-	keyMode := flag.String("wrapping-key", keyDev, "where the wrapping key comes from: dev, a file in --dir; or vault, Fount Cloud's vaults, held in memory only")
+	keyMode := flag.String("wrapping-key", keyVault, "where the wrapping key comes from: vault, Fount Cloud's vaults, held in memory only; or dev, a file in --dir, for test coordinators")
 	vaults := flag.String("vaults", os.Getenv("FOUNT_VAULTS"), "with --wrapping-key vault: the vaults' hostnames, comma-separated")
 	vaultRepo := flag.String("vault-repo", os.Getenv("FOUNT_VAULT_REPO"), "with --wrapping-key vault: GitHub repository whose releases the vaults must run")
 	commitment := flag.String("keyset-commitment", os.Getenv("FOUNT_KEYSET_COMMITMENT"), "with --wrapping-key vault: the vaults' KEYSET_COMMITMENT")
