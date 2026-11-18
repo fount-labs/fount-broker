@@ -81,17 +81,27 @@ func loadClientKey() (ed25519.PrivateKey, error) {
 
 // clientAPI is what --client-listen serves: /health and /status, which answer
 // while the coordinator waits for its wrapping key, and the channel, which
-// answers 503 until ready says it's up.
-func clientAPI(status http.Handler, ready *atomic.Pointer[http.Handler]) http.Handler {
+// answers 503 until ready says it's up. With test set (--test-api), it serves
+// the test API's /v0/ too, from testReady, so a test coordinator's shim needs
+// only this port.
+func clientAPI(status http.Handler, ready *atomic.Pointer[http.Handler], test bool, testReady *atomic.Pointer[http.Handler]) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/", status)
-	mux.HandleFunc(channel.Path, func(w http.ResponseWriter, r *http.Request) {
-		h := ready.Load()
-		if h == nil {
+	mux.Handle(channel.Path, waitFor(ready))
+	if test {
+		mux.Handle("/v0/", waitFor(testReady))
+	}
+	return mux
+}
+
+// waitFor serves what h holds, or 503 until it holds something.
+func waitFor(h *atomic.Pointer[http.Handler]) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next := h.Load()
+		if next == nil {
 			http.Error(w, "the coordinator is waiting for its wrapping key", http.StatusServiceUnavailable)
 			return
 		}
-		(*h).ServeHTTP(w, r)
+		(*next).ServeHTTP(w, r)
 	})
-	return mux
 }

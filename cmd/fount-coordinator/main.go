@@ -41,7 +41,8 @@
 // --test-api lets the dev API listen beyond loopback behind a bearer token in
 // $FOUNT_TEST_API_TOKEN: the test coordinator enclave's way in, which the
 // client channel replaces (m4-cloud-runners.md §7, P2). Test data only, while
-// the wrapping key is the dev one.
+// the wrapping key is the dev one. With --client-listen, that listener serves
+// its /v0/ too, so the shim needs one port for both.
 //
 // --wrapping-key says where the key that wraps every worker's DEK comes from:
 // vault (the default) is Fount Cloud's vault pair, which hands it only to an
@@ -200,13 +201,13 @@ func run() error {
 		}
 		serveBeyond(ctx, stop, "status", statusLn, statusAPI(status, &jobs))
 	}
-	var channelReady atomic.Pointer[http.Handler]
+	var channelReady, testReady atomic.Pointer[http.Handler]
 	if clients != nil {
 		clientLn, err := net.Listen("tcp", *clientListen)
 		if err != nil {
 			return fmt.Errorf("--client-listen: %w", err)
 		}
-		serveBeyond(ctx, stop, "client channel", clientLn, clientAPI(statusAPI(status, &jobs), &channelReady))
+		serveBeyond(ctx, stop, "client channel", clientLn, clientAPI(statusAPI(status, &jobs), &channelReady, *test, &testReady))
 	}
 	key, err := wrappingKey(ctx, keys, status)
 	if err != nil {
@@ -256,6 +257,9 @@ func run() error {
 		<-ctx.Done()
 		<-done
 		return nil
+	}
+	if *test {
+		testReady.Store(&api)
 	}
 	srv := &http.Server{Handler: api, ReadHeaderTimeout: 10 * time.Second}
 	go func() {

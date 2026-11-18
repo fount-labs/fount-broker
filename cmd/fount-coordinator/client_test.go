@@ -72,7 +72,7 @@ func TestDesktopReachesItsAccountOverTheChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	var ready atomic.Pointer[http.Handler]
-	srv := httptest.NewServer(clientAPI(statusAPI(&keyStatus{Mode: keyDev, State: "waiting"}, &atomic.Pointer[coordinator.Coordinator]{}), &ready))
+	srv := httptest.NewServer(clientAPI(statusAPI(&keyStatus{Mode: keyDev, State: "waiting"}, &atomic.Pointer[coordinator.Coordinator]{}), &ready, false, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + channel.Path)
@@ -215,5 +215,42 @@ func TestClientFlags(t *testing.T) {
 	}
 	if s, err := (clientFlags{attestation: attestTinfoil}).server(); s != nil || err != nil {
 		t.Errorf("no channel: %v %v", s, err)
+	}
+}
+
+// With --test-api the client listener serves the test API's /v0/ as well,
+// 503 until the coordinator is up and behind its token after; without it,
+// /v0/ isn't there.
+func TestClientListenerServesTheTestAPI(t *testing.T) {
+	status := statusAPI(&keyStatus{Mode: keyDev, State: "waiting"}, &atomic.Pointer[coordinator.Coordinator]{})
+	var channelReady, testReady atomic.Pointer[http.Handler]
+	srv := httptest.NewServer(clientAPI(status, &channelReady, true, &testReady))
+	defer srv.Close()
+	get := func(url string) int {
+		t.Helper()
+		resp, err := http.Get(url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := get(srv.URL + "/v0/jobs/none"); code != http.StatusServiceUnavailable {
+		t.Fatalf("/v0/ before the key: %d", code)
+	}
+	t.Setenv(testTokenEnv, strings.Repeat("ab", 32))
+	api, err := testAPI(http.NotFoundHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	testReady.Store(&api)
+	if code := get(srv.URL + "/v0/jobs/none"); code != http.StatusUnauthorized {
+		t.Fatalf("/v0/ without the token: %d", code)
+	}
+
+	off := httptest.NewServer(clientAPI(status, &channelReady, false, &testReady))
+	defer off.Close()
+	if code := get(off.URL + "/v0/jobs/none"); code != http.StatusNotFound {
+		t.Fatalf("/v0/ without --test-api: %d", code)
 	}
 }
