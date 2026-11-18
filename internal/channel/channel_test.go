@@ -313,12 +313,16 @@ func TestAChannelClosesWhenItsGrantRunsOut(t *testing.T) {
 
 func TestCheckRequest(t *testing.T) {
 	w := "w_0123456789abcdef01234567"
+	th := "thr_0123456789abcdef01234567"
 	for _, ok := range []string{
 		"POST v1/workers", "GET v1/workers", "GET v1/workers/" + w, "POST v1/workers/" + w + "/grant",
 		"POST v1/workers/" + w + "/revoke",
 		"PUT v1/workers/" + w + "/root/notes/a b.md", "POST v1/workers/" + w + "/jobs",
 		"GET v1/workers/" + w + "/files", "GET v1/workers/" + w + "/files?prefix=root/",
 		"GET v1/workers/" + w + "/files/root/a.md", "GET v1/jobs/j_0123456789abcdef01234567",
+		"GET v1/workers/" + w + "/threads", "GET v1/workers/" + w + "/threads/" + th,
+		"GET v1/workers/" + w + "/threads/" + th + "?since=42", "POST v1/workers/" + w + "/threads/" + th + "/ops",
+		"POST v1/workers/" + w + "/ops",
 	} {
 		method, target, _ := strings.Cut(ok, " ")
 		if _, err := CheckRequest(method, target); err != nil {
@@ -332,6 +336,11 @@ func TestCheckRequest(t *testing.T) {
 		"GET v1/workers/" + w + "/files/a\x00b", "POST v1/workers/" + w + "/root/a.md",
 		"GET v1/jobs/j_0123456789abcdef01234567/x", "PUT v1/workers/" + w + "/root",
 		"GET v1/workers/" + w + "/revoke", "POST v1/workers/" + w + "/grant/x",
+		"POST v1/workers/" + w + "/threads", "GET v1/workers/" + w + "/threads/thr_nope",
+		"GET v1/workers/" + w + "/threads/" + th + "?since=-1", "GET v1/workers/" + w + "/threads/" + th + "?prefix=a",
+		"GET v1/workers/" + w + "/threads?since=1", "GET v1/workers/" + w + "/files?since=1",
+		"GET v1/workers/" + w + "/threads/" + th + "/ops", "POST v1/workers/" + w + "/threads/" + th + "/ops/x",
+		"GET v1/workers/" + w + "/ops", "GET v1/workers/" + w + "/threads/" + th + "?since=1&since=2",
 	} {
 		method, target, _ := strings.Cut(bad, " ")
 		if _, err := CheckRequest(method, target); err == nil {
