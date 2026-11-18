@@ -7,9 +7,10 @@
 //
 // This is the P2 skeleton. It runs on a laptop with a local folder for storage
 // and a command per runner. Its wrapping key comes from the caller: a dev file,
-// or the Cloud vault pair (package vaultkey). Not built yet: the client
-// channel, the buckets sidecar, mail intake, inference relay, and the thread
-// record.
+// or the Cloud vault pair (package vaultkey). Clients reach it over the
+// attested client channel (package channel), one account per channel. Not
+// built yet: the DEK grant, the buckets sidecar, mail intake, inference relay,
+// and the thread record.
 package coordinator
 
 import (
@@ -150,6 +151,20 @@ func (c *Coordinator) Worker(id string) (Worker, error) {
 		return Worker{}, ErrNoWorker
 	}
 	return *w, nil
+}
+
+// Workers are an account's workers, oldest first.
+func (c *Coordinator) Workers(account string) []Worker {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []Worker
+	for _, w := range c.state.Workers {
+		if w.Account == account {
+			out = append(out, *w)
+		}
+	}
+	slices.SortFunc(out, func(a, b Worker) int { return cmp.Or(a.Created.Compare(b.Created), strings.Compare(a.ID, b.ID)) })
+	return out
 }
 
 // PutFile writes a file into a worker's root: instructions, memory, a file the

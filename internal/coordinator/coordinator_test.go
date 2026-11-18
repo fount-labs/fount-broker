@@ -412,3 +412,74 @@ func TestEachRunGetsCredentialsMintedForItsJob(t *testing.T) {
 		}
 	}
 }
+
+func TestTheAccountAPIServesOnlyItsAccount(t *testing.T) {
+	c, _ := newTestCoordinator(t, "ok", 0)
+	acme := httptest.NewServer(c.AccountHandler("acme"))
+	defer acme.Close()
+	other := httptest.NewServer(c.AccountHandler("other"))
+	defer other.Close()
+	do := func(srv *httptest.Server, method, path, body string) (int, map[string]any) {
+		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		json.NewDecoder(resp.Body).Decode(&out)
+		return resp.StatusCode, out
+	}
+
+	if code, out := do(acme, "POST", "/v1/workers", `{"account":"other"}`); code != http.StatusBadRequest {
+		t.Fatalf("a client-named account: %d %v", code, out)
+	}
+	code, w := do(acme, "POST", "/v1/workers", `{}`)
+	if code != http.StatusCreated || w["account"] != "acme" {
+		t.Fatalf("create: %d %v", code, w)
+	}
+	id := w["id"].(string)
+	code, j := do(acme, "POST", "/v1/workers/"+id+"/jobs", `{"threadId":"t1","sessionId":"s1","instruction":"hi","config":{}}`)
+	if code != http.StatusAccepted {
+		t.Fatalf("enqueue: %d %v", code, j)
+	}
+	jobID := j["id"].(string)
+	waitJob(t, c, jobID)
+
+	for _, tc := range []struct {
+		method, path, body string
+		acme, other        int
+	}{
+		{"GET", "/v1/workers/" + id, "", 200, 404},
+		{"PUT", "/v1/workers/" + id + "/root/instructions.md", "be brief", 204, 404},
+		{"GET", "/v1/workers/" + id + "/files?prefix=root/", "", 200, 404},
+		{"GET", "/v1/workers/" + id + "/files/root/instructions.md", "", 200, 404},
+		{"POST", "/v1/workers/" + id + "/jobs", `{"threadId":"t2","sessionId":"s2","instruction":"hi","config":{}}`, 202, 404},
+		{"GET", "/v1/jobs/" + jobID, "", 200, 404},
+		{"POST", "/v1/workers/" + id + "/grant", `{"v":1,"dek":"` + strings.Repeat("A", 43) + `="}`, 501, 404},
+		{"POST", "/v1/workers/" + id + "/grant", `{"v":2,"dek":"` + strings.Repeat("A", 43) + `="}`, 400, 400},
+		{"GET", "/v0/workers/" + id, "", 404, 404},
+	} {
+		if code, out := do(other, tc.method, tc.path, tc.body); code != tc.other {
+			t.Errorf("other: %s %s: %d %v, want %d", tc.method, tc.path, code, out, tc.other)
+		}
+		if code, out := do(acme, tc.method, tc.path, tc.body); code != tc.acme {
+			t.Errorf("acme: %s %s: %d %v, want %d", tc.method, tc.path, code, out, tc.acme)
+		}
+	}
+	c.mu.Lock()
+	var jobs []string
+	for id := range c.state.Jobs {
+		jobs = append(jobs, id)
+	}
+	c.mu.Unlock()
+	for _, id := range jobs {
+		waitJob(t, c, id)
+	}
+	if _, list := do(acme, "GET", "/v1/workers", ""); len(list["workers"].([]any)) != 1 {
+		t.Errorf("acme's workers: %v", list)
+	}
+	if _, list := do(other, "GET", "/v1/workers", ""); len(list["workers"].([]any)) != 0 {
+		t.Errorf("other's workers: %v", list)
+	}
+}
