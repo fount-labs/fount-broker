@@ -104,12 +104,14 @@ type threadEntry struct {
 	Text   string `json:"text,omitempty"`
 	// A turn's job, its state and, once it ends, the files it left in the
 	// thread's outputs/<job id>/, by path in the worker root, and the files
-	// it proposed (jobs/<job id>/proposed/), by the path each would have. A
-	// note names its job here too.
-	JobID    string   `json:"jobId,omitempty"`
-	State    string   `json:"state,omitempty"`
-	Outputs  []string `json:"outputs,omitempty"`
-	Proposed []string `json:"proposed,omitempty"`
+	// it proposed (jobs/<job id>/proposed/), by the path each would have.
+	// Decided is what became of each proposal accepted or discarded, by
+	// path; the rest are pending. A note names its job here too.
+	JobID    string            `json:"jobId,omitempty"`
+	State    string            `json:"state,omitempty"`
+	Outputs  []string          `json:"outputs,omitempty"`
+	Proposed []string          `json:"proposed,omitempty"`
+	Decided  map[string]string `json:"decided,omitempty"`
 	// An event's code and arguments: fixed text, filled in when shown.
 	Code string            `json:"code,omitempty"`
 	Args map[string]string `json:"args,omitempty"`
@@ -210,6 +212,17 @@ func (th *threadRecord) job(id string) *threadJob {
 func (th *threadRecord) liveTurn(jobID string) *threadEntry {
 	for i := range th.Entries {
 		if e := &th.Entries[i]; e.Kind == entryTurn && e.JobID == jobID && e.State == turnLive {
+			return e
+		}
+	}
+	return nil
+}
+
+// proposalTurn is the ended turn of jobID that proposed path.
+func (th *threadRecord) proposalTurn(jobID, path string) *threadEntry {
+	for i := range th.Entries {
+		e := &th.Entries[i]
+		if e.Kind == entryTurn && e.JobID == jobID && e.State == turnDone && slices.Contains(e.Proposed, path) {
 			return e
 		}
 	}
@@ -418,7 +431,8 @@ type noteView struct {
 
 // turnView is an agent turn. Its steps and final text are in the runner's
 // events, which the coordinator doesn't read, so a turn shows its state, its
-// outputs and the files it proposed, as Desktop's turns do.
+// outputs and the files it proposed, as Desktop's turns do. A pending
+// proposal names its path, for opening it to Accept or Discard.
 type turnView struct {
 	entryHead
 	JobID string           `json:"jobId"`
@@ -429,6 +443,21 @@ type turnView struct {
 
 type attachmentView struct {
 	Name string `json:"name"`
+	Note string `json:"note,omitempty"`
+	// Proposal is a pending proposal's path in the worker root.
+	Proposal string `json:"proposal,omitempty"`
+}
+
+// What became of a proposal, in a turn's Decided.
+const (
+	proposalAccepted  = "accepted"
+	proposalDiscarded = "discarded"
+)
+
+var proposalNotes = map[string]string{
+	"":                "Proposed",
+	proposalAccepted:  "Accepted",
+	proposalDiscarded: "Discarded",
 }
 
 type eventView struct {
@@ -487,8 +516,15 @@ func (th *threadRecord) display(since uint64) []DisplayEntry {
 		case entryTurn:
 			head.Kind = "agent-turn"
 			v := turnView{entryHead: head, JobID: e.JobID, Steps: []struct{}{}, Live: e.State == turnLive}
-			for _, p := range append(slices.Clone(e.Outputs), e.Proposed...) {
+			for _, p := range e.Outputs {
 				v.Files = append(v.Files, attachmentView{Name: path.Base(p)})
+			}
+			for _, p := range e.Proposed {
+				a := attachmentView{Name: path.Base(p), Note: proposalNotes[e.Decided[p]]}
+				if e.Decided[p] == "" {
+					a.Proposal = p
+				}
+				v.Files = append(v.Files, a)
 			}
 			out = append(out, v)
 		case entryEvent:

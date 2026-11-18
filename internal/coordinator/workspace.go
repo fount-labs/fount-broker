@@ -3,6 +3,7 @@ package coordinator
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -128,7 +129,33 @@ func collect(dirs JobDirs, given map[string]string, threadID, jobID string) (*Re
 	if err != nil {
 		return nil, err
 	}
+	if err := keepBases(r, given, jobID); err != nil {
+		return nil, err
+	}
 	return r, nil
+}
+
+// basesPath holds, for each file a job proposed, the hash of the version it
+// was given, or "" for a new file: what Accept checks (threadops.go).
+func basesPath(jobID string) string { return prefixJobs + jobID + "/bases.json" }
+
+func keepBases(r *Results, given map[string]string, jobID string) error {
+	proposed := prefixJobs + jobID + "/proposed/"
+	bases := map[string]string{}
+	for p := range r.Writes {
+		if rel, ok := strings.CutPrefix(p, proposed); ok {
+			bases[rel] = given[rel]
+		}
+	}
+	if len(bases) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(bases)
+	if err != nil {
+		return err
+	}
+	r.Writes[basesPath(jobID)] = data
+	return nil
 }
 
 // isInput says whether a path is one a job reads but never changes: the
