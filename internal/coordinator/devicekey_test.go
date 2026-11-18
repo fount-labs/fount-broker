@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"testing/cryptotest"
@@ -409,5 +410,42 @@ func TestAReGrantWithoutWrapsIsRefused(t *testing.T) {
 		if len(d.Wrap) != WrapSize {
 			t.Errorf("device %s lost its wrap: %d bytes", d.ID, len(d.Wrap))
 		}
+	}
+}
+
+// A listed device's X25519 key can't be a low-order point, to which a wrap
+// of the DEK would be sealed under a secret anyone can compute.
+func TestALowOrderX25519KeyIsRefused(t *testing.T) {
+	c, _ := newTestCoordinator(t, "ok", 0)
+	me, admin := newTestDevice(t), newTestDevice(t)
+	dek := mustDEK(t)
+	w, _ := c.CreateWorkerFor(me.caller("acme"))
+	commitment := DEKCommitment(w.ID, dek)
+	for _, point := range []string{
+		"0000000000000000000000000000000000000000000000000000000000000000",
+		"0100000000000000000000000000000000000000000000000000000000000000",
+		"e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
+		"5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157",
+		"ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+		"edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+		"eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+		"0000000000000000000000000000000000000000000000000000000000000080",
+	} {
+		enc, _ := hex.DecodeString(point)
+		if err := checkX25519(enc); err == nil {
+			t.Errorf("%s passed", point)
+		}
+		g := me.grant(t, "acme", w.ID, 1, dek, me, admin)
+		g.inclusions[1] = signRaw(t, admin.key, InclusionClaims{V: InclusionVersion, Typ: InclusionType, Aud: testAudience, Acct: "acme", Worker: w.ID, DEK: commitment,
+			Dev: admin.id(), Key: admin.b64(), Enc: b64.EncodeToString(enc), Seq: 1})
+		if _, err := g.to(c, me.caller("acme"), w.ID, dek); !errors.Is(err, ErrGrantRefused) || !strings.Contains(err.Error(), "low-order") {
+			t.Errorf("%s: %v", point, err)
+		}
+	}
+	if err := checkX25519(admin.enc.PublicKey().Bytes()); err != nil {
+		t.Errorf("a real key: %v", err)
+	}
+	if _, err := me.grant(t, "acme", w.ID, 1, dek, me, admin).to(c, me.caller("acme"), w.ID, dek); err != nil {
+		t.Errorf("the grant with real keys: %v", err)
 	}
 }

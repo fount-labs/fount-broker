@@ -118,6 +118,9 @@ func parseInclusion(token, aud, account, workerID, commitment string) (Inclusion
 	if err != nil || len(enc) != 32 {
 		return InclusionClaims{}, nil, nil, errors.New("an inclusion's X25519 key isn't 32 bytes of base64url")
 	}
+	if err := checkX25519(enc); err != nil {
+		return InclusionClaims{}, nil, nil, fmt.Errorf("an inclusion's X25519 key: %w", err)
+	}
 	switch {
 	case !ed25519.Verify(key, append([]byte(InclusionContext), payload...), sig):
 		return InclusionClaims{}, nil, nil, errors.New("an inclusion isn't signed by the key it names")
@@ -133,6 +136,32 @@ func parseInclusion(token, aud, account, workerID, commitment string) (Inclusion
 		return InclusionClaims{}, nil, nil, errors.New("an inclusion is for another DEK")
 	}
 	return c, key, enc, nil
+}
+
+// x25519Probe is a fixed scalar for checkX25519.
+var x25519Probe = sha256.Sum256([]byte("fount-worker-device-x25519-probe"))
+
+// checkX25519 refuses a low-order X25519 public key, the all-zero one among
+// them: a DEK wrapped to it is sealed under a shared secret anyone can
+// compute. Every low-order point gives the all-zero output whatever the
+// scalar, which crypto/ecdh refuses.
+func checkX25519(enc []byte) error {
+	pub, err := ecdh.X25519().NewPublicKey(enc)
+	if err != nil {
+		return err
+	}
+	priv, err := ecdh.X25519().NewPrivateKey(x25519Probe[:])
+	if err != nil {
+		return err
+	}
+	shared, err := priv.ECDH(pub)
+	if err != nil {
+		return errors.New("it is a low-order point")
+	}
+	if subtle.ConstantTimeCompare(shared, make([]byte, len(shared))) == 1 {
+		return errors.New("it is a low-order point")
+	}
+	return nil
 }
 
 // lengthPrefixed is context, then each field as a 2-byte big-endian length
