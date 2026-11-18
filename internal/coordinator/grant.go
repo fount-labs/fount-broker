@@ -22,17 +22,21 @@ import (
 //     channel's device may see: its creator.
 //  2. POST /v1/workers/{id}/grant sends the worker's DEK with a grant signed
 //     by the device key itself, not the broker's session key. The grant names
-//     the worker, the DEK (by DEKCommitment), a sequence number one past the
-//     worker's last, and the device keys that may act for the worker from now
-//     on: the granting device and the admin devices it names. The signer must
-//     be one of the worker's devices already. The coordinator wraps the DEK
-//     and keeps the list, with an opaque copy of the DEK wrapped to each
-//     device if Desktop sends one.
+//     the coordinator (Config.Audience), the worker, the DEK (by
+//     DEKCommitment), a sequence number one past the worker's last, the
+//     device keys that may act for the worker from now on (the granting
+//     device and the admin devices it names) and, by WrapsDigest, the DEK
+//     wrapped to each of them. The signer must be one of the worker's devices
+//     already, and name itself. Each device named signs its own inclusion
+//     (devicekey.go), which the grant carries. The coordinator wraps the DEK
+//     and keeps the list, with each device's wrap, which it never opens.
 //  3. Another grant, with the same DEK and the next number, changes the list:
-//     that is how devices are added and removed. A grant can't change the
-//     DEK: every object of the worker's tree is sealed under it, so rotating
-//     it means re-sealing the tree, which is an operation of its own (not
-//     built). A re-sent first grant fails on its number, so nothing replays.
+//     that is how devices are added and removed. It carries every device's
+//     inclusion and wrap again, so none is dropped unsigned; a device it adds
+//     signs an inclusion for it. A grant can't change the DEK: every object
+//     of the worker's tree is sealed under it, so rotating it means
+//     re-sealing the tree, which is an operation of its own (not built). A
+//     re-sent first grant fails on its number, so nothing replays.
 //  4. POST /v1/workers/{id}/revoke, signed the same way, moves the worker back
 //     to Desktop: the coordinator forgets the worker, its DEK and its jobs, and
 //     deletes its objects. Desktop reads what it keeps first.
@@ -47,9 +51,12 @@ import (
 // the device and its account each time it connects, from minting a new device
 // that opens an account's workers.
 const (
-	GrantVersion = 1
-	GrantType    = "fount-worker-grant"
-	GrantContext = "fount-worker-grant-v1\n"
+	// GrantVersion 2 added Aud and Wraps.
+	GrantVersion = 2
+	// GrantBodyVersion is the grant request's: 2 carries inclusions.
+	GrantBodyVersion = 2
+	GrantType        = "fount-worker-grant"
+	GrantContext     = "fount-worker-grant-v2\n"
 
 	OpGrant  = "grant"
 	OpRevoke = "revoke"
@@ -66,7 +73,6 @@ const (
 	// before it sends it.
 	MaxGrantAge = time.Hour
 	grantSkew   = 5 * time.Minute
-	maxWrap     = 1 << 10
 
 	dekCommitmentContext = "fount-worker-dek-v1\x00"
 )
@@ -78,7 +84,10 @@ type GrantClaims struct {
 	V   int    `json:"v"`
 	Typ string `json:"typ"`
 	// Op is OpGrant or OpRevoke.
-	Op     string `json:"op"`
+	Op string `json:"op"`
+	// Aud is the coordinator it is for (Config.Audience), so a copy of the
+	// volume on another coordinator takes no grant meant for this one.
+	Aud    string `json:"aud"`
 	Acct   string `json:"acct"`
 	Worker string `json:"worker"`
 	// Dev is the signing device's id.
@@ -89,7 +98,9 @@ type GrantClaims struct {
 	// Devices are the Ed25519 public keys, raw, base64url, that may act for
 	// the worker after a grant.
 	Devices []string `json:"devices,omitempty"`
-	Iat     int64    `json:"iat"`
+	// Wraps is WrapsDigest of the wraps sent with a grant.
+	Wraps string `json:"wraps,omitempty"`
+	Iat   int64  `json:"iat"`
 }
 
 // Caller is who a client channel proved to be: the account fount-infra
@@ -104,9 +115,15 @@ type Caller struct {
 type Device struct {
 	ID  string `json:"id"`
 	Key []byte `json:"key"`
-	// Wrap is the worker's DEK wrapped to this device by Desktop, which the
-	// coordinator keeps for it and never opens: how an admin device gets the
-	// key back without Desktop at hand.
+	// Enc is the device's X25519 key, from the inclusion it signed, and Since
+	// the grant that first listed it. The worker's creator has neither until
+	// the first grant.
+	Enc       []byte `json:"enc,omitempty"`
+	Since     uint64 `json:"since,omitempty"`
+	Inclusion string `json:"inclusion,omitempty"`
+	// Wrap is the worker's DEK wrapped to Enc by Desktop, which the
+	// coordinator keeps for the device and never opens: how an admin device
+	// gets the key back without Desktop at hand.
 	Wrap []byte `json:"wrap,omitempty"`
 }
 
@@ -161,15 +178,18 @@ func SignGrant(device ed25519.PrivateKey, c GrantClaims) (string, error) {
 // key signed it, for this account, worker and op, lately. Whether the caller
 // may act for the worker and the number is next are checked against the
 // worker. It returns the devices a grant names.
-func verifyGrant(token string, caller Caller, workerID, op string, now time.Time) (GrantClaims, []Device, error) {
-	c, devices, err := parseGrant(token, caller, workerID, op, now)
+func verifyGrant(token, aud string, caller Caller, workerID, op string, now time.Time) (GrantClaims, []Device, error) {
+	if aud == "" {
+		return GrantClaims{}, nil, fmt.Errorf("%w: the coordinator has no audience to take grants for", ErrGrantRefused)
+	}
+	c, devices, err := parseGrant(token, aud, caller, workerID, op, now)
 	if err != nil {
 		return GrantClaims{}, nil, fmt.Errorf("%w: %v", ErrGrantRefused, err)
 	}
 	return c, devices, nil
 }
 
-func parseGrant(token string, caller Caller, workerID, op string, now time.Time) (GrantClaims, []Device, error) {
+func parseGrant(token, aud string, caller Caller, workerID, op string, now time.Time) (GrantClaims, []Device, error) {
 	p, s, ok := strings.Cut(token, ".")
 	if !ok || strings.Contains(s, ".") {
 		return GrantClaims{}, nil, errors.New("malformed")
@@ -194,6 +214,8 @@ func parseGrant(token string, caller Caller, workerID, op string, now time.Time)
 		return GrantClaims{}, nil, errors.New("malformed")
 	case c.Op != op:
 		return GrantClaims{}, nil, fmt.Errorf("it is a %q, not a %q", c.Op, op)
+	case c.Aud != aud:
+		return GrantClaims{}, nil, errors.New("it is for another coordinator")
 	case c.Dev != deviceID(caller.DeviceKey) || c.Dev != caller.Device:
 		return GrantClaims{}, nil, errors.New("it names another device than its signer")
 	case c.Acct != caller.Account:
@@ -206,8 +228,8 @@ func parseGrant(token string, caller Caller, workerID, op string, now time.Time)
 		return GrantClaims{}, nil, fmt.Errorf("it is over %s old", MaxGrantAge)
 	}
 	if op == OpRevoke {
-		if c.DEK != "" || len(c.Devices) != 0 {
-			return GrantClaims{}, nil, errors.New("a revoke names no DEK or devices")
+		if c.DEK != "" || len(c.Devices) != 0 || c.Wraps != "" {
+			return GrantClaims{}, nil, errors.New("a revoke names no DEK, devices or wraps")
 		}
 		return c, nil, nil
 	}
@@ -215,7 +237,7 @@ func parseGrant(token string, caller Caller, workerID, op string, now time.Time)
 		return GrantClaims{}, nil, fmt.Errorf("it must name 1 to %d devices", MaxDevices)
 	}
 	devices := make([]Device, 0, len(c.Devices))
-	seen := map[string]bool{}
+	seen, self := map[string]bool{}, false
 	for _, k := range c.Devices {
 		key, err := b64.DecodeString(k)
 		if err != nil || len(key) != ed25519.PublicKeySize {
@@ -226,7 +248,11 @@ func parseGrant(token string, caller Caller, workerID, op string, now time.Time)
 			return GrantClaims{}, nil, errors.New("it names a device twice")
 		}
 		seen[id] = true
+		self = self || subtle.ConstantTimeCompare(key, caller.DeviceKey) == 1
 		devices = append(devices, Device{ID: id, Key: key})
+	}
+	if !self {
+		return GrantClaims{}, nil, errors.New("it doesn't name its signer")
 	}
 	return c, devices, nil
 }
@@ -239,9 +265,10 @@ func checkDEK(c GrantClaims, workerID string, dek DEK) error {
 	return nil
 }
 
-// withWraps gives each device the wrap Desktop sent for it. A grant's wraps
-// replace the last grant's: Desktop sends every one it wants kept.
-func withWraps(devices []Device, wraps map[string][]byte) error {
+// withWraps gives each device the wrap Desktop sent for it: one for each, and
+// none for a device the grant doesn't name, as the grant signed them. A
+// grant's wraps replace the last grant's.
+func withWraps(devices []Device, wraps map[string][]byte, c GrantClaims) error {
 	for id, wrap := range wraps {
 		i := -1
 		for j := range devices {
@@ -252,10 +279,24 @@ func withWraps(devices []Device, wraps map[string][]byte) error {
 		switch {
 		case i < 0:
 			return fmt.Errorf("%w: a wrap for device %.40q, which it doesn't name", ErrGrantRefused, id)
-		case len(wrap) == 0 || len(wrap) > maxWrap:
-			return fmt.Errorf("%w: a wrap is 1 to %d bytes", ErrGrantRefused, maxWrap)
+		case len(wrap) != WrapSize:
+			return fmt.Errorf("%w: a wrap is %d bytes", ErrGrantRefused, WrapSize)
 		}
 		devices[i].Wrap = wrap
+	}
+	ids := make([]string, len(devices))
+	for i, d := range devices {
+		if d.Wrap == nil {
+			return fmt.Errorf("%w: device %s has no wrap", ErrGrantRefused, d.ID)
+		}
+		ids[i] = d.ID
+	}
+	digest, err := WrapsDigest(ids, wraps)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrGrantRefused, err)
+	}
+	if subtle.ConstantTimeCompare([]byte(digest), []byte(c.Wraps)) != 1 {
+		return fmt.Errorf("%w: it signs other wraps than the ones sent", ErrGrantRefused)
 	}
 	return nil
 }
@@ -350,18 +391,22 @@ func (c *Coordinator) ExpireUngranted() {
 }
 
 // Grant takes a worker's DEK and device list from one of its devices, as
-// above. It returns the worker as it now stands.
-func (c *Coordinator) Grant(caller Caller, workerID string, dek DEK, token string, wraps map[string][]byte) (Worker, error) {
+// above, with each device's inclusion and wrap. It returns the worker as it
+// now stands.
+func (c *Coordinator) Grant(caller Caller, workerID string, dek DEK, token string, inclusions []string, wraps map[string][]byte) (Worker, error) {
 	defer clear(dek[:])
 	now := time.Now()
-	claims, devices, err := verifyGrant(token, caller, workerID, OpGrant, now)
+	claims, devices, err := verifyGrant(token, c.cfg.Audience, caller, workerID, OpGrant, now)
 	if err != nil {
 		return Worker{}, err
 	}
 	if err := checkDEK(claims, workerID, dek); err != nil {
 		return Worker{}, err
 	}
-	if err := withWraps(devices, wraps); err != nil {
+	if err := withInclusions(devices, inclusions, claims); err != nil {
+		return Worker{}, err
+	}
+	if err := withWraps(devices, wraps, claims); err != nil {
 		return Worker{}, err
 	}
 	lock, _, err := c.workerLock(workerID)
@@ -382,6 +427,9 @@ func (c *Coordinator) Grant(caller Caller, workerID string, dek DEK, token strin
 	if err != nil {
 		return Worker{}, err
 	}
+	if err := sinceFits(w.Devices, devices, claims.Seq); err != nil {
+		return Worker{}, err
+	}
 	next := *w
 	if w.WrappedDEK == nil {
 		if next.WrappedDEK, err = c.cfg.Key.Wrap(workerID, dek); err != nil {
@@ -398,7 +446,7 @@ func (c *Coordinator) Grant(caller Caller, workerID string, dek DEK, token strin
 			return Worker{}, ErrDEKChanged
 		}
 	}
-	next.Devices, next.GrantSeq = devices, claims.Seq
+	next.Devices, next.GrantSeq, next.DEKCommitment = devices, claims.Seq, claims.DEK
 	c.state.Workers[workerID] = &next
 	if err := c.state.Save(c.cfg.StateDir); err != nil {
 		c.state.Workers[workerID] = w
@@ -411,7 +459,7 @@ func (c *Coordinator) Grant(caller Caller, workerID string, dek DEK, token strin
 // devices: the coordinator forgets it, its DEK and its jobs, then deletes its
 // objects. A worker with a running job is ErrBusy; queued jobs go with it.
 func (c *Coordinator) Revoke(caller Caller, workerID, token string) error {
-	claims, _, err := verifyGrant(token, caller, workerID, OpRevoke, time.Now())
+	claims, _, err := verifyGrant(token, c.cfg.Audience, caller, workerID, OpRevoke, time.Now())
 	if err != nil {
 		return err
 	}

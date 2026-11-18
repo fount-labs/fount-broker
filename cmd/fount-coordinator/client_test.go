@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto"
+	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
@@ -23,6 +24,8 @@ import (
 	"github.com/fount-labs/fount-broker/internal/coordinator"
 	"github.com/fount-labs/fount-broker/internal/link"
 )
+
+const audience = "https://coordinator.example"
 
 // identity is a device of account, signed in with fount-infra's key, and the
 // device's key.
@@ -63,6 +66,7 @@ func TestDesktopReachesItsAccountOverTheChannel(t *testing.T) {
 		Key:      key,
 		Pool:     coordinator.NewPool(1, 1, nil),
 		Runner:   coordinator.LocalRunner{Command: []string{"false"}},
+		Audience: audience,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -121,14 +125,27 @@ func TestDesktopReachesItsAccountOverTheChannel(t *testing.T) {
 		t.Fatalf("put before the grant: %d %s", code, body)
 	}
 	dek, _ := coordinator.NewDEK()
+	enc, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	devID := channel.DeviceID(device.Public().(ed25519.PublicKey))
+	inclusion, err := coordinator.SignInclusion(device, enc.PublicKey().Bytes(), coordinator.InclusionClaims{Aud: audience, Acct: "acct_acme", Worker: w.ID, DEK: coordinator.DEKCommitment(w.ID, dek), Seq: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrap, err := coordinator.SealWrap(enc.PublicKey().Bytes(), "acct_acme", w.ID, devID, dek)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wraps := map[string][]byte{devID: wrap}
+	digest, _ := coordinator.WrapsDigest([]string{devID}, wraps)
 	grant, err := coordinator.SignGrant(device, coordinator.GrantClaims{
-		Op: coordinator.OpGrant, Acct: "acct_acme", Worker: w.ID, Seq: 1, DEK: coordinator.DEKCommitment(w.ID, dek),
-		Devices: []string{base64.RawURLEncoding.EncodeToString(device.Public().(ed25519.PublicKey))}, Iat: time.Now().Unix(),
+		Op: coordinator.OpGrant, Aud: audience, Acct: "acct_acme", Worker: w.ID, Seq: 1, DEK: coordinator.DEKCommitment(w.ID, dek),
+		Devices: []string{base64.RawURLEncoding.EncodeToString(device.Public().(ed25519.PublicKey))}, Wraps: digest, Iat: time.Now().Unix(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if code, body := do(acme, "POST", "v1/workers/"+w.ID+"/grant", `{"v":1,"dek":"`+base64.StdEncoding.EncodeToString(dek[:])+`","grant":"`+grant+`"}`); code != http.StatusOK || !strings.Contains(body, `"granted":true`) {
+	grantBody, _ := json.Marshal(map[string]any{"v": coordinator.GrantBodyVersion, "dek": dek[:], "grant": grant, "inclusions": []string{inclusion}, "wraps": wraps})
+	if code, body := do(acme, "POST", "v1/workers/"+w.ID+"/grant", string(grantBody)); code != http.StatusOK || !strings.Contains(body, `"granted":true`) {
 		t.Fatalf("grant: %d %s", code, body)
 	}
 	if code, body := do(acme, "PUT", "v1/workers/"+w.ID+"/root/instructions.md", "be brief"); code != http.StatusNoContent {
@@ -162,7 +179,7 @@ func TestDesktopReachesItsAccountOverTheChannel(t *testing.T) {
 	_, body = do(acme, "POST", "v1/workers", `{}`)
 	var back struct{ ID string }
 	json.Unmarshal([]byte(body), &back)
-	revoke, _ := coordinator.SignGrant(device, coordinator.GrantClaims{Op: coordinator.OpRevoke, Acct: "acct_acme", Worker: back.ID, Seq: 1, Iat: time.Now().Unix()})
+	revoke, _ := coordinator.SignGrant(device, coordinator.GrantClaims{Op: coordinator.OpRevoke, Aud: audience, Acct: "acct_acme", Worker: back.ID, Seq: 1, Iat: time.Now().Unix()})
 	if code, body := do(acme, "POST", "v1/workers/"+back.ID+"/revoke", `{"v":1,"grant":"`+revoke+`"}`); code != http.StatusNoContent {
 		t.Fatalf("revoke: %d %s", code, body)
 	}
@@ -183,9 +200,14 @@ func TestClientFlags(t *testing.T) {
 		{accountKeys: keys, attestation: attestTinfoil},
 		{attestation: attestUnattested},
 		{attestation: attestTinfoil, cloudOnly: true},
-		{listen: ":8791", attestation: attestTinfoil},
-		{listen: ":8791", accountKeys: "bm90IGEga2V5", attestation: attestTinfoil},
-		{listen: ":8791", accountKeys: keys, attestation: "none"},
+		{attestation: attestTinfoil, audience: audience},
+		{listen: ":8791", attestation: attestTinfoil, audience: audience},
+		{listen: ":8791", accountKeys: "bm90IGEga2V5", attestation: attestTinfoil, audience: audience},
+		{listen: ":8791", accountKeys: keys, attestation: "none", audience: audience},
+		{listen: ":8791", accountKeys: keys, attestation: attestTinfoil},
+		{listen: ":8791", accountKeys: keys, attestation: attestTinfoil, audience: "coordinator.example"},
+		{listen: ":8791", accountKeys: keys, attestation: attestTinfoil, audience: "http://coordinator.example"},
+		{listen: ":8791", accountKeys: keys, attestation: attestTinfoil, audience: "https://coordinator.example/v1"},
 	} {
 		if _, err := f.server(); err == nil {
 			t.Errorf("%+v was taken", f)

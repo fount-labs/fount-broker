@@ -38,7 +38,7 @@ func (c *Coordinator) Handler() http.Handler {
 //
 //	POST /v1/workers                      {}: an empty worker, the caller's device's
 //	GET  /v1/workers                      the workers the caller's device may act for
-//	POST /v1/workers/{id}/grant           {"v":1,"dek","grant","wraps"?}: the DEK grant (§3.1 step 4)
+//	POST /v1/workers/{id}/grant           {"v":2,"dek","grant","inclusions","wraps"}: the DEK grant (§3.1 step 4)
 //	POST /v1/workers/{id}/revoke          {"v":1,"grant"}: move the worker back to Desktop
 //
 // A caller without an account or device panics: it would be no one's API,
@@ -119,12 +119,15 @@ type workerView struct {
 	Version uint64 `json:"version"`
 	Created string `json:"created"`
 	// The account API's alone: whether the DEK is granted, the last grant's
-	// number, the devices that may act for the worker, and the caller's
-	// device's wrap of the DEK, if Desktop left one.
-	Granted  *bool    `json:"granted,omitempty"`
-	GrantSeq *uint64  `json:"grantSeq,omitempty"`
-	Devices  []string `json:"devices,omitempty"`
-	Wrap     []byte   `json:"wrap,omitempty"`
+	// number and DEK commitment, the devices that may act for the worker and
+	// their inclusions, which the next grant carries again, and the caller's
+	// device's wrap of the DEK.
+	Granted       *bool    `json:"granted,omitempty"`
+	GrantSeq      *uint64  `json:"grantSeq,omitempty"`
+	DEKCommitment string   `json:"dekCommitment,omitempty"`
+	Devices       []string `json:"devices,omitempty"`
+	Inclusions    []string `json:"inclusions,omitempty"`
+	Wrap          []byte   `json:"wrap,omitempty"`
 }
 
 func (a *api) viewOf(w Worker) workerView {
@@ -133,9 +136,12 @@ func (a *api) viewOf(w Worker) workerView {
 		return v
 	}
 	granted := w.WrappedDEK != nil
-	v.Granted, v.GrantSeq = &granted, &w.GrantSeq
+	v.Granted, v.GrantSeq, v.DEKCommitment = &granted, &w.GrantSeq, w.DEKCommitment
 	for _, d := range w.Devices {
 		v.Devices = append(v.Devices, d.ID)
+		if d.Inclusion != "" {
+			v.Inclusions = append(v.Inclusions, d.Inclusion)
+		}
 		if d.ID == a.caller.Device {
 			v.Wrap = d.Wrap
 		}
@@ -209,22 +215,24 @@ func (a *api) listWorkers(rw http.ResponseWriter, _ *http.Request) {
 }
 
 // grant is how Desktop moves a worker in (m4-cloud-runners.md §3.1 step 4):
-// the worker's DEK, base64; the grant its device key signed (grant.go); and
-// each named device's wrap of the DEK, by device id, which the coordinator
-// only keeps.
+// the worker's DEK, base64; the grant its device key signed (grant.go); each
+// named device's inclusion; and each one's wrap of the DEK, by device id,
+// which the coordinator only keeps (devicekey.go). Version 1 had no
+// inclusions and opaque wraps, and is refused.
 func (a *api) grant(rw http.ResponseWriter, r *http.Request) {
 	var req struct {
-		V     int               `json:"v"`
-		DEK   []byte            `json:"dek"`
-		Grant string            `json:"grant"`
-		Wraps map[string][]byte `json:"wraps"`
+		V          int               `json:"v"`
+		DEK        []byte            `json:"dek"`
+		Grant      string            `json:"grant"`
+		Inclusions []string          `json:"inclusions"`
+		Wraps      map[string][]byte `json:"wraps"`
 	}
 	if err := decodeStrict(r.Body, maxGrantBody, &req); err != nil {
 		fail(rw, http.StatusBadRequest, err)
 		return
 	}
-	if req.V != 1 {
-		fail(rw, http.StatusBadRequest, fmt.Errorf("grant version %d: want 1", req.V))
+	if req.V != GrantBodyVersion {
+		fail(rw, http.StatusBadRequest, fmt.Errorf("grant version %d: want %d", req.V, GrantBodyVersion))
 		return
 	}
 	dek, err := parseDEK(req.DEK)
@@ -238,7 +246,7 @@ func (a *api) grant(rw http.ResponseWriter, r *http.Request) {
 		fail(rw, statusOf(err), err)
 		return
 	}
-	w, err := a.c.Grant(*a.caller, r.PathValue("id"), *dek, req.Grant, req.Wraps)
+	w, err := a.c.Grant(*a.caller, r.PathValue("id"), *dek, req.Grant, req.Inclusions, req.Wraps)
 	if err != nil {
 		fail(rw, statusOf(err), err)
 		return

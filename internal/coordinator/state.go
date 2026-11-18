@@ -33,10 +33,12 @@ type Worker struct {
 	Version    uint64    `json:"version"`
 	Created    time.Time `json:"created"`
 	// Devices may act for the worker over the client channel, and GrantSeq
-	// numbers the last grant that set them. A worker the dev API made has
-	// none.
-	Devices  []Device `json:"devices,omitempty"`
-	GrantSeq uint64   `json:"grantSeq,omitempty"`
+	// numbers the last grant that set them. DEKCommitment is the one the
+	// grants signed, which a device opening its wrap checks. A worker the dev
+	// API made has none.
+	Devices       []Device `json:"devices,omitempty"`
+	GrantSeq      uint64   `json:"grantSeq,omitempty"`
+	DEKCommitment string   `json:"dekCommitment,omitempty"`
 }
 
 type JobState string

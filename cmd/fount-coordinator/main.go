@@ -119,6 +119,7 @@ func run() error {
 	accountKeys := flag.String("account-keys", "", "with --client-listen: fount-infra's device-credential keys, SPKI DER as base64, comma-separated (default $"+accountKeysEnv+")")
 	clientAttest := flag.String("client-attestation", attestTinfoil, "with --client-listen: how the coordinator proves itself: tinfoil, or unattested in a dev build")
 	cloudOnly := flag.Bool("cloud-credentials-only", false, "with --client-listen: take only hour-long Cloud credentials, not device credentials")
+	audience := flag.String("client-audience", os.Getenv("FOUNT_CLIENT_AUDIENCE"), "with --client-listen: the coordinator's origin, https://<host>, which worker grants must name")
 	flag.Parse()
 	if *dir == "" || (flag.NArg() == 0) == (*runnerAddr == "") {
 		return errors.New("usage: fount-coordinator --dir <folder> [flags] (-- <runner command...> | --runner-addr <host:port>)")
@@ -169,7 +170,7 @@ func run() error {
 	if err := keys.check(); err != nil {
 		return err
 	}
-	clients, err := clientFlags{listen: *clientListen, accountKeys: *accountKeys, attestation: *clientAttest, cloudOnly: *cloudOnly}.server()
+	clients, err := clientFlags{listen: *clientListen, accountKeys: *accountKeys, attestation: *clientAttest, cloudOnly: *cloudOnly, audience: *audience}.server()
 	if err != nil {
 		return err
 	}
@@ -218,6 +219,7 @@ func run() error {
 		Runner:   runner,
 
 		Credentials: mint,
+		Audience:    *audience,
 	})
 	if err != nil {
 		return err

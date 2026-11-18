@@ -46,6 +46,9 @@ type Config struct {
 	// Credentials are a job's credentials, by the broker's names: in the pool,
 	// minted for that one job (package jobcred). Nil gives jobs none.
 	Credentials func(account, workerID, jobID string) (map[string]string, error)
+	// Audience is the name grants and inclusions must give the coordinator
+	// (grant.go): its origin over the client channel. Empty takes none.
+	Audience string
 }
 
 type Coordinator struct {

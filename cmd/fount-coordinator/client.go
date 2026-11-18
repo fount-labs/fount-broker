@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"sync/atomic"
 
@@ -23,6 +24,9 @@ type clientFlags struct {
 	accountKeys string
 	attestation string
 	cloudOnly   bool
+	// audience is the coordinator's origin, as Desktop dials it, which
+	// worker grants must name (coordinator.Config.Audience).
+	audience string
 }
 
 const (
@@ -35,10 +39,13 @@ const (
 // socket. Its Handler is set once the coordinator is up.
 func (f clientFlags) server() (*channel.Server, error) {
 	if f.listen == "" {
-		if f.accountKeys != "" || f.attestation != attestTinfoil || f.cloudOnly {
-			return nil, errors.New("--account-keys, --client-attestation and --cloud-credentials-only need --client-listen")
+		if f.accountKeys != "" || f.attestation != attestTinfoil || f.cloudOnly || f.audience != "" {
+			return nil, errors.New("--account-keys, --client-attestation, --cloud-credentials-only and --client-audience need --client-listen")
 		}
 		return nil, nil
+	}
+	if u, err := url.Parse(f.audience); err != nil || u.Scheme != "https" || u.Host == "" || u.String() != u.Scheme+"://"+u.Host {
+		return nil, fmt.Errorf("--client-listen needs --client-audience, the coordinator's origin https://<host> that worker grants name; not %q", f.audience)
 	}
 	accountKeys := f.accountKeys
 	if accountKeys == "" {

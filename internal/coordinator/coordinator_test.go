@@ -80,6 +80,7 @@ func newTestCoordinator(t *testing.T, mode string, timeout time.Duration) (*Coor
 		Key:      key,
 		Pool:     NewPool(1, 2, nil),
 		Runner:   envRunner{LocalRunner{Command: []string{self}, Timeout: timeout}, mode},
+		Audience: testAudience,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -457,8 +458,9 @@ func TestTheAccountAPIServesOnlyItsAccount(t *testing.T) {
 		{"GET", "/v1/workers/" + id + "/files/root/instructions.md", "", 200, 404},
 		{"POST", "/v1/workers/" + id + "/jobs", `{"threadId":"t2","sessionId":"s2","instruction":"hi","config":{}}`, 202, 404},
 		{"GET", "/v1/jobs/" + jobID, "", 200, 404},
-		{"POST", "/v1/workers/" + id + "/grant", `{"v":1,"dek":"` + strings.Repeat("A", 43) + `=","grant":"x.y"}`, 403, 404},
-		{"POST", "/v1/workers/" + id + "/grant", `{"v":2,"dek":"` + strings.Repeat("A", 43) + `="}`, 400, 400},
+		{"POST", "/v1/workers/" + id + "/grant", `{"v":2,"dek":"` + strings.Repeat("A", 43) + `=","grant":"x.y"}`, 403, 404},
+		{"POST", "/v1/workers/" + id + "/grant", `{"v":1,"dek":"` + strings.Repeat("A", 43) + `=","grant":"x.y"}`, 400, 400},
+		{"POST", "/v1/workers/" + id + "/grant", `{"v":3,"dek":"` + strings.Repeat("A", 43) + `="}`, 400, 400},
 		{"GET", "/v0/workers/" + id, "", 404, 404},
 	} {
 		for name, srv := range map[string]*httptest.Server{"other": other, "mine": mine} {

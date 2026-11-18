@@ -240,8 +240,10 @@ dev build say `--wrapping-key dev`, a key file in `--dir`.
 Its parse surfaces are the JobSpec, the API's small JSON bodies and, over the
 client channel, a worker's DEK grant: claims signed by a device key
 ([`grant.go`](internal/coordinator/grant.go)) naming the devices that may act
-for the worker from then on. File contents, everything a runner leaves behind,
-and the DEK as Desktop wraps it to each device are stored as opaque bytes.
+for the worker from then on, each with an inclusion it signed itself
+([`devicekey.go`](internal/coordinator/devicekey.go)). File contents,
+everything a runner leaves behind, and the DEK as Desktop wraps it to each
+device (HPKE, to the device's X25519 key) are stored as opaque bytes.
 
 The coordinator never checks a sender itself. It reads mail only in format 3,
 takes who sent it from the edge's sealed check, and decides what the mail may do

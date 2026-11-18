@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -15,8 +16,14 @@ import (
 	"time"
 )
 
-// testDevice is a Desktop install's device key.
-type testDevice struct{ key ed25519.PrivateKey }
+// testAudience is the test coordinator's Config.Audience.
+const testAudience = "https://coordinator.example"
+
+// testDevice is a Desktop install's device keys.
+type testDevice struct {
+	key ed25519.PrivateKey
+	enc *ecdh.PrivateKey
+}
 
 func newTestDevice(t *testing.T) testDevice {
 	t.Helper()
@@ -24,7 +31,11 @@ func newTestDevice(t *testing.T) testDevice {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return testDevice{key}
+	enc, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return testDevice{key, enc}
 }
 
 func (d testDevice) pub() ed25519.PublicKey { return d.key.Public().(ed25519.PublicKey) }
@@ -37,26 +48,79 @@ func (d testDevice) caller(account string) Caller {
 	return Caller{Account: account, Device: d.id(), DeviceKey: d.pub()}
 }
 
-// grant signs a grant of dek naming devices, or the signer alone.
-func (d testDevice) grant(t *testing.T, account, workerID string, seq uint64, dek DEK, devices ...testDevice) string {
+// include is d's inclusion in a worker, listed from grant since.
+func (d testDevice) include(t *testing.T, account, workerID string, since uint64, dek DEK) string {
 	t.Helper()
-	if len(devices) == 0 {
-		devices = []testDevice{d}
-	}
-	var keys []string
-	for _, dev := range devices {
-		keys = append(keys, dev.b64())
-	}
-	token, err := SignGrant(d.key, GrantClaims{Op: OpGrant, Acct: account, Worker: workerID, Seq: seq, DEK: DEKCommitment(workerID, dek), Devices: keys, Iat: time.Now().Unix()})
+	token, err := SignInclusion(d.key, d.enc.PublicKey().Bytes(), InclusionClaims{Aud: testAudience, Acct: account, Worker: workerID, DEK: DEKCommitment(workerID, dek), Seq: since})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return token
 }
 
+func (d testDevice) wrap(t *testing.T, account, workerID string, dek DEK) []byte {
+	t.Helper()
+	wrap, err := SealWrap(d.enc.PublicKey().Bytes(), account, workerID, d.id(), dek)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wrap
+}
+
+// testGrant is a grant request's parts.
+type testGrant struct {
+	token      string
+	inclusions []string
+	wraps      map[string][]byte
+}
+
+// grant signs a grant of dek naming devices, or the signer alone, each with
+// an inclusion for this grant and a wrap.
+func (d testDevice) grant(t *testing.T, account, workerID string, seq uint64, dek DEK, devices ...testDevice) testGrant {
+	t.Helper()
+	return d.grantSince(t, account, workerID, seq, dek, nil, devices...)
+}
+
+// grantSince is grant with the devices already listed on inclusions from the
+// grants since names.
+func (d testDevice) grantSince(t *testing.T, account, workerID string, seq uint64, dek DEK, since map[string]uint64, devices ...testDevice) testGrant {
+	t.Helper()
+	if len(devices) == 0 {
+		devices = []testDevice{d}
+	}
+	g := testGrant{wraps: map[string][]byte{}}
+	var keys, ids []string
+	for _, dev := range devices {
+		keys, ids = append(keys, dev.b64()), append(ids, dev.id())
+		s, ok := since[dev.id()]
+		if !ok {
+			s = seq
+		}
+		g.inclusions = append(g.inclusions, dev.include(t, account, workerID, s, dek))
+		g.wraps[dev.id()] = dev.wrap(t, account, workerID, dek)
+	}
+	digest, err := WrapsDigest(ids, g.wraps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.token, err = SignGrant(d.key, GrantClaims{Op: OpGrant, Aud: testAudience, Acct: account, Worker: workerID, Seq: seq, DEK: DEKCommitment(workerID, dek), Devices: keys, Wraps: digest, Iat: time.Now().Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
+
+func (g testGrant) to(c *Coordinator, caller Caller, workerID string, dek DEK) (Worker, error) {
+	return c.Grant(caller, workerID, dek, g.token, g.inclusions, g.wraps)
+}
+
+func (g testGrant) body(dek DEK) string {
+	body, _ := json.Marshal(map[string]any{"v": GrantBodyVersion, "dek": dek[:], "grant": g.token, "inclusions": g.inclusions, "wraps": g.wraps})
+	return string(body)
+}
+
 func (d testDevice) revoke(t *testing.T, account, workerID string, seq uint64) string {
 	t.Helper()
-	token, err := SignGrant(d.key, GrantClaims{Op: OpRevoke, Acct: account, Worker: workerID, Seq: seq, Iat: time.Now().Unix()})
+	token, err := SignGrant(d.key, GrantClaims{Op: OpRevoke, Aud: testAudience, Acct: account, Worker: workerID, Seq: seq, Iat: time.Now().Unix()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,8 +129,7 @@ func (d testDevice) revoke(t *testing.T, account, workerID string, seq uint64) s
 
 func (d testDevice) grantBody(t *testing.T, account, workerID string, seq uint64, dek DEK, devices ...testDevice) string {
 	t.Helper()
-	body, _ := json.Marshal(map[string]any{"v": 1, "dek": dek[:], "grant": d.grant(t, account, workerID, seq, dek, devices...)})
-	return string(body)
+	return d.grant(t, account, workerID, seq, dek, devices...).body(dek)
 }
 
 // granted is a worker made by me over the channel and granted dek.
@@ -76,7 +139,7 @@ func granted(t *testing.T, c *Coordinator, me testDevice, dek DEK) Worker {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w, err = c.Grant(me.caller("acme"), w.ID, dek, me.grant(t, "acme", w.ID, 1, dek), nil); err != nil {
+	if w, err = me.grant(t, "acme", w.ID, 1, dek).to(c, me.caller("acme"), w.ID, dek); err != nil {
 		t.Fatal(err)
 	}
 	return w
@@ -96,7 +159,7 @@ func TestAWorkerRunsOnlyOnceItsDEKIsGranted(t *testing.T) {
 		t.Errorf("a job before the grant: %v", err)
 	}
 	dek := mustDEK(t)
-	if w, err = c.Grant(me.caller("acme"), w.ID, dek, me.grant(t, "acme", w.ID, 1, dek), nil); err != nil || w.GrantSeq != 1 {
+	if w, err = me.grant(t, "acme", w.ID, 1, dek).to(c, me.caller("acme"), w.ID, dek); err != nil || w.GrantSeq != 1 {
 		t.Fatalf("grant: %v %+v", err, w)
 	}
 	if err := c.PutFile(w.ID, "instructions.md", []byte("be brief")); err != nil {
@@ -124,41 +187,59 @@ func TestAGrantIsCheckedAgainstItsSignerAndTheWorker(t *testing.T) {
 	me, other := newTestDevice(t), newTestDevice(t)
 	w, _ := c.CreateWorkerFor(me.caller("acme"))
 	dek, otherDEK := mustDEK(t), mustDEK(t)
-	expired, _ := SignGrant(me.key, GrantClaims{Op: OpGrant, Acct: "acme", Worker: w.ID, Seq: 1, DEK: DEKCommitment(w.ID, dek), Devices: []string{me.b64()}, Iat: time.Now().Add(-2 * MaxGrantAge).Unix()})
-	twice, _ := SignGrant(me.key, GrantClaims{Op: OpGrant, Acct: "acme", Worker: w.ID, Seq: 1, DEK: DEKCommitment(w.ID, dek), Devices: []string{me.b64(), me.b64()}, Iat: time.Now().Unix()})
-	none, _ := SignGrant(me.key, GrantClaims{Op: OpGrant, Acct: "acme", Worker: w.ID, Seq: 1, DEK: DEKCommitment(w.ID, dek), Iat: time.Now().Unix()})
+	signed := func(c GrantClaims) testGrant {
+		g := me.grant(t, "acme", w.ID, 1, dek)
+		c.Op, c.Aud, c.Acct, c.Worker, c.Seq, c.DEK = OpGrant, testAudience, "acme", w.ID, 1, DEKCommitment(w.ID, dek)
+		ids := []string{}
+		for _, k := range c.Devices {
+			key, _ := b64.DecodeString(k)
+			ids = append(ids, deviceID(key))
+		}
+		c.Wraps, _ = WrapsDigest(ids, g.wraps)
+		if c.Iat == 0 {
+			c.Iat = time.Now().Unix()
+		}
+		g.token, _ = SignGrant(me.key, c)
+		return g
+	}
+	expired := signed(GrantClaims{Devices: []string{me.b64()}, Iat: time.Now().Add(-2 * MaxGrantAge).Unix()})
+	twice := signed(GrantClaims{Devices: []string{me.b64(), me.b64()}})
+	none := signed(GrantClaims{})
+	withoutMe := other.grant(t, "acme", w.ID, 1, dek)
+	withoutMe.token = signed(GrantClaims{Devices: []string{other.b64()}}).token
+	revoke := me.grant(t, "acme", w.ID, 1, dek)
+	revoke.token = me.revoke(t, "acme", w.ID, 1)
 	for _, tc := range []struct {
 		name   string
 		caller Caller
 		dek    DEK
-		token  string
-		wraps  map[string][]byte
+		g      testGrant
 		want   error
 	}{
-		{"signed by another device", me.caller("acme"), dek, other.grant(t, "acme", w.ID, 1, dek, me), nil, ErrGrantRefused},
-		{"from a device the worker doesn't list", other.caller("acme"), dek, other.grant(t, "acme", w.ID, 1, dek), nil, ErrNoWorker},
-		{"for another account", me.caller("acme"), dek, me.grant(t, "other", w.ID, 1, dek), nil, ErrGrantRefused},
-		{"for another worker", me.caller("acme"), dek, me.grant(t, "acme", "w_0123456789abcdef01234567", 1, dek), nil, ErrGrantRefused},
-		{"of another DEK", me.caller("acme"), otherDEK, me.grant(t, "acme", w.ID, 1, dek), nil, ErrGrantRefused},
-		{"a revoke", me.caller("acme"), dek, me.revoke(t, "acme", w.ID, 1), nil, ErrGrantRefused},
-		{"too old", me.caller("acme"), dek, expired, nil, ErrGrantRefused},
-		{"a device twice", me.caller("acme"), dek, twice, nil, ErrGrantRefused},
-		{"no devices", me.caller("acme"), dek, none, nil, ErrGrantRefused},
-		{"not the next number", me.caller("acme"), dek, me.grant(t, "acme", w.ID, 2, dek), nil, ErrGrantSeq},
-		{"a wrap for a device it doesn't name", me.caller("acme"), dek, me.grant(t, "acme", w.ID, 1, dek), map[string][]byte{other.id(): {1}}, ErrGrantRefused},
+		{"signed by another device", me.caller("acme"), dek, other.grant(t, "acme", w.ID, 1, dek, me), ErrGrantRefused},
+		{"from a device the worker doesn't list", other.caller("acme"), dek, other.grant(t, "acme", w.ID, 1, dek), ErrNoWorker},
+		{"for another account", me.caller("acme"), dek, me.grant(t, "other", w.ID, 1, dek), ErrGrantRefused},
+		{"for another worker", me.caller("acme"), dek, me.grant(t, "acme", "w_0123456789abcdef01234567", 1, dek), ErrGrantRefused},
+		{"of another DEK", me.caller("acme"), otherDEK, me.grant(t, "acme", w.ID, 1, dek), ErrGrantRefused},
+		{"a revoke", me.caller("acme"), dek, revoke, ErrGrantRefused},
+		{"too old", me.caller("acme"), dek, expired, ErrGrantRefused},
+		{"a device twice", me.caller("acme"), dek, twice, ErrGrantRefused},
+		{"no devices", me.caller("acme"), dek, none, ErrGrantRefused},
+		{"not naming its signer", me.caller("acme"), dek, withoutMe, ErrGrantRefused},
+		{"not the next number", me.caller("acme"), dek, me.grant(t, "acme", w.ID, 2, dek), ErrGrantSeq},
 	} {
-		if _, err := c.Grant(tc.caller, w.ID, tc.dek, tc.token, tc.wraps); !errors.Is(err, tc.want) {
+		if _, err := tc.g.to(c, tc.caller, w.ID, tc.dek); !errors.Is(err, tc.want) {
 			t.Errorf("%s: %v, want %v", tc.name, err, tc.want)
 		}
 	}
 	if got, _ := c.Worker(w.ID); got.WrappedDEK != nil || got.GrantSeq != 0 {
 		t.Fatalf("a refused grant changed the worker: %+v", got)
 	}
-	token := me.grant(t, "acme", w.ID, 1, dek)
-	if _, err := c.Grant(me.caller("acme"), w.ID, dek, token, nil); err != nil {
+	g := me.grant(t, "acme", w.ID, 1, dek)
+	if _, err := g.to(c, me.caller("acme"), w.ID, dek); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Grant(me.caller("acme"), w.ID, dek, token, nil); !errors.Is(err, ErrGrantSeq) {
+	if _, err := g.to(c, me.caller("acme"), w.ID, dek); !errors.Is(err, ErrGrantSeq) {
 		t.Errorf("a replayed grant: %v", err)
 	}
 }
@@ -169,11 +250,12 @@ func TestReGrantsChangeTheDevicesButNeverTheDEK(t *testing.T) {
 	dek := mustDEK(t)
 	w := granted(t, c, me, dek)
 
-	if _, err := c.Grant(me.caller("acme"), w.ID, mustDEK(t), me.grant(t, "acme", w.ID, 2, mustDEK(t)), nil); !errors.Is(err, ErrGrantRefused) {
+	since := map[string]uint64{me.id(): 1}
+	if _, err := me.grantSince(t, "acme", w.ID, 2, mustDEK(t), since).to(c, me.caller("acme"), w.ID, mustDEK(t)); !errors.Is(err, ErrGrantRefused) {
 		t.Errorf("a grant whose signature covers another DEK: %v", err)
 	}
 	other := mustDEK(t)
-	if _, err := c.Grant(me.caller("acme"), w.ID, other, me.grant(t, "acme", w.ID, 2, other), nil); !errors.Is(err, ErrDEKChanged) {
+	if _, err := me.grantSince(t, "acme", w.ID, 2, other, since).to(c, me.caller("acme"), w.ID, other); !errors.Is(err, ErrDEKChanged) {
 		t.Errorf("a signed grant of another DEK: %v", err)
 	}
 
@@ -187,14 +269,23 @@ func TestReGrantsChangeTheDevicesButNeverTheDEK(t *testing.T) {
 		t.Errorf("an admin device before it is named: %d", code)
 	}
 
-	// Name the admin device, with its wrap of the DEK.
-	body, _ := json.Marshal(map[string]any{"v": 1, "dek": dek[:], "grant": me.grant(t, "acme", w.ID, 2, dek, me, admin), "wraps": map[string][]byte{admin.id(): []byte("wrapped to admin")}})
-	if code, out := do(t, srv(me), "POST", "/v1/workers/"+w.ID+"/grant", string(body)); code != http.StatusOK || out["grantSeq"] != 2.0 || len(out["devices"].([]any)) != 2 || out["wrap"] != nil {
+	// A version 1 body, with no inclusions, is refused.
+	v1, _ := json.Marshal(map[string]any{"v": 1, "dek": dek[:], "grant": me.grantSince(t, "acme", w.ID, 2, dek, since, me, admin).token})
+	if code, _ := do(t, srv(me), "POST", "/v1/workers/"+w.ID+"/grant", string(v1)); code != http.StatusBadRequest {
+		t.Errorf("a version 1 grant: %d", code)
+	}
+	// Name the admin device, which signs its inclusion for grant 2.
+	body := me.grantSince(t, "acme", w.ID, 2, dek, since, me, admin).body(dek)
+	if code, out := do(t, srv(me), "POST", "/v1/workers/"+w.ID+"/grant", body); code != http.StatusOK || out["grantSeq"] != 2.0 || len(out["devices"].([]any)) != 2 || len(out["inclusions"].([]any)) != 2 {
 		t.Fatalf("naming an admin: %d %v", code, out)
 	}
 	code, out := do(t, adminAPI, "GET", "/v1/workers/"+w.ID, "")
-	if code != http.StatusOK || out["wrap"] != base64.StdEncoding.EncodeToString([]byte("wrapped to admin")) {
+	if code != http.StatusOK {
 		t.Fatalf("the admin's view: %d %v", code, out)
+	}
+	wrap, _ := base64.StdEncoding.DecodeString(out["wrap"].(string))
+	if got, err := OpenWrap(admin.enc.Bytes(), "acme", w.ID, admin.id(), out["dekCommitment"].(string), wrap); err != nil || got != dek {
+		t.Fatalf("the admin's wrap: %v", err)
 	}
 	if code, _ := do(t, adminAPI, "PUT", "/v1/workers/"+w.ID+"/root/instructions.md", "from the admin"); code != http.StatusNoContent {
 		t.Errorf("the admin's write: %d", code)
@@ -206,7 +297,7 @@ func TestReGrantsChangeTheDevicesButNeverTheDEK(t *testing.T) {
 	}
 
 	// The admin removes the first device.
-	if code, out := do(t, adminAPI, "POST", "/v1/workers/"+w.ID+"/grant", admin.grantBody(t, "acme", w.ID, 3, dek)); code != http.StatusOK {
+	if code, out := do(t, adminAPI, "POST", "/v1/workers/"+w.ID+"/grant", admin.grantSince(t, "acme", w.ID, 3, dek, map[string]uint64{admin.id(): 2}).body(dek)); code != http.StatusOK {
 		t.Fatalf("the admin's grant: %d %v", code, out)
 	}
 	if code, _ := do(t, srv(me), "GET", "/v1/workers/"+w.ID, ""); code != http.StatusNotFound {
@@ -235,7 +326,7 @@ func TestRevokeMovesTheWorkerBack(t *testing.T) {
 	me, admin := newTestDevice(t), newTestDevice(t)
 	dek := mustDEK(t)
 	w := granted(t, c, me, dek)
-	if _, err := c.Grant(me.caller("acme"), w.ID, dek, me.grant(t, "acme", w.ID, 2, dek, me, admin), nil); err != nil {
+	if _, err := me.grantSince(t, "acme", w.ID, 2, dek, map[string]uint64{me.id(): 1}, me, admin).to(c, me.caller("acme"), w.ID, dek); err != nil {
 		t.Fatal(err)
 	}
 	c.PutFile(w.ID, "instructions.md", []byte("be brief"))
@@ -380,7 +471,7 @@ func TestARequestRacingARegrantThatRemovesItsDeviceFails(t *testing.T) {
 	me, admin := newTestDevice(t), newTestDevice(t)
 	dek := mustDEK(t)
 	w := granted(t, c, me, dek)
-	if _, err := c.Grant(me.caller("acme"), w.ID, dek, me.grant(t, "acme", w.ID, 2, dek, me, admin), nil); err != nil {
+	if _, err := me.grantSince(t, "acme", w.ID, 2, dek, map[string]uint64{me.id(): 1}, me, admin).to(c, me.caller("acme"), w.ID, dek); err != nil {
 		t.Fatal(err)
 	}
 	c.PutFile(w.ID, "instructions.md", []byte("be brief"))
@@ -450,7 +541,7 @@ func TestUngrantedWorkersAreCappedAndExpire(t *testing.T) {
 	// A granted worker no longer counts.
 	dek := mustDEK(t)
 	me := devices[0]
-	if _, err := c.Grant(me.caller("acme"), first.ID, dek, me.grant(t, "acme", first.ID, 1, dek), nil); err != nil {
+	if _, err := me.grant(t, "acme", first.ID, 1, dek).to(c, me.caller("acme"), first.ID, dek); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := c.CreateWorkerFor(me.caller("acme")); err != nil {
@@ -467,7 +558,7 @@ func TestUngrantedWorkersAreCappedAndExpire(t *testing.T) {
 		}
 	}
 	c.mu.Unlock()
-	if _, err := c.Grant(me.caller("acme"), stale, dek, me.grant(t, "acme", stale, 1, dek), nil); !errors.Is(err, ErrNoWorker) {
+	if _, err := me.grant(t, "acme", stale, 1, dek).to(c, me.caller("acme"), stale, dek); !errors.Is(err, ErrNoWorker) {
 		t.Errorf("granting an expired worker: %v", err)
 	}
 	c.ExpireUngranted()
