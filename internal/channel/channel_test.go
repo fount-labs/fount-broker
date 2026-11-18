@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -97,17 +98,23 @@ func spki(t *testing.T, k *rsa.PrivateKey) string {
 // given, and returns its origin.
 func coordinator(t *testing.T, side *link.Side) string {
 	t.Helper()
+	return serve(t, &Server{Key: side.Key, Attester: side.Attester, Handler: func(p Peer) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, p.Account+" "+r.Method+" "+r.URL.RequestURI())
+		})
+	}})
+}
+
+// serve starts s, with fount-infra's key, and returns its origin.
+func serve(t *testing.T, s *Server) string {
+	t.Helper()
 	keys, err := ParseAccountKeys(spki(t, accountKey(t, 0)))
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.AccountKeys = keys
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	s := &Server{Key: side.Key, Attester: side.Attester, AccountKeys: keys, Handler: func(p Peer) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			io.WriteString(w, p.Account+" "+r.Method+" "+r.URL.RequestURI())
-		})
-	}}
 	h, err := s.Start(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -355,6 +362,115 @@ func TestParseAccountKeys(t *testing.T) {
 	for _, bad := range []string{"", "not base64", base64.StdEncoding.EncodeToString(der)} {
 		if _, err := ParseAccountKeys(bad); err == nil {
 			t.Errorf("%q parsed", bad)
+		}
+	}
+}
+
+// A request on a channel when the account changes finishes as the old
+// account's, and that channel never carries another.
+func TestResetRetiresAChannelInFlight(t *testing.T) {
+	side := unattested(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	origin := serve(t, &Server{Key: side.Key, Attester: side.Attester, Handler: func(p Peer) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/files") {
+				close(started)
+				<-release
+			}
+			io.WriteString(w, p.Account)
+		})
+	}})
+	a := newDevice(t, "acct_a").identity(t, accountKey(t, 0), time.Hour)
+	b := newDevice(t, "acct_b").identity(t, accountKey(t, 0), time.Hour)
+	var mu sync.Mutex
+	current := a
+	c := &Client{Origin: origin, Check: side.Check, Identity: func() (Identity, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return current, nil
+	}}
+	get := func(target string) string {
+		resp, err := c.Do(context.Background(), "GET", target, nil)
+		if err != nil {
+			t.Error(err)
+			return ""
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return string(body)
+	}
+	worker := "v1/workers/w_0123456789abcdef01234567"
+	if got := get(worker); got != "acct_a" {
+		t.Fatalf("before: %q", got)
+	}
+	inFlight := make(chan string)
+	go func() { inFlight <- get(worker + "/files") }()
+	<-started
+	mu.Lock()
+	current = b
+	mu.Unlock()
+	c.Reset()
+	// A request while the old one is still in flight.
+	if got := get(worker); got != "acct_b" {
+		t.Errorf("during: %q", got)
+	}
+	close(release)
+	if got := <-inFlight; got != "acct_a" {
+		t.Errorf("in flight: %q", got)
+	}
+	// Its channel goes back to a pool once the body is read.
+	time.Sleep(100 * time.Millisecond)
+	for i := range 4 {
+		if got := get(worker); got != "acct_b" {
+			t.Errorf("request %d after the switch: %q", i, got)
+		}
+	}
+}
+
+// slowAttester takes a while, as the attestation socket can after boot.
+type slowAttester struct {
+	link.Attester
+	delay time.Duration
+}
+
+func (a slowAttester) Attest(ctx context.Context, nonce []byte) ([]byte, error) {
+	time.Sleep(a.delay)
+	return a.Attester.Attest(ctx, nonce)
+}
+
+// Connections that never start TLS hold their slots for a step, not the
+// whole handshake; a client behind them waits for one, and the coordinator's
+// own slow attestation isn't held against it.
+func TestIdleConnectionsDontLockOutClients(t *testing.T) {
+	side := unattested(t)
+	origin := serve(t, &Server{
+		Key: side.Key, Attester: slowAttester{side.Attester, 600 * time.Millisecond},
+		Handler:       func(p Peer) http.Handler { return http.NotFoundHandler() },
+		MaxHandshakes: 2, stepTimeout: 300 * time.Millisecond, slotWait: 5 * time.Second,
+	})
+	var idle []net.Conn
+	for range 4 {
+		conn, err := link.DialUpgrade(context.Background(), origin, Path, Protocol)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		idle = append(idle, conn)
+	}
+	d := newDevice(t, "acct_1")
+	start := time.Now()
+	conn, _, err := client(origin, side.Check, d.identity(t, accountKey(t, 0), time.Hour)).Dial(context.Background())
+	if err != nil {
+		t.Fatalf("after %s: %v", time.Since(start), err)
+	}
+	conn.Close()
+	if took := time.Since(start); took > 4*time.Second {
+		t.Errorf("the handshake took %s", took)
+	}
+	for i, conn := range idle {
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if _, err := conn.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+			t.Errorf("idle connection %d: %v", i, err)
 		}
 	}
 }

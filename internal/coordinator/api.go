@@ -21,7 +21,7 @@ import (
 //	POST /v0/workers/{id}/jobs            a JobSpec: queue a job
 //	GET  /v0/jobs/{id}                    a job's state
 func (c *Coordinator) Handler() http.Handler {
-	a := &api{c: c}
+	a := &api{c: c, dev: true}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v0/workers", a.createWorker)
 	a.routes(mux, "/v0")
@@ -36,7 +36,13 @@ func (c *Coordinator) Handler() http.Handler {
 //	POST /v1/workers                      {"dek"?}: take in a worker for this account
 //	GET  /v1/workers                      this account's workers
 //	POST /v1/workers/{id}/grant           {"v":1,"dek"}: the DEK grant (§3.1 step 4); not built, 501
+//
+// An empty account panics: it would be no account's API, and never the dev
+// API's every account.
 func (c *Coordinator) AccountHandler(account string) http.Handler {
+	if account == "" {
+		panic("coordinator: AccountHandler for no account")
+	}
 	a := &api{c: c, account: account}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/workers", a.createWorker)
@@ -46,10 +52,11 @@ func (c *Coordinator) AccountHandler(account string) http.Handler {
 	return mux
 }
 
-// api serves both. account is empty for the dev API, which takes the account
-// from the request; otherwise every worker it touches must be that account's.
+// api serves both. dev is the dev API, which takes the account from the
+// request; otherwise every worker it touches must be account's.
 type api struct {
 	c       *Coordinator
+	dev     bool
 	account string
 }
 
@@ -73,7 +80,7 @@ func (a *api) workerByID(id string) (Worker, error) {
 	if err != nil {
 		return Worker{}, err
 	}
-	if a.account != "" && w.Account != a.account {
+	if !a.dev && w.Account != a.account {
 		return Worker{}, ErrNoWorker
 	}
 	return w, nil
@@ -100,7 +107,7 @@ func (a *api) createWorker(rw http.ResponseWriter, r *http.Request) {
 	var dekField []byte
 	account := a.account
 	var err error
-	if a.account == "" {
+	if a.dev {
 		var req struct {
 			Account string `json:"account"`
 			DEK     []byte `json:"dek"`

@@ -60,6 +60,15 @@ const (
 // socket can take a while to answer after boot.
 const HandshakeTimeout = time.Minute
 
+// The coordinator gives an unauthenticated client StepTimeout for each of its
+// steps, TLS and the hello, and DocumentTimeout to take the document, so a
+// client that stalls holds a handshake slot for seconds; only the
+// coordinator's own wait for the attestation socket has HandshakeTimeout.
+const (
+	StepTimeout     = 10 * time.Second
+	DocumentTimeout = 30 * time.Second
+)
+
 var (
 	// ErrCoordinator is a coordinator that didn't prove it runs a release of
 	// the pinned repo. Nothing was sent to it.

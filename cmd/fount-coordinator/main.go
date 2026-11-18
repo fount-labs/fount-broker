@@ -47,11 +47,12 @@
 // vault's key lives in memory only, and a coordinator waits for a vault before
 // it loads the volume. It refuses --test-api. --status-listen serves /health and /status, which
 // says where the key came from, on an address the shim can reach; vault needs
-// it, and the healthcheck must point at it, since the API's /health answers
-// only once the key has come.
+// it or --client-listen, which serves both too, and the healthcheck must point
+// at one, since the API's /health answers only once the key has come.
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -156,7 +157,9 @@ func run() error {
 			return err
 		}
 	}
-	keys := keyFlags{mode: *keyMode, dir: *dir, vaults: *vaults, vaultRepo: *vaultRepo, commitment: *commitment, testAPI: *test, statusListen: *statusListen}
+	// --client-listen serves /health and /status too, so it does for vault's
+	// --status-listen.
+	keys := keyFlags{mode: *keyMode, dir: *dir, vaults: *vaults, vaultRepo: *vaultRepo, commitment: *commitment, testAPI: *test, statusListen: cmp.Or(*statusListen, *clientListen)}
 	if err := keys.check(); err != nil {
 		return err
 	}

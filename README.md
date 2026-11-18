@@ -232,9 +232,9 @@ go run ./cmd/fount-coordinator --dir /tmp/coordinator --wrapping-key dev -- scri
 `--wrapping-key` defaults to `vault`: the key that wraps every worker's data
 key comes from Fount Cloud's vault pair, in memory only, and the coordinator
 waits for a vault before it loads anything. Vault mode refuses `--test-api` and
-needs `--status-listen`, which serves `/health` and `/status` while it waits;
-point the healthcheck there, since the API's `/health` answers only once the
-key has come. Test coordinators and the dev build say `--wrapping-key dev`, a
+needs `--status-listen`, which serves `/health` and `/status` while it waits,
+or `--client-listen`, which serves them too; point the healthcheck there, since
+the API's `/health` answers only once the key has come. Test coordinators and the dev build say `--wrapping-key dev`, a
 key file in `--dir`.
 
 Its parse surfaces are the JobSpec and the API's small JSON bodies. File

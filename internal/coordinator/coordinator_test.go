@@ -483,3 +483,13 @@ func TestTheAccountAPIServesOnlyItsAccount(t *testing.T) {
 		t.Errorf("other's workers: %v", list)
 	}
 }
+
+func TestAnAccountAPIForNoAccountPanics(t *testing.T) {
+	c, _ := newTestCoordinator(t, "ok", 0)
+	defer func() {
+		if recover() == nil {
+			t.Error("AccountHandler(\"\") made a handler")
+		}
+	}()
+	c.AccountHandler("")
+}

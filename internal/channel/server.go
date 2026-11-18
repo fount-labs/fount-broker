@@ -29,10 +29,18 @@ type Server struct {
 	// Handler serves one client's requests, for the account it proved.
 	Handler func(Peer) http.Handler
 	// MaxHandshakes bounds handshakes in progress, each of which asks the
-	// attestation socket for a document; more are dropped. 0 is 16.
+	// attestation socket for a document; a connection beyond them waits
+	// SlotWait for one, then is dropped. 0 is 16.
 	MaxHandshakes int
 	Now           func() time.Time
+
+	// stepTimeout, documentTimeout and slotWait stand in for StepTimeout,
+	// DocumentTimeout and SlotWait in tests.
+	stepTimeout, documentTimeout, slotWait time.Duration
 }
+
+// SlotWait is how long a new connection waits for a handshake slot.
+const SlotWait = 5 * time.Second
 
 // Start serves channels until ctx ends, and returns the handler for Path,
 // which takes each upgrade.
@@ -67,19 +75,25 @@ func (s *Server) Start(ctx context.Context) (http.Handler, error) {
 		max = 16
 	}
 	slots := make(chan struct{}, max)
+	wait := or(s.slotWait, SlotWait)
 	go func() {
 		for {
 			raw, err := up.Accept()
 			if err != nil {
 				return
 			}
-			select {
-			case slots <- struct{}{}:
-			default:
-				raw.Close()
-				continue
-			}
 			go func() {
+				t := time.NewTimer(wait)
+				defer t.Stop()
+				select {
+				case slots <- struct{}{}:
+				case <-t.C:
+					raw.Close()
+					return
+				case <-ctx.Done():
+					raw.Close()
+					return
+				}
 				defer func() { <-slots }()
 				c, err := s.handshake(ctx, cert, raw)
 				if err != nil {
@@ -100,6 +114,13 @@ func (s *Server) Start(ctx context.Context) (http.Handler, error) {
 
 type handlerKey struct{}
 
+func or(d, def time.Duration) time.Duration {
+	if d > 0 {
+		return d
+	}
+	return def
+}
+
 // errQuiet marks failures not worth a log line: TLS from scanners, and
 // clients that hung up.
 var errQuiet = errors.New("quiet")
@@ -109,6 +130,8 @@ func (s *Server) handshake(ctx context.Context, cert tls.Certificate, raw net.Co
 	defer cancel()
 	stop := context.AfterFunc(ctx, func() { raw.Close() })
 	defer stop()
+	step, docTime := or(s.stepTimeout, StepTimeout), or(s.documentTimeout, DocumentTimeout)
+	raw.SetDeadline(time.Now().Add(step))
 	tc := tls.Server(raw, &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}})
 	if err := tc.HandshakeContext(ctx); err != nil {
 		return nil, fmt.Errorf("%w: TLS: %v", errQuiet, err)
@@ -122,13 +145,17 @@ func (s *Server) handshake(ctx context.Context, cert tls.Certificate, raw net.Co
 	if err != nil {
 		return nil, err
 	}
+	// The client has nothing to do while the attestation socket answers.
+	raw.SetDeadline(time.Time{})
 	doc, err := s.Attester.Attest(ctx, nonce)
 	if err != nil {
 		return nil, fmt.Errorf("attesting: %w", err)
 	}
+	raw.SetDeadline(time.Now().Add(docTime))
 	if err := writeMsg(tc, doc); err != nil {
 		return nil, fmt.Errorf("%w: %v", errQuiet, err)
 	}
+	raw.SetDeadline(time.Now().Add(step))
 	raw2, err := readMsg(tc, maxHello)
 	if err != nil {
 		return nil, fmt.Errorf("%w: the hello: %v", errQuiet, err)
@@ -157,6 +184,7 @@ func (s *Server) handshake(ctx context.Context, cert tls.Certificate, raw net.Co
 	if !stop() || ctx.Err() != nil {
 		return nil, fmt.Errorf("%w: %v", errQuiet, context.DeadlineExceeded)
 	}
+	raw.SetDeadline(time.Time{})
 	c := &serverConn{Conn: tc, handler: s.Handler(peer)}
 	c.expiry = time.AfterFunc(peer.Expires.Sub(now()), func() { tc.Close() })
 	return c, nil

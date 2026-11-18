@@ -33,8 +33,11 @@ type Client struct {
 	// takes effect on the next one.
 	Identity func() (Identity, error)
 
-	once sync.Once
-	http *http.Client
+	// mu guards transport, the pool of channels for the current identity,
+	// which Reset replaces.
+	mu        sync.Mutex
+	transport *http.Transport
+	http      *http.Client
 }
 
 // Dial opens a channel and returns it, ready for HTTP, with the peer the
@@ -147,22 +150,42 @@ const host = "coordinator"
 // HTTP is a client whose connections are channels. Idle ones are kept, so a
 // run of requests pays for one handshake.
 func (c *Client) HTTP() *http.Client {
-	c.once.Do(func() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.http == nil {
 		c.http = &http.Client{
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					conn, _, err := c.Dial(ctx)
-					return conn, err
-				},
-				ForceAttemptHTTP2:   false,
-				MaxIdleConnsPerHost: 2,
-				IdleConnTimeout:     10 * time.Minute,
-				DisableCompression:  true,
-			},
+			Transport:     currentTransport{c},
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		}
-	})
+	}
 	return c.http
+}
+
+// currentTransport sends each request on the pool Reset last left, so a
+// channel dialled before a Reset never carries a request after it.
+type currentTransport struct{ c *Client }
+
+func (t currentTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return t.c.current().RoundTrip(r)
+}
+
+func (c *Client) current() *http.Transport {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.transport == nil {
+		c.transport = &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				conn, _, err := c.Dial(ctx)
+				return conn, err
+			},
+			ForceAttemptHTTP2:   false,
+			MaxConnsPerHost:     4,
+			MaxIdleConnsPerHost: 2,
+			IdleConnTimeout:     10 * time.Minute,
+			DisableCompression:  true,
+		}
+	}
+	return c.transport
 }
 
 // Do sends one request of the account API: method and target as Check
@@ -179,7 +202,16 @@ func (c *Client) Do(ctx context.Context, method, target string, body []byte) (*h
 	return c.HTTP().Do(req)
 }
 
-// Reset drops idle channels, for example after the credentials change.
+// Reset starts a new pool of channels, for example after the credentials
+// change: the next request dials with the identity then current. The old
+// pool's idle channels close; one carrying a request finishes it and is
+// never used again, closing when it idles out or its proof expires.
 func (c *Client) Reset() {
-	c.HTTP().CloseIdleConnections()
+	c.mu.Lock()
+	old := c.transport
+	c.transport = nil
+	c.mu.Unlock()
+	if old != nil {
+		old.CloseIdleConnections()
+	}
 }
