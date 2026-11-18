@@ -16,7 +16,7 @@ TOKEN_FILE="${FOUNT_TEST_API_TOKEN_FILE:-$HOME/.config/fount/test-api-token}"
 ROOT="${FOUNT_ROOT:-$HOME/Desktop/code/fount}"
 FIXTURES="$ROOT/src-tauri/crates/fount-runner/tests/fixtures"
 SMOKE="${SMOKE:-1}"
-RAMP="${RAMP:-8 16 24 32}"
+RAMP="${RAMP-8 16 24 32}"
 ACCOUNT="acct_drive_$(date +%s)"
 [ -s "$TOKEN_FILE" ] || { echo "no token in $TOKEN_FILE" >&2; exit 1; }
 HEADERS="$(mktemp)"
@@ -62,7 +62,10 @@ summary() {
   python3 -c '
 import json, sys
 j = json.load(sys.stdin)
-steps = ", ".join(f"{s[\"mode\"]} {s[\"seconds\"]:.1f}s {s[\"peakMiB\"]} MiB" + (f" {s[\"oomKills\"]} OOM" if s.get("oomKills") else "") for s in j.get("steps", []))
+def step(s):
+    oom = " %d OOM" % s["oomKills"] if s.get("oomKills") else ""
+    return "%s %.1fs %d MiB%s" % (s["mode"], s["seconds"], s["peakMiB"], oom)
+steps = ", ".join(step(s) for s in j.get("steps", []))
 print(j["state"], j.get("error", ""), "|", steps)'
 }
 
@@ -142,6 +145,12 @@ for mode in ("index", "agent"):
     if ss:
         secs, peaks = [s["seconds"] for s in ss], [s["peakMiB"] for s in ss]
         print(f"  {mode}: {len(ss)} steps, p50 {pct(secs, 50):.1f}s p95 {pct(secs, 95):.1f}s, peak p95 {pct(peaks, 95)} MiB max {max(peaks)} MiB")
+from datetime import datetime
+def t(v): return datetime.fromisoformat(v.replace("Z", "+00:00"))
+waits = [(t(j["started"]) - t(j["queued"])).total_seconds() for j in jobs if j.get("started")]
+latency = [(t(j["ended"]) - t(j["queued"])).total_seconds() for j in jobs if j.get("ended")]
+if latency:
+    print(f"  queued to ended: p50 {pct(latency, 50):.1f}s p95 {pct(latency, 95):.1f}s max {max(latency):.1f}s; queue wait max {max(waits):.1f}s")
 oom = sum(s.get("oomKills", 0) for s in steps)
 print(f"{n} at once: {wall}s wall, {len(failed)} failed, {oom} OOM kills")
 for j in failed:
