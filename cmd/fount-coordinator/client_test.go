@@ -72,7 +72,7 @@ func TestDesktopReachesItsAccountOverTheChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	var ready atomic.Pointer[http.Handler]
-	srv := httptest.NewServer(clientAPI(statusAPI(&keyStatus{Mode: keyDev, State: "waiting"}), &ready))
+	srv := httptest.NewServer(clientAPI(statusAPI(&keyStatus{Mode: keyDev, State: "waiting"}, &atomic.Pointer[coordinator.Coordinator]{}), &ready))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + channel.Path)

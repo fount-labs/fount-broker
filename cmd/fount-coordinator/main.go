@@ -3,7 +3,7 @@
 // local runner command. See package coordinator for what isn't built yet.
 //
 //	fount-coordinator --dir <folder> --wrapping-key dev [--listen 127.0.0.1:8790] [--runners 2] [--slots 2]
-//	  [--job-timeout 30m] -- <runner command...>
+//	  [--account-jobs 12] [--job-timeout 30m] -- <runner command...>
 //	fount-coordinator --dir <folder> [flags] --runner-addr https://<domain> --runner-repo <owner/repo>
 //	  [--credentials <file.json>] [--wrapping-key dev --test-api --listen 0.0.0.0:8790]
 //	  [--wrapping-key vault --vaults <host,host> --vault-repo <owner/repo> --keyset-commitment <hex>
@@ -105,6 +105,7 @@ func run() error {
 	listen := flag.String("listen", "127.0.0.1:8790", "loopback address for the dev API, with --wrapping-key dev")
 	runners := flag.Int("runners", 2, "runners in the pool")
 	slots := flag.Int("slots", 2, "jobs at once per runner")
+	accountJobs := flag.Int("account-jobs", 12, "jobs at once per account, which share its inference key's rate limit; more wait in the queue; 0 for no cap")
 	timeout := flag.Duration("job-timeout", 30*time.Minute, "longest a job may run")
 	runnerAddr := flag.String("runner-addr", "", "a runner enclave broker's origin, https://<domain>, in place of a runner command")
 	credentials := flag.String("credentials", "", "JSON file of every job's broker credentials, with --runner-addr")
@@ -123,6 +124,9 @@ func run() error {
 	flag.Parse()
 	if *dir == "" || (flag.NArg() == 0) == (*runnerAddr == "") {
 		return errors.New("usage: fount-coordinator --dir <folder> [flags] (-- <runner command...> | --runner-addr <host:port>)")
+	}
+	if *accountJobs < 0 {
+		return fmt.Errorf("--account-jobs %d: a cap of 1 or more, or 0 for none", *accountJobs)
 	}
 	var runner coordinator.Runner = coordinator.LocalRunner{Command: flag.Args(), Timeout: *timeout}
 	var mint func(account, workerID, jobID string) (map[string]string, error)
@@ -188,12 +192,13 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	status := &keyStatus{Mode: keys.mode, State: "waiting", Since: time.Now().UTC()}
+	var jobs atomic.Pointer[coordinator.Coordinator]
 	if *statusListen != "" {
 		statusLn, err := net.Listen("tcp", *statusListen)
 		if err != nil {
 			return fmt.Errorf("--status-listen: %w", err)
 		}
-		serveBeyond(ctx, stop, "status", statusLn, statusAPI(status))
+		serveBeyond(ctx, stop, "status", statusLn, statusAPI(status, &jobs))
 	}
 	var channelReady atomic.Pointer[http.Handler]
 	if clients != nil {
@@ -201,7 +206,7 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("--client-listen: %w", err)
 		}
-		serveBeyond(ctx, stop, "client channel", clientLn, clientAPI(statusAPI(status), &channelReady))
+		serveBeyond(ctx, stop, "client channel", clientLn, clientAPI(statusAPI(status, &jobs), &channelReady))
 	}
 	key, err := wrappingKey(ctx, keys, status)
 	if err != nil {
@@ -220,10 +225,12 @@ func run() error {
 
 		Credentials: mint,
 		Audience:    *audience,
+		AccountJobs: *accountJobs,
 	})
 	if err != nil {
 		return err
 	}
+	jobs.Store(c)
 
 	if clients != nil {
 		clients.Handler = handler(c)

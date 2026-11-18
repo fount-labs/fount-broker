@@ -49,6 +49,10 @@ type Config struct {
 	// Audience is the name grants and inclusions must give the coordinator
 	// (grant.go): its origin over the client channel. Empty takes none.
 	Audience string
+	// AccountJobs caps an account's running jobs, so its jobs together stay
+	// under the model rate limit of its one inference key. Jobs past it wait
+	// in the queue. 0 is no cap.
+	AccountJobs int
 }
 
 type Coordinator struct {
@@ -59,6 +63,8 @@ type Coordinator struct {
 	// busy is the workers with a running job: a worker runs one job at a time
 	// (fount-mail.md decision 51).
 	busy map[string]bool
+	// accountJobs counts each account's running jobs, for Config.AccountJobs.
+	accountJobs map[string]int
 	// locks serialize changes to each worker's tree.
 	locks map[string]*sync.Mutex
 	wake  chan struct{}
@@ -83,7 +89,7 @@ func New(cfg Config) (*Coordinator, error) {
 	if err := checkKey(cfg.Key, state); err != nil {
 		return nil, err
 	}
-	c := &Coordinator{cfg: cfg, state: state, busy: map[string]bool{}, locks: map[string]*sync.Mutex{}, wake: make(chan struct{}, 1)}
+	c := &Coordinator{cfg: cfg, state: state, busy: map[string]bool{}, accountJobs: map[string]int{}, locks: map[string]*sync.Mutex{}, wake: make(chan struct{}, 1)}
 	if err := c.state.Save(cfg.StateDir); err != nil {
 		return nil, err
 	}
@@ -303,8 +309,10 @@ func (c *Coordinator) Run(ctx context.Context) {
 	}
 }
 
-// schedule starts every queued job that can start, oldest first: its worker has
-// no running job and its account can get a runner slot.
+// schedule starts every queued job that can start: its worker has no running
+// job, its account is under Config.AccountJobs and can get a runner slot. Each
+// slot goes to the account with the fewest jobs running, then the oldest job,
+// so an account with a long queue takes turns with the others.
 func (c *Coordinator) schedule(ctx context.Context) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -315,13 +323,19 @@ func (c *Coordinator) schedule(ctx context.Context) {
 		}
 	}
 	slices.SortFunc(queued, func(a, b *Job) int { return cmp.Compare(a.Seq, b.Seq) })
-	for _, j := range queued {
-		w := c.state.Workers[j.WorkerID]
-		if c.busy[j.WorkerID] {
-			continue
+	// noSlot is the accounts the pool had no slot for in this pass.
+	noSlot := map[string]bool{}
+	for {
+		i := c.next(queued, noSlot)
+		if i < 0 {
+			return
 		}
+		j := queued[i]
+		queued = slices.Delete(queued, i, i+1)
+		w := c.state.Workers[j.WorkerID]
 		runner, ok := c.cfg.Pool.Acquire(w.Account)
 		if !ok {
+			noSlot[w.Account] = true
 			continue
 		}
 		spec := *j.Spec
@@ -330,9 +344,78 @@ func (c *Coordinator) schedule(ctx context.Context) {
 			log.Printf("save state: %v", err)
 		}
 		c.busy[j.WorkerID] = true
+		c.accountJobs[w.Account]++
 		c.running.Add(1)
 		go c.execute(ctx, *j, *w, spec)
 	}
+}
+
+// next is the index of the queued job to start next, or -1 for none. queued is
+// oldest first.
+func (c *Coordinator) next(queued []*Job, noSlot map[string]bool) int {
+	best, bestRunning := -1, 0
+	for i, j := range queued {
+		account := c.state.Workers[j.WorkerID].Account
+		running := c.accountJobs[account]
+		switch {
+		case c.busy[j.WorkerID], noSlot[account]:
+		case c.cfg.AccountJobs > 0 && running >= c.cfg.AccountJobs:
+		case best < 0 || running < bestRunning:
+			best, bestRunning = i, running
+		}
+	}
+	return best
+}
+
+// Load is the queue by account: what /status shows. It names no account.
+type Load struct {
+	// AccountJobs is Config.AccountJobs, 0 for no cap.
+	AccountJobs int           `json:"account_jobs"`
+	Running     int           `json:"running"`
+	Queued      int           `json:"queued"`
+	Accounts    []AccountLoad `json:"accounts"`
+}
+
+type AccountLoad struct {
+	Running int `json:"running"`
+	Queued  int `json:"queued"`
+}
+
+// Load counts the running and queued jobs of each account with either, the
+// busiest first.
+func (c *Coordinator) Load() Load {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	by := map[string]*AccountLoad{}
+	l := Load{AccountJobs: c.cfg.AccountJobs, Accounts: []AccountLoad{}}
+	for _, j := range c.state.Jobs {
+		if j.State != JobQueued && j.State != JobRunning {
+			continue
+		}
+		w := c.state.Workers[j.WorkerID]
+		if w == nil {
+			continue
+		}
+		a := by[w.Account]
+		if a == nil {
+			a = &AccountLoad{}
+			by[w.Account] = a
+		}
+		if j.State == JobRunning {
+			a.Running++
+			l.Running++
+		} else {
+			a.Queued++
+			l.Queued++
+		}
+	}
+	for _, a := range by {
+		l.Accounts = append(l.Accounts, *a)
+	}
+	slices.SortFunc(l.Accounts, func(a, b AccountLoad) int {
+		return cmp.Or(cmp.Compare(b.Running, a.Running), cmp.Compare(b.Queued, a.Queued))
+	})
+	return l
 }
 
 func (c *Coordinator) execute(ctx context.Context, job Job, w Worker, spec JobSpec) {
@@ -356,6 +439,9 @@ func (c *Coordinator) execute(ctx context.Context, job Job, w Worker, spec JobSp
 		j.State = JobFinished
 	}
 	delete(c.busy, w.ID)
+	if c.accountJobs[w.Account]--; c.accountJobs[w.Account] <= 0 {
+		delete(c.accountJobs, w.Account)
+	}
 	if serr := c.state.Save(c.cfg.StateDir); serr != nil {
 		log.Printf("save state: %v", serr)
 	}
