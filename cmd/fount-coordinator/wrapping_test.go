@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -61,7 +62,8 @@ func TestKeyFlags(t *testing.T) {
 
 func TestStatusNamesTheKeyButNeverShowsIt(t *testing.T) {
 	s := &keyStatus{Mode: keyVault, State: "waiting", Since: time.Now().UTC()}
-	h := statusAPI(s)
+	var jobs atomic.Pointer[coordinator.Coordinator]
+	h := statusAPI(s, &jobs)
 	get := func(path string) (int, string) {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
@@ -104,6 +106,33 @@ func TestStatusNamesTheKeyButNeverShowsIt(t *testing.T) {
 	}
 	if code, _ := get("/v0/jobs/x"); code != 404 {
 		t.Fatalf("the status listener serves the API: %d", code)
+	}
+
+	dir := t.TempDir()
+	c, err := coordinator.New(coordinator.Config{
+		StateDir: dir + "/state", WorkDir: dir + "/work", Store: coordinator.DirStore{Root: dir + "/objects"},
+		Key: key, Pool: coordinator.NewPool(1, 1, nil), Runner: coordinator.LocalRunner{Command: []string{"false"}}, AccountJobs: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, _ := c.CreateWorker("acct_secret", nil)
+	if _, err := c.Enqueue(w.ID, coordinator.JobSpec{ThreadID: "t1", SessionID: "s1", Instruction: "hi", Config: json.RawMessage(`{"model":"m"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	jobs.Store(c)
+	_, body = get("/status")
+	var load struct {
+		Jobs coordinator.Load `json:"jobs"`
+	}
+	if err := json.Unmarshal([]byte(body), &load); err != nil {
+		t.Fatal(err)
+	}
+	if load.Jobs.AccountJobs != 3 || load.Jobs.Queued != 1 || len(load.Jobs.Accounts) != 1 || load.Jobs.Accounts[0].Queued != 1 {
+		t.Fatalf("jobs status: %s", body)
+	}
+	if strings.Contains(body, "acct_secret") || strings.Contains(body, w.ID) {
+		t.Fatalf("/status names an account or worker: %s", body)
 	}
 }
 

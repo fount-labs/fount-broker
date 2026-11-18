@@ -365,7 +365,7 @@ func TestGrantsAreForOneCoordinator(t *testing.T) {
 	for _, aud := range []string{"https://other.example", ""} {
 		cfg := c.cfg
 		cfg.Audience = aud
-		other := &Coordinator{cfg: cfg, state: c.state, busy: map[string]bool{}, locks: map[string]*sync.Mutex{}}
+		other := &Coordinator{cfg: cfg, state: c.state, busy: map[string]bool{}, accountJobs: map[string]int{}, locks: map[string]*sync.Mutex{}}
 		if _, err := g.to(other, me.caller("acme"), w.ID, dek); !errors.Is(err, ErrGrantRefused) {
 			t.Errorf("a grant on a coordinator of audience %q: %v", aud, err)
 		}

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fount-labs/fount-broker/internal/coordinator"
@@ -103,13 +104,18 @@ func (s *keyStatus) failed(err error) {
 // statusAPI is /health and /status, safe beyond loopback: neither carries user
 // data. /health answers while the coordinator waits for its key, since an
 // enclave that fails its boot gate is restarted, and that wouldn't bring the
-// vaults back.
-func statusAPI(s *keyStatus) http.Handler {
+// vaults back. Once the coordinator runs, /status counts its jobs by account,
+// naming none.
+func statusAPI(s *keyStatus, jobs *atomic.Pointer[coordinator.Coordinator]) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok\n") })
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
+		out := map[string]any{"wrapping_key": s}
+		if c := jobs.Load(); c != nil {
+			out["jobs"] = c.Load()
+		}
 		s.mu.Lock()
-		body, err := json.Marshal(map[string]any{"wrapping_key": s})
+		body, err := json.Marshal(out)
 		s.mu.Unlock()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
