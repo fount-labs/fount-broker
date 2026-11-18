@@ -17,8 +17,8 @@ import (
 )
 
 // threadRunner holds each agent job until the test releases it or the job is
-// cancelled, and keeps each job's prompt. A finished job leaves out.md in its
-// outputs.
+// cancelled, and keeps each job's prompt. A job leaves out.md in its outputs
+// and report.md at the top of the worker's files.
 type threadRunner struct {
 	mu      sync.Mutex
 	prompts []string
@@ -43,6 +43,7 @@ func (r *threadRunner) Run(ctx context.Context, _, _ string, job JobDirs) (RunRe
 	for _, out := range outputs {
 		os.WriteFile(filepath.Join(out, "out.md"), []byte("done"), fileMode)
 	}
+	os.WriteFile(filepath.Join(job.Workspace, "report.md"), []byte("report"), fileMode)
 	select {
 	case <-r.release:
 		return RunResult{}, nil
@@ -218,7 +219,7 @@ func TestAThreadFollowsItsJobs(t *testing.T) {
 		th.finish(1, at)
 		return th
 	}
-	none := func(string) []string { return nil }
+	none := func(string) jobFiles { return jobFiles{} }
 	follow := func(th *threadRecord, jobs map[string]jobView) bool {
 		t.Helper()
 		changed, err := th.followJobs(jobs, none, at)
@@ -319,6 +320,13 @@ func TestStartThreadRunsTheNoteAndRetriesByOpID(t *testing.T) {
 	}
 	if out := th.Entries[1].Outputs; len(out) != 1 || out[0] != "threads/"+tid+"/outputs/"+th.Jobs[0].ID+"/out.md" {
 		t.Errorf("outputs %v", out)
+	}
+	if proposed := th.Entries[1].Proposed; len(proposed) != 1 || proposed[0] != "report.md" {
+		t.Errorf("proposed %v", proposed)
+	}
+	turn, ok := th.display(0)[1].(turnView)
+	if !ok || len(turn.Files) != 2 || turn.Files[0].Name != "out.md" || turn.Files[1].Name != "report.md" {
+		t.Errorf("the turn shows %+v", th.display(0)[1])
 	}
 	list, err := c.threads(anyDevice, w.ID)
 	if err != nil || len(list) != 1 || list[0].ID != tid || list[0].Revision != 3 {

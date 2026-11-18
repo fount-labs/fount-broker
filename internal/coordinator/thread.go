@@ -103,11 +103,13 @@ type threadEntry struct {
 	Device string `json:"device,omitempty"`
 	Text   string `json:"text,omitempty"`
 	// A turn's job, its state and, once it ends, the files it left in the
-	// thread's outputs/<job id>/, by path in the worker root. A note names
-	// its job here too.
-	JobID   string   `json:"jobId,omitempty"`
-	State   string   `json:"state,omitempty"`
-	Outputs []string `json:"outputs,omitempty"`
+	// thread's outputs/<job id>/, by path in the worker root, and the files
+	// it proposed (jobs/<job id>/proposed/), by the path each would have. A
+	// note names its job here too.
+	JobID    string   `json:"jobId,omitempty"`
+	State    string   `json:"state,omitempty"`
+	Outputs  []string `json:"outputs,omitempty"`
+	Proposed []string `json:"proposed,omitempty"`
 	// An event's code and arguments: fixed text, filled in when shown.
 	Code string            `json:"code,omitempty"`
 	Args map[string]string `json:"args,omitempty"`
@@ -236,7 +238,12 @@ type jobView struct {
 // failed when it fails. A job the thread already saw end is never changed
 // again: a cancel the thread recorded stands even if the job finished first.
 // outputs lists a finished job's outputs. It reports whether anything changed.
-func (th *threadRecord) followJobs(jobs map[string]jobView, outputs func(jobID string) []string, now time.Time) (bool, error) {
+// jobFiles are what a finished job left: its outputs and its proposals.
+type jobFiles struct {
+	outputs, proposed []string
+}
+
+func (th *threadRecord) followJobs(jobs map[string]jobView, left func(jobID string) jobFiles, now time.Time) (bool, error) {
 	changed := false
 	for i := range th.Jobs {
 		j := &th.Jobs[i]
@@ -259,14 +266,16 @@ func (th *threadRecord) followJobs(jobs map[string]jobView, outputs func(jobID s
 			}
 		case cur.State == JobFinished && live == nil:
 			// It ran between two reads, so it was never seen running.
-			if _, err := th.push(rev, th.UpdatedAt, threadEntry{Kind: entryTurn, JobID: j.ID, State: turnDone, Outputs: outputs(j.ID)}); err != nil {
+			files := left(j.ID)
+			if _, err := th.push(rev, th.UpdatedAt, threadEntry{Kind: entryTurn, JobID: j.ID, State: turnDone, Outputs: files.outputs, Proposed: files.proposed}); err != nil {
 				return changed, err
 			}
 		case live != nil && cur.State != JobRunning:
 			live.Rev = rev
 			switch cur.State {
 			case JobFinished:
-				live.State, live.Outputs = turnDone, outputs(j.ID)
+				files := left(j.ID)
+				live.State, live.Outputs, live.Proposed = turnDone, files.outputs, files.proposed
 			case JobFailed:
 				live.State = turnFailed
 			case JobCancelled:
@@ -319,14 +328,20 @@ func (c *Coordinator) follow(t *Tree, th *threadRecord) (bool, error) {
 		}
 	}
 	c.mu.Unlock()
-	outputs := func(jobID string) []string {
-		var out []string
+	// A job's results are kept before it is marked finished, so they are
+	// here when its turn ends.
+	left := func(jobID string) jobFiles {
+		var f jobFiles
 		for _, p := range t.List(prefixRoot + "threads/" + th.ID + "/outputs/" + jobID + "/") {
-			out = append(out, strings.TrimPrefix(p, prefixRoot))
+			f.outputs = append(f.outputs, strings.TrimPrefix(p, prefixRoot))
 		}
-		return out
+		proposed := prefixJobs + jobID + "/proposed/"
+		for _, p := range t.List(proposed) {
+			f.proposed = append(f.proposed, strings.TrimPrefix(p, proposed))
+		}
+		return f
 	}
-	changed, err := th.followJobs(jobs, outputs, time.Now().UTC())
+	changed, err := th.followJobs(jobs, left, time.Now().UTC())
 	if err != nil || !changed {
 		return changed, err
 	}
@@ -402,8 +417,8 @@ type noteView struct {
 }
 
 // turnView is an agent turn. Its steps and final text are in the runner's
-// events, which the coordinator doesn't read, so a turn shows its state and
-// outputs only.
+// events, which the coordinator doesn't read, so a turn shows its state, its
+// outputs and the files it proposed, as Desktop's turns do.
 type turnView struct {
 	entryHead
 	JobID string           `json:"jobId"`
@@ -472,7 +487,7 @@ func (th *threadRecord) display(since uint64) []DisplayEntry {
 		case entryTurn:
 			head.Kind = "agent-turn"
 			v := turnView{entryHead: head, JobID: e.JobID, Steps: []struct{}{}, Live: e.State == turnLive}
-			for _, p := range e.Outputs {
+			for _, p := range append(slices.Clone(e.Outputs), e.Proposed...) {
 				v.Files = append(v.Files, attachmentView{Name: path.Base(p)})
 			}
 			out = append(out, v)
