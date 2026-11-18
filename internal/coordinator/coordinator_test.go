@@ -111,7 +111,7 @@ func waitJob(t *testing.T, c *Coordinator, id string) Job {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if j.State == JobFinished || j.State == JobFailed {
+		if j.State == JobFinished || j.State == JobFailed || j.State == JobCancelled {
 			return j
 		}
 		time.Sleep(20 * time.Millisecond)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 )
 
 // Handler is the coordinator's dev API. It has no client authentication, so it
@@ -20,8 +21,12 @@ import (
 //	PUT  /v0/workers/{id}/root/{path...}  write a file into the worker root
 //	GET  /v0/workers/{id}/files?prefix=   list the worker's tree
 //	GET  /v0/workers/{id}/files/{path...} read a file from the tree
-//	POST /v0/workers/{id}/jobs            a JobSpec: queue a job
+//	POST /v0/workers/{id}/jobs            a JobSpec: queue a job (tests)
 //	GET  /v0/jobs/{id}                    a job's state
+//	GET  /v0/workers/{id}/threads         the worker's threads, newest first
+//	GET  /v0/workers/{id}/threads/{tid}   a thread's display form; ?since=N, what changed after N
+//	POST /v0/workers/{id}/threads/{tid}/ops  a thread operation (threadops.go)
+//	POST /v0/workers/{id}/ops             a worker operation: startThread
 func (c *Coordinator) Handler() http.Handler {
 	a := &api{c: c}
 	mux := http.NewServeMux()
@@ -82,6 +87,10 @@ func (a *api) routes(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc("GET "+prefix+"/workers/{id}/files/{path...}", a.getFile)
 	mux.HandleFunc("POST "+prefix+"/workers/{id}/jobs", a.enqueue)
 	mux.HandleFunc("GET "+prefix+"/jobs/{id}", a.getJob)
+	mux.HandleFunc("GET "+prefix+"/workers/{id}/threads", a.listThreads)
+	mux.HandleFunc("GET "+prefix+"/workers/{id}/threads/{tid}", a.getThread)
+	mux.HandleFunc("POST "+prefix+"/workers/{id}/threads/{tid}/ops", a.threadOp)
+	mux.HandleFunc("POST "+prefix+"/workers/{id}/ops", a.workerOp)
 }
 
 // worker is the request's worker, if this API may touch it. Another account's,
@@ -374,6 +383,84 @@ func (a *api) getJob(rw http.ResponseWriter, r *http.Request) {
 	reply(rw, http.StatusOK, j)
 }
 
+func (a *api) listThreads(rw http.ResponseWriter, r *http.Request) {
+	if _, err := a.worker(r); err != nil {
+		fail(rw, statusOf(err), err)
+		return
+	}
+	threads, err := a.c.threads(a.device(), r.PathValue("id"))
+	if err != nil {
+		fail(rw, statusOf(err), err)
+		return
+	}
+	reply(rw, http.StatusOK, map[string][]ThreadSummary{"threads": threads})
+}
+
+// getThread is the whole thread, a ThreadView, or with ?since=N a
+// ThreadChanges.
+func (a *api) getThread(rw http.ResponseWriter, r *http.Request) {
+	if _, err := a.worker(r); err != nil {
+		fail(rw, statusOf(err), err)
+		return
+	}
+	var since *uint64
+	if q := r.URL.Query(); q.Has("since") {
+		n, err := strconv.ParseUint(q.Get("since"), 10, 64)
+		if err != nil {
+			fail(rw, http.StatusBadRequest, fmt.Errorf("%w: since must be a revision", ErrInvalid))
+			return
+		}
+		since = &n
+	}
+	th, err := a.c.thread(a.device(), r.PathValue("id"), r.PathValue("tid"))
+	if err != nil {
+		fail(rw, statusOf(err), err)
+		return
+	}
+	if since != nil {
+		reply(rw, http.StatusOK, th.changes(*since))
+		return
+	}
+	reply(rw, http.StatusOK, th.view())
+}
+
+// threadOp answers 200 with the OpResult, a refusal included.
+func (a *api) threadOp(rw http.ResponseWriter, r *http.Request) {
+	if _, err := a.worker(r); err != nil {
+		fail(rw, statusOf(err), err)
+		return
+	}
+	var env opEnvelope
+	if err := decodeStrict(r.Body, maxOpBody, &env); err != nil {
+		fail(rw, http.StatusBadRequest, err)
+		return
+	}
+	result, err := a.c.applyThreadOp(a.device(), r.PathValue("id"), r.PathValue("tid"), env)
+	if err != nil {
+		fail(rw, statusOf(err), err)
+		return
+	}
+	reply(rw, http.StatusOK, result)
+}
+
+func (a *api) workerOp(rw http.ResponseWriter, r *http.Request) {
+	if _, err := a.worker(r); err != nil {
+		fail(rw, statusOf(err), err)
+		return
+	}
+	var env workerOpEnvelope
+	if err := decodeStrict(r.Body, maxOpBody, &env); err != nil {
+		fail(rw, http.StatusBadRequest, err)
+		return
+	}
+	result, err := a.c.applyWorkerOp(a.device(), r.PathValue("id"), env)
+	if err != nil {
+		fail(rw, statusOf(err), err)
+		return
+	}
+	reply(rw, http.StatusOK, result)
+}
+
 func decodeStrict(body io.Reader, max int64, v any) error {
 	data, err := io.ReadAll(io.LimitReader(body, max+1))
 	if err != nil {
@@ -395,7 +482,7 @@ func decodeStrict(body io.Reader, max int64, v any) error {
 
 func statusOf(err error) int {
 	switch {
-	case errors.Is(err, ErrNoWorker), errors.Is(err, ErrNoJob), errors.Is(err, ErrNotFound):
+	case errors.Is(err, ErrNoWorker), errors.Is(err, ErrNoJob), errors.Is(err, ErrNotFound), errors.Is(err, ErrNoThread):
 		return http.StatusNotFound
 	case errors.Is(err, ErrWriteOnce), errors.Is(err, ErrNotGranted), errors.Is(err, ErrGrantSeq),
 		errors.Is(err, ErrDEKChanged), errors.Is(err, ErrBusy):
@@ -406,6 +493,8 @@ func statusOf(err error) int {
 		return http.StatusTooManyRequests
 	case errors.Is(err, ErrInvalid), errors.Is(err, ErrReserved):
 		return http.StatusBadRequest
+	case errors.Is(err, ErrUnsupported):
+		return http.StatusNotImplemented
 	default:
 		return http.StatusInternalServerError
 	}

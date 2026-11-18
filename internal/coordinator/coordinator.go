@@ -10,8 +10,9 @@
 // or the Cloud vault pair (package vaultkey). Clients reach it over the
 // attested client channel (package channel), one account and device per
 // channel, and move workers in with a DEK grant their device keys sign
-// (grant.go). Not built yet: the buckets sidecar, mail intake, inference
-// relay, and the thread record.
+// (grant.go). Each worker's threads are records in its tree, changed only by
+// operations (thread.go, threadops.go). Not built yet: the buckets sidecar,
+// mail intake and the inference relay.
 package coordinator
 
 import (
@@ -19,6 +20,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -53,6 +55,10 @@ type Config struct {
 	// under the model rate limit of its one inference key. Jobs past it wait
 	// in the queue. 0 is no cap.
 	AccountJobs int
+	// JobConfig is the model settings of every job a thread operation
+	// starts, passed to the runner unread. Empty refuses those operations
+	// with NO_MODEL.
+	JobConfig json.RawMessage
 }
 
 type Coordinator struct {
@@ -67,7 +73,9 @@ type Coordinator struct {
 	accountJobs map[string]int
 	// locks serialize changes to each worker's tree.
 	locks map[string]*sync.Mutex
-	wake  chan struct{}
+	// cancels stops each running job.
+	cancels map[string]context.CancelFunc
+	wake    chan struct{}
 	// running counts jobs started and not yet ended, for Wait.
 	running sync.WaitGroup
 }
@@ -89,7 +97,10 @@ func New(cfg Config) (*Coordinator, error) {
 	if err := checkKey(cfg.Key, state); err != nil {
 		return nil, err
 	}
-	c := &Coordinator{cfg: cfg, state: state, busy: map[string]bool{}, accountJobs: map[string]int{}, locks: map[string]*sync.Mutex{}, wake: make(chan struct{}, 1)}
+	if len(cfg.JobConfig) > 0 && (cfg.JobConfig[0] != '{' || len(cfg.JobConfig) > maxConfigBytes || !json.Valid(cfg.JobConfig)) {
+		return nil, fmt.Errorf("coordinator config: JobConfig must be a JSON object of at most %d bytes", maxConfigBytes)
+	}
+	c := &Coordinator{cfg: cfg, state: state, busy: map[string]bool{}, accountJobs: map[string]int{}, locks: map[string]*sync.Mutex{}, cancels: map[string]context.CancelFunc{}, wake: make(chan struct{}, 1)}
 	if err := c.state.Save(cfg.StateDir); err != nil {
 		return nil, err
 	}
@@ -243,11 +254,21 @@ func (c *Coordinator) Enqueue(workerID string, spec JobSpec) (Job, error) {
 }
 
 func (c *Coordinator) enqueue(device, workerID string, spec JobSpec) (Job, error) {
-	if err := spec.check(); err != nil {
-		return Job{}, err
-	}
 	id, err := newID("j")
 	if err != nil {
+		return Job{}, err
+	}
+	j, err := c.enqueueAs(device, workerID, id, spec)
+	if err == nil {
+		c.poke()
+	}
+	return j, err
+}
+
+// enqueueAs queues spec as job id without waking the scheduler: a thread
+// operation names its job in the thread before it queues it.
+func (c *Coordinator) enqueueAs(device, workerID, id string, spec JobSpec) (Job, error) {
+	if err := spec.check(); err != nil {
 		return Job{}, err
 	}
 	c.mu.Lock()
@@ -269,8 +290,41 @@ func (c *Coordinator) enqueue(device, workerID string, spec JobSpec) (Job, error
 	out := *j
 	out.Spec = nil
 	c.mu.Unlock()
-	c.poke()
 	return out, nil
+}
+
+// cancel stops a queued or running job. A running one ends as its runner
+// stops, and its worker stays busy until then; what it leaves is thrown
+// away. It reports whether the job was still unfinished.
+func (c *Coordinator) cancel(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	j, ok := c.state.Jobs[id]
+	if !ok {
+		return false
+	}
+	switch j.State {
+	case JobQueued:
+		j.Spec, j.Ended = nil, time.Now().UTC()
+	case JobRunning:
+		if stop := c.cancels[id]; stop != nil {
+			stop()
+		}
+	default:
+		return false
+	}
+	j.State = JobCancelled
+	if err := c.state.Save(c.cfg.StateDir); err != nil {
+		log.Printf("save state: %v", err)
+	}
+	return true
+}
+
+func (c *Coordinator) cancelled(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	j := c.state.Jobs[id]
+	return j != nil && j.State == JobCancelled
 }
 
 func (c *Coordinator) Job(id string) (Job, error) {
@@ -346,7 +400,9 @@ func (c *Coordinator) schedule(ctx context.Context) {
 		c.busy[j.WorkerID] = true
 		c.accountJobs[w.Account]++
 		c.running.Add(1)
-		go c.execute(ctx, *j, *w, spec)
+		jobCtx, stop := context.WithCancel(ctx)
+		c.cancels[j.ID] = stop
+		go c.execute(jobCtx, *j, *w, spec)
 	}
 }
 
@@ -420,6 +476,7 @@ func (c *Coordinator) Load() Load {
 
 func (c *Coordinator) execute(ctx context.Context, job Job, w Worker, spec JobSpec) {
 	defer c.running.Done()
+	c.followJob(w.ID, job.ThreadID)
 	kept, dropped, err := c.runJob(ctx, job, w, spec)
 	if err != nil {
 		// The error goes on the volume, outside the DEK, so it says what failed
@@ -433,12 +490,17 @@ func (c *Coordinator) execute(ctx context.Context, job Job, w Worker, spec JobSp
 	j := c.state.Jobs[job.ID]
 	j.Ended, j.Kept, j.Dropped = time.Now().UTC(), kept, dropped
 	switch {
+	case j.State == JobCancelled:
 	case err != nil:
 		j.State, j.Error = JobFailed, err.Error()
 	case j.State == JobRunning:
 		j.State = JobFinished
 	}
 	delete(c.busy, w.ID)
+	if stop := c.cancels[job.ID]; stop != nil {
+		stop()
+		delete(c.cancels, job.ID)
+	}
 	if c.accountJobs[w.Account]--; c.accountJobs[w.Account] <= 0 {
 		delete(c.accountJobs, w.Account)
 	}
@@ -446,6 +508,7 @@ func (c *Coordinator) execute(ctx context.Context, job Job, w Worker, spec JobSp
 		log.Printf("save state: %v", serr)
 	}
 	c.mu.Unlock()
+	c.followJob(w.ID, job.ThreadID)
 	c.poke()
 }
 
@@ -501,6 +564,11 @@ func (c *Coordinator) runJob(ctx context.Context, job Job, w Worker, spec JobSpe
 			prefixJobs + job.ID + "/collect-error.txt": []byte(collectErr.Error()),
 		}}
 	}
+	if c.cancelled(job.ID) {
+		// A cancelled job's outputs and proposals are dropped; its logs are
+		// kept.
+		results = &Results{Writes: map[string][]byte{}}
+	}
 	results.Writes[prefixJobs+job.ID+"/events.jsonl"] = result.Events
 	if len(result.Stderr) > 0 {
 		results.Writes[prefixJobs+job.ID+"/stderr.txt"] = result.Stderr
@@ -511,6 +579,8 @@ func (c *Coordinator) runJob(ctx context.Context, job Job, w Worker, spec JobSpe
 	}
 	kept, dropped = len(results.Writes), len(results.Dropped)
 	switch {
+	case c.cancelled(job.ID):
+		return kept, dropped, nil
 	case runErr != nil:
 		return kept, dropped, runErr
 	case collectErr != nil:
@@ -648,6 +718,13 @@ func (c *Coordinator) view(workerID, device string, fn func(*Tree) error) error 
 // commits them and records the new version on the volume. A job's results are
 // applied this way, on top of whatever changed while it ran.
 func (c *Coordinator) change(workerID, device string, fn func(*Tree) error) error {
+	return c.changeThen(workerID, device, fn, nil)
+}
+
+// changeThen is change, then runs then once the change is committed, still
+// under the tree's lock: a thread operation queues or cancels its jobs there,
+// so nothing reads the thread between the two. then must not take the lock.
+func (c *Coordinator) changeThen(workerID, device string, fn func(*Tree) error, then func()) error {
 	lock, w, err := c.workerLock(workerID)
 	if err != nil {
 		return err
@@ -666,13 +743,22 @@ func (c *Coordinator) change(workerID, device string, fn func(*Tree) error) erro
 		return err
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	held, ok := c.state.Workers[workerID]
-	if !ok {
-		return ErrNoWorker
+	switch {
+	case !ok:
+		err = ErrNoWorker
+	case held.Version != version:
+		held.Version = version
+		err = c.state.Save(c.cfg.StateDir)
 	}
-	held.Version = version
-	return c.state.Save(c.cfg.StateDir)
+	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if then != nil {
+		then()
+	}
+	return nil
 }
 
 func (c *Coordinator) workerLock(workerID string) (*sync.Mutex, Worker, error) {

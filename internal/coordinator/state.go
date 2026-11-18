@@ -51,6 +51,9 @@ const (
 	// coordinator keeps but doesn't parse yet.
 	JobFinished JobState = "finished"
 	JobFailed   JobState = "failed"
+	// JobCancelled is a job a thread operation stopped. A running one keeps
+	// its worker busy until its runner stops.
+	JobCancelled JobState = "cancelled"
 )
 
 type Job struct {
@@ -107,9 +110,13 @@ func LoadState(dir string) (*State, error) {
 		s.Jobs = map[string]*Job{}
 	}
 	for _, j := range s.Jobs {
-		if j.State == JobRunning {
+		switch {
+		case j.State == JobRunning:
 			j.State = JobFailed
 			j.Error = "the coordinator restarted while this job ran"
+			j.Ended = time.Now().UTC()
+		case j.State == JobCancelled && j.Ended.IsZero():
+			// Cancelled while it ran, and never seen to stop.
 			j.Ended = time.Now().UTC()
 		}
 	}
