@@ -272,6 +272,35 @@ func TestRestartFailsInterruptedJobs(t *testing.T) {
 	}
 }
 
+func TestBootRefusesAKeyThatDoesntFitTheVolume(t *testing.T) {
+	dir := t.TempDir()
+	cfg := func(key WrappingKey) Config {
+		return Config{
+			StateDir: filepath.Join(dir, "state"),
+			WorkDir:  filepath.Join(dir, "work"),
+			Store:    DirStore{Root: filepath.Join(dir, "objects")},
+			Key:      key,
+			Pool:     NewPool(1, 1, nil),
+			Runner:   LocalRunner{Command: []string{"true"}},
+		}
+	}
+	devKey, _ := NewWrappingKey()
+	c, err := New(cfg(devKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.CreateWorker("acct", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(cfg(devKey)); err != nil {
+		t.Fatalf("the same key: %v", err)
+	}
+	vaultKey, _ := NewWrappingKey()
+	if _, err := New(cfg(vaultKey)); err == nil || !strings.Contains(err.Error(), "doesn't fit this volume") {
+		t.Fatalf("another key booted on the volume: %v", err)
+	}
+}
+
 func TestAPI(t *testing.T) {
 	c, _ := newTestCoordinator(t, "ok", 0)
 	srv := httptest.NewServer(c.Handler())

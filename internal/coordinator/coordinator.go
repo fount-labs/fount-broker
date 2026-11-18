@@ -6,9 +6,10 @@
 // it reads.
 //
 // This is the P2 skeleton. It runs on a laptop with a local folder for storage
-// and a command per runner. Not built yet: attestation and the client channel,
-// the vault-held wrapping key, the buckets sidecar, mail intake, runner enclaves
-// and their IPC, inference relay, and the thread record.
+// and a command per runner. Its wrapping key comes from the caller: a dev file,
+// or the Cloud vault pair (package vaultkey). Not built yet: the client
+// channel, the buckets sidecar, mail intake, inference relay, and the thread
+// record.
 package coordinator
 
 import (
@@ -74,11 +75,28 @@ func New(cfg Config) (*Coordinator, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := checkKey(cfg.Key, state); err != nil {
+		return nil, err
+	}
 	c := &Coordinator{cfg: cfg, state: state, busy: map[string]bool{}, locks: map[string]*sync.Mutex{}, wake: make(chan struct{}, 1)}
 	if err := c.state.Save(cfg.StateDir); err != nil {
 		return nil, err
 	}
 	return c, nil
+}
+
+// checkKey fails at boot when the wrapping key doesn't open every worker's DEK
+// on the volume: a volume made under another key (the dev one, say) would
+// otherwise fail only when each worker's next job starts.
+func checkKey(key WrappingKey, state *State) error {
+	for _, id := range slices.Sorted(maps.Keys(state.Workers)) {
+		dek, err := key.Unwrap(id, state.Workers[id].WrappedDEK)
+		clear(dek[:])
+		if err != nil {
+			return fmt.Errorf("the wrapping key doesn't fit this volume: %w", err)
+		}
+	}
+	return nil
 }
 
 var (

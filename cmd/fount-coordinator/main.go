@@ -6,6 +6,8 @@
 //	  [--job-timeout 30m] -- <runner command...>
 //	fount-coordinator --dir <folder> [flags] --runner-addr https://<domain> --runner-repo <owner/repo>
 //	  [--credentials <file.json>] [--test-api --listen 0.0.0.0:8790]
+//	  [--wrapping-key vault --vaults <host,host> --vault-repo <owner/repo> --keyset-commitment <hex>]
+//	  [--status-listen 0.0.0.0:8790]
 //	fount-coordinator health [http://127.0.0.1:8790/health]
 //
 // The runner command is started once per job with fount-runner's --workspace,
@@ -26,6 +28,14 @@
 // $FOUNT_TEST_API_TOKEN: the coordinator enclave's way in until the attested
 // client channel (m4-cloud-runners.md §7, P2). Test data only, while the
 // wrapping key is the dev one.
+//
+// --wrapping-key says where the key that wraps every worker's DEK comes from:
+// dev (the default) is a file in --dir, made on first run; vault is Fount
+// Cloud's vault pair, which hands it only to an attested release of this
+// coordinator's config repo (package vaultkey). The vault's key lives in
+// memory only, and a coordinator waits for a vault before it loads the volume.
+// It refuses --test-api. --status-listen serves /health and /status, which
+// says where the key came from, on an address the shim can reach.
 package main
 
 import (
@@ -79,6 +89,11 @@ func run() error {
 	credentials := flag.String("credentials", "", "JSON file of every job's broker credentials, with --runner-addr")
 	test := flag.Bool("test-api", false, "listen beyond loopback, behind the bearer token in $"+testTokenEnv+"; test data only")
 	runnerRepo := flag.String("runner-repo", os.Getenv("FOUNT_RUNNER_REPO"), "GitHub repository whose releases the runner enclave must run, or unattested")
+	keyMode := flag.String("wrapping-key", keyDev, "where the wrapping key comes from: dev, a file in --dir; or vault, Fount Cloud's vaults, held in memory only")
+	vaults := flag.String("vaults", os.Getenv("FOUNT_VAULTS"), "with --wrapping-key vault: the vaults' hostnames, comma-separated")
+	vaultRepo := flag.String("vault-repo", os.Getenv("FOUNT_VAULT_REPO"), "with --wrapping-key vault: GitHub repository whose releases the vaults must run")
+	commitment := flag.String("keyset-commitment", os.Getenv("FOUNT_KEYSET_COMMITMENT"), "with --wrapping-key vault: the vaults' KEYSET_COMMITMENT")
+	statusListen := flag.String("status-listen", "", "address for /health and /status, which may be beyond loopback")
 	flag.Parse()
 	if *dir == "" || (flag.NArg() == 0) == (*runnerAddr == "") {
 		return errors.New("usage: fount-coordinator --dir <folder> [flags] (-- <runner command...> | --runner-addr <host:port>)")
@@ -123,8 +138,35 @@ func run() error {
 			return err
 		}
 	}
-	key, err := devWrappingKey(filepath.Join(*dir, "wrapping.key"))
+	keys := keyFlags{mode: *keyMode, dir: *dir, vaults: *vaults, vaultRepo: *vaultRepo, commitment: *commitment, testAPI: *test}
+	if err := keys.check(); err != nil {
+		return err
+	}
+	if *statusListen != "" && *statusListen == *listen {
+		return errors.New("--status-listen and --listen are the same address")
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	status := &keyStatus{Mode: keys.mode, State: "waiting", Since: time.Now().UTC()}
+	if *statusListen != "" {
+		statusSrv := &http.Server{Addr: *statusListen, Handler: statusAPI(status), ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			<-ctx.Done()
+			statusSrv.Close()
+		}()
+		go func() {
+			if err := statusSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("status listener: %v", err)
+				stop()
+			}
+		}()
+	}
+	key, err := wrappingKey(ctx, keys, status)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		return err
 	}
 	c, err := coordinator.New(coordinator.Config{
@@ -141,8 +183,6 @@ func run() error {
 		return err
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	api := c.Handler()
 	if *test {
 		if api, err = testAPI(api); err != nil {
@@ -186,8 +226,9 @@ func loopbackOnly(addr string) error {
 	return nil
 }
 
-// devWrappingKey stands in for the vault-held wrapping key (m4-cloud-runners.md
-// §4): a file made on first run. Losing it loses every worker's files.
+// devWrappingKey is --wrapping-key dev, standing in for the vault-held
+// wrapping key (m4-cloud-runners.md §4): a file made on first run. Losing it
+// loses every worker's files.
 func devWrappingKey(path string) (coordinator.WrappingKey, error) {
 	var key coordinator.WrappingKey
 	data, err := os.ReadFile(path)
