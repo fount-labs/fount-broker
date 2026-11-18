@@ -6,6 +6,11 @@
 #
 #   COORDINATOR=https://<domain> drive-coordinator.sh            smoke jobs, then the ramp
 #   SMOKE=0 RAMP="8 16" COORDINATOR=... drive-coordinator.sh     the ramp only, at 8 then 16
+#   REAL=1 ACCOUNT=<id> COORDINATOR=... drive-coordinator.sh     real-model jobs: no scripts
+#
+# REAL=1 sends each job without its script, so the runner calls the model through the proxy with
+# the job's credential; ACCOUNT must then be one the proxy entitles. Real jobs have their own
+# prompts (real_job), each finishing on its own; transcripts aren't checked, only that it finished.
 #
 # The bearer token is read from $FOUNT_TEST_API_TOKEN_FILE (default ~/.config/fount/test-api-token)
 # and never printed. All jobs are one account's: the pool gives a runner to one account at a time.
@@ -17,7 +22,8 @@ ROOT="${FOUNT_ROOT:-$HOME/Desktop/code/fount}"
 FIXTURES="$ROOT/src-tauri/crates/fount-runner/tests/fixtures"
 SMOKE="${SMOKE:-1}"
 RAMP="${RAMP-8 16 24 32}"
-ACCOUNT="acct_drive_$(date +%s)"
+ACCOUNT="${ACCOUNT:-acct_drive_$(date +%s)}"
+REAL="${REAL:-0}"
 [ -s "$TOKEN_FILE" ] || { echo "no token in $TOKEN_FILE" >&2; exit 1; }
 HEADERS="$(mktemp)"
 trap 'rm -f "$HEADERS"' EXIT
@@ -40,6 +46,37 @@ enqueue() {
 import json, sys
 f = json.load(open(sys.argv[1]))
 print(json.dumps({"threadId": "t1", "sessionId": f["sessionId"], "instruction": f["prompt"], "config": f["config"], "script": f["script"]}))
+PY
+}
+# real_job <worker> <kind>: puts the kind's inputs and enqueues its prompt for the real model,
+# with write-job.json's config. Prints the job id.
+real_job() {
+  local prompt
+  case "$2" in
+    write) prompt='Write hello.md with a two-line greeting for the team.' ;;
+    python)
+      putText "$1" data/sales.csv $'region,amount\nNorth,120\nSouth,80\nEast,45\n'
+      prompt='Use Python to total the amount column of data/sales.csv, and write the total to total.txt.' ;;
+    reads)
+      putText "$1" data/sales.csv $'region,amount\nNorth,120\nSouth,80\n'
+      putText "$1" pages/about.html $'<html><body><p>The quarterly total was 200.</p></body></html>\n'
+      putText "$1" mail/letter.eml $'From: ana@example.com\nSubject: Q3 numbers\n\nThe letter body says hello.\n'
+      prompt='Look around the workspace: find the quarterly total, and say what the letter asks.' ;;
+    pdf)
+      put "$1" "$ROOT/e2e/fixtures/runner-memo.pdf" runner-memo.pdf
+      prompt='What does page 2 of runner-memo.pdf say?' ;;
+    docx)
+      put "$1" "$ROOT/e2e/fixtures/notes-visibility.docx" notes-visibility.docx
+      prompt='Read notes-visibility.docx and list its footnotes in summary.md.' ;;
+    xlsx)
+      put "$1" "$ROOT/e2e/fixtures/Blank.xlsx" Blank.xlsx
+      prompt='Put 41 in A1 and a formula A1+1 in B1 of Blank.xlsx.' ;;
+    *) echo "no real job $2" >&2; return 1 ;;
+  esac
+  python3 - "$FIXTURES/write-job.json" "$prompt" "$2" <<'PY' | api -X POST "$API/v0/workers/$1/jobs" -d @- | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])'
+import json, sys, uuid
+f = json.load(open(sys.argv[1]))
+print(json.dumps({"threadId": "t-" + sys.argv[3], "sessionId": str(uuid.uuid4()), "instruction": sys.argv[2], "config": f["config"]}))
 PY
 }
 # wait_job <job>: prints the final state as JSON.
@@ -70,7 +107,16 @@ print(j["state"], j.get("error", ""), "|", steps)'
 }
 
 FAIL=0
-if [ "$SMOKE" = 1 ]; then
+REAL_MIX=(write python write reads pdf docx write xlsx)
+if [ "$REAL" = 1 ] && [ "$SMOKE" = 1 ]; then
+  echo "== one real-model job of each kind, one at a time"
+  for kind in write python reads pdf docx xlsx; do
+    W=$(worker); started=$(date +%s)
+    state=$(wait_job "$(real_job "$W" "$kind")")
+    echo "$kind: $(( $(date +%s) - started ))s wall, $(echo "$state" | summary)"
+    case "$state" in *'"state":"finished"'*) ;; *) FAIL=1 ;; esac
+  done
+elif [ "$SMOKE" = 1 ]; then
   W=$(worker)
   run() {
     local started=$(date +%s) job state
@@ -108,6 +154,11 @@ MIX=(write-job.json python-job.json write-job.json reads-job.json pdf-job.json d
 # level <n>: n workers, each one job from the mix, all queued at once.
 level() {
   local n=$1 i w fixture ws=() fixtures=() jobs=() started
+  if [ "$REAL" = 1 ]; then
+    for i in $(seq 0 $((n - 1))); do ws+=("$(worker)"); done
+    started=$(date +%s)
+    for i in "${!ws[@]}"; do jobs+=("$(real_job "${ws[$i]}" "${REAL_MIX[$((i % ${#REAL_MIX[@]}))]}")"); done
+  else
   for i in $(seq 0 $((n - 1))); do
     fixture=${MIX[$((i % ${#MIX[@]}))]}
     w=$(worker)
@@ -124,6 +175,7 @@ level() {
   done
   started=$(date +%s)
   for i in "${!ws[@]}"; do jobs+=("$(enqueue "${ws[$i]}" "${fixtures[$i]}")"); done
+  fi
   local out="" state
   for j in "${jobs[@]}"; do
     state=$(wait_job "$j")

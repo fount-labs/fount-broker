@@ -1,6 +1,10 @@
 # The working copy of a Cloud runner enclave (m4-cloud-runners.md
 # §5.1c). Its live copy is github.com/fount-labs/fount-cloud-runner, which the
 # coordinator pins with --runner-repo.
+#
+# TEST RUNNER from v0.2.0: its broker is the dev build (broker-dev), whose
+# jobs reach the dev proxy (FOUNT_BROKER_PROXY), and it takes jobs only from
+# the test coordinators of fount-labs/fount-cloud-coordinator. Test data only.
 cvm-version: 0.14.18 # https://github.com/tinfoilsh/cvmimage/releases/latest, no `v`
 cpus: 8
 memory: 32768
@@ -15,7 +19,7 @@ networks:
   broker-out:
     egress: allowlist
     allow:
-      - api.fount.sh # the proxy: inference with the job's minted license
+      - dev-api.fount.sh # the dev proxy: inference with the job's credential
       - websearch.tinfoil.sh
       - ghcr.io # the harness pull
       - pkg-containers.githubusercontent.com
@@ -25,7 +29,7 @@ networks:
 
 containers:
   - name: broker
-    image: "ghcr.io/fount-labs/fount-broker/broker@sha256:97b520db9021958b8fb36c726521dfe0d4529b0f06ec67c0f7897a8ab4ff9b59" # v0.5.2
+    image: "ghcr.io/fount-labs/fount-broker/broker-dev@sha256:9553473de4ac984f439031bc535c3c2a3fc216b3808a14bbf3f71fd38b303ee6" # v0.5.3, -tags dev
     networks: [broker-out]
     keys: [fount-link]
     # The link sends this enclave's document; the coordinator checks it.
@@ -37,6 +41,10 @@ containers:
       - sockets:/sockets
     env:
       - FOUNT_COORDINATOR_REPO: "fount-labs/fount-cloud-coordinator" # its releases are the only coordinator it takes jobs from
+      # The dev proxy, which takes the test coordinators' job credentials. Read
+      # only by the dev build (fount-broker internal/policy/endpoints_dev.go).
+      - FOUNT_BROKER_PROXY: "https://dev-api.fount.sh"
+      - FOUNT_BROKER_FOUNT_API: "https://dev-api.fount.sh"
       - FOUNT_HARNESS_IMAGE: "ghcr.io/fount-labs/fount-runner@sha256:2984c2c42148d6f3c45120644815f0954e0b8a1ae84a1b3d5e206ae83641cee3" # fount-app be741a3e
     secrets:
       # Read-only, for the private harness (fount's runner-image workflow
@@ -54,7 +62,7 @@ containers:
       start_period: 1m
 
   - name: supervisor
-    image: "ghcr.io/fount-labs/fount-broker/supervisor@sha256:6890a96943d546db663c3430fac679f491c044900720e93ce4877ba8a245d325" # v0.5.2
+    image: "ghcr.io/fount-labs/fount-broker/supervisor@sha256:0a8ef1864f44a5aadf30d7678d0706db70644bffd7d7febdba3cf1fc0ebda374" # v0.5.3
     # runsc needs it (§5.1b). It has authority over the whole enclave,
     # including the broker's fount-link key, so its image is open and pinned.
     cvm_admin: true
@@ -62,7 +70,7 @@ containers:
     restart: always
     # 32 at once with 2 cores each is the ramp's ceiling (fount m4-cloud-runners.md
     # §5.2a), not a sizing: the caps overcommit memory on purpose, to find the knee.
-    command: ["serve", "--image", "sha256:2984c2c42148d6f3c45120644815f0954e0b8a1ae84a1b3d5e206ae83641cee3", "--max-jobs", "32", "--cpus", "2"]
+    command: ["serve", "--image", "sha256:2984c2c42148d6f3c45120644815f0954e0b8a1ae84a1b3d5e206ae83641cee3", "--max-jobs", "16", "--cpus", "2"]
     volumes:
       - harness-blobs:/harness-blobs
       - sockets:/sockets
