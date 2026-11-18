@@ -11,7 +11,9 @@ import (
 
 // Handler is the coordinator's dev API. It has no client authentication, so it
 // must only listen on loopback; clients beyond it use the attested channel's
-// AccountHandler.
+// AccountHandler. A worker with a device list, made over the channel, doesn't
+// exist here, and a coordinator with the vault's wrapping key doesn't serve it
+// at all.
 //
 //	POST /v0/workers                      {"account", "dek"?}: take in a worker
 //	GET  /v0/workers/{id}                 the worker, without its key
@@ -64,6 +66,15 @@ type api struct {
 	caller  *Caller
 }
 
+// device is the caller's device, which the coordinator checks again under
+// the tree's lock, or anyDevice for the dev API.
+func (a *api) device() string {
+	if a.caller == nil {
+		return anyDevice
+	}
+	return a.caller.Device
+}
+
 func (a *api) routes(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc("GET "+prefix+"/workers/{id}", a.getWorker)
 	mux.HandleFunc("PUT "+prefix+"/workers/{id}/root/{path...}", a.putFile)
@@ -86,6 +97,11 @@ func (a *api) workerByID(id string) (Worker, error) {
 		return Worker{}, err
 	}
 	if a.caller != nil && (w.Account != a.account || !w.authorizes(a.caller.Device)) {
+		return Worker{}, ErrNoWorker
+	}
+	// The dev API never opens a worker a device list keeps: one moved in
+	// over the client channel.
+	if a.caller == nil && len(w.Devices) > 0 {
 		return Worker{}, ErrNoWorker
 	}
 	return w, nil
@@ -154,9 +170,13 @@ func (a *api) createWorker(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dek, err := parseDEK(req.DEK)
+	clear(req.DEK)
 	if err != nil {
 		fail(rw, http.StatusBadRequest, err)
 		return
+	}
+	if dek != nil {
+		defer clear(dek[:])
 	}
 	w, err := a.c.CreateWorker(req.Account, dek)
 	if err != nil {
@@ -208,6 +228,7 @@ func (a *api) grant(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dek, err := parseDEK(req.DEK)
+	clear(req.DEK)
 	if err != nil || dek == nil {
 		fail(rw, http.StatusBadRequest, fmt.Errorf("dek must be %d bytes", KeySize))
 		return
@@ -273,7 +294,7 @@ func (a *api) putFile(rw http.ResponseWriter, r *http.Request) {
 		fail(rw, http.StatusRequestEntityTooLarge, fmt.Errorf("files are at most %d bytes here", maxFileBody))
 		return
 	}
-	if err := a.c.PutFile(r.PathValue("id"), r.PathValue("path"), data); err != nil {
+	if err := a.c.putFile(a.device(), r.PathValue("id"), r.PathValue("path"), data); err != nil {
 		fail(rw, statusOf(err), err)
 		return
 	}
@@ -285,7 +306,7 @@ func (a *api) listFiles(rw http.ResponseWriter, r *http.Request) {
 		fail(rw, statusOf(err), err)
 		return
 	}
-	paths, err := a.c.ListFiles(r.PathValue("id"), r.URL.Query().Get("prefix"))
+	paths, err := a.c.listFiles(a.device(), r.PathValue("id"), r.URL.Query().Get("prefix"))
 	if err != nil {
 		fail(rw, statusOf(err), err)
 		return
@@ -301,7 +322,7 @@ func (a *api) getFile(rw http.ResponseWriter, r *http.Request) {
 		fail(rw, statusOf(err), err)
 		return
 	}
-	data, err := a.c.ReadFile(r.PathValue("id"), r.PathValue("path"))
+	data, err := a.c.readFile(a.device(), r.PathValue("id"), r.PathValue("path"))
 	if err != nil {
 		fail(rw, statusOf(err), err)
 		return
@@ -321,7 +342,7 @@ func (a *api) enqueue(rw http.ResponseWriter, r *http.Request) {
 		fail(rw, http.StatusBadRequest, err)
 		return
 	}
-	j, err := a.c.Enqueue(r.PathValue("id"), spec)
+	j, err := a.c.enqueue(a.device(), r.PathValue("id"), spec)
 	if err != nil {
 		fail(rw, statusOf(err), err)
 		return
@@ -373,6 +394,8 @@ func statusOf(err error) int {
 		return http.StatusConflict
 	case errors.Is(err, ErrGrantRefused):
 		return http.StatusForbidden
+	case errors.Is(err, ErrTooManyUngranted):
+		return http.StatusTooManyRequests
 	case errors.Is(err, ErrInvalid), errors.Is(err, ErrReserved):
 		return http.StatusBadRequest
 	default:

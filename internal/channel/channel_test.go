@@ -575,7 +575,7 @@ func TestCloudCredentials(t *testing.T) {
 		origin := coordinatorWith(t, side, func(s *Server) { s.CloudCredentialsOnly = cloudOnly })
 		d := newDevice(t, "acct_1")
 		cloud(d, MaxCloudCredential)
-		got, err := peerOf(t, client(origin, link.CheckUnattestedKey, d.identity(t, accountKey(t, 0), 24*time.Hour)))
+		got, err := peerOf(t, client(origin, link.CheckUnattestedKey, d.identity(t, accountKey(t, 0), MaxSession)))
 		if err != nil || got["expires"] != float64(d.claims["exp"].(int64)) {
 			t.Errorf("cloudOnly %v: an hour's Cloud credential: %v %v", cloudOnly, got, err)
 		}
@@ -662,5 +662,71 @@ func TestParseIdentityTakesACloudCredential(t *testing.T) {
 	bad := strings.Replace(string(session), cloud, "nope", 1)
 	if _, err := ParseIdentity(id.Credential, bad); err == nil {
 		t.Error("a malformed Cloud credential parsed")
+	}
+}
+
+// The client stops using a channel a margin before its proof expires, before
+// the coordinator closes it mid-request, and dials a new one.
+func TestTheClientRetiresAChannelBeforeItsProofExpires(t *testing.T) {
+	side := unattested(t)
+	origin := coordinator(t, side)
+	d := newDevice(t, "acct_1")
+	var mu sync.Mutex
+	dials := 0
+	c := &Client{Origin: origin, Check: link.CheckUnattestedKey, expiryMargin: 1500 * time.Millisecond, Identity: func() (Identity, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		dials++
+		return d.identity(t, accountKey(t, 0), 3*time.Second), nil
+	}}
+	conn, peer, err := c.Dial(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if _, err := conn.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("read: %v", err)
+	}
+	if left := time.Until(peer.Expires); left < time.Second/2 {
+		t.Errorf("closed %s before the proof expires", left)
+	}
+
+	get := func() {
+		t.Helper()
+		resp, err := c.Do(context.Background(), "GET", "v1/workers", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	get()
+	get()
+	time.Sleep(2 * time.Second)
+	get()
+	mu.Lock()
+	defer mu.Unlock()
+	if dials != 3 {
+		t.Errorf("%d dials, want 3: the first channel, one, and one past its margin", dials)
+	}
+}
+
+func TestUsableUntil(t *testing.T) {
+	c := &Client{}
+	now := time.Now()
+	for _, tc := range []struct {
+		name           string
+		fresh, expires time.Time
+		want           time.Time
+	}{
+		{"the margin first", now.Add(time.Hour), now.Add(10 * time.Minute), now.Add(9 * time.Minute)},
+		{"freshness first", now.Add(5 * time.Minute), now.Add(10 * time.Minute), now.Add(5 * time.Minute)},
+		{"no freshness deadline", time.Time{}, now.Add(10 * time.Minute), now.Add(9 * time.Minute)},
+		{"shorter than the margin", time.Time{}, now.Add(30 * time.Second), now.Add(30 * time.Second)},
+	} {
+		if got := c.usableUntil(tc.fresh, tc.expires, now); !got.Equal(tc.want) {
+			t.Errorf("%s: %s, want %s", tc.name, got.Sub(now), tc.want.Sub(now))
+		}
 	}
 }

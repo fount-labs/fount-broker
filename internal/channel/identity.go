@@ -81,9 +81,11 @@ const (
 	SessionVersion = 1
 	SessionType    = "fount-client-session"
 	SessionContext = "fount-client-session-v1\n"
-	// MaxSession is the longest a session grant may run, so a broker's key
-	// that leaks is good for a day at most.
-	MaxSession = 24 * time.Hour
+	// MaxSession is the longest a session grant may run. The session key
+	// alone reads, writes and queues jobs on its device's workers
+	// (coordinator/grant.go), so a broker's key that leaks is good for that
+	// long at most; the app re-signs a session before it runs out.
+	MaxSession = 8 * time.Hour
 	// clockSkew is how far in the future a grant may say it was signed.
 	clockSkew = 5 * time.Minute
 )

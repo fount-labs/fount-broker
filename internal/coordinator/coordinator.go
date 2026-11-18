@@ -118,6 +118,7 @@ var (
 // worker comes from CreateWorkerFor, and its DEK from a grant.
 func (c *Coordinator) CreateWorker(account string, dek *DEK) (Worker, error) {
 	key := DEK{}
+	defer clear(key[:])
 	if dek != nil {
 		key = *dek
 	} else {
@@ -178,13 +179,21 @@ func (c *Coordinator) Workers(account string) []Worker {
 // PutFile writes a file into a worker's root: instructions, memory, a file the
 // user sends, or (until intake runners exist) a thread's message.
 func (c *Coordinator) PutFile(workerID, path string, data []byte) error {
+	return c.putFile(anyDevice, workerID, path, data)
+}
+
+// anyDevice is the device of the dev API and the coordinator's own jobs,
+// which no device list limits.
+const anyDevice = ""
+
+func (c *Coordinator) putFile(device, workerID, path string, data []byte) error {
 	if err := checkPath(path); err != nil {
 		return err
 	}
 	if path == fountDir || strings.HasPrefix(path, fountDir+"/") {
 		return fmt.Errorf("%s: %w", path, ErrReserved)
 	}
-	return c.change(workerID, func(t *Tree) error {
+	return c.change(workerID, device, func(t *Tree) error {
 		if strings.HasPrefix(path, "threads/") && t.Has(prefixRoot+path) {
 			return fmt.Errorf("%s: %w", path, ErrWriteOnce)
 		}
@@ -194,8 +203,12 @@ func (c *Coordinator) PutFile(workerID, path string, data []byte) error {
 
 // ReadFile reads a path from a worker's whole tree, "root/…" included.
 func (c *Coordinator) ReadFile(workerID, path string) ([]byte, error) {
+	return c.readFile(anyDevice, workerID, path)
+}
+
+func (c *Coordinator) readFile(device, workerID, path string) ([]byte, error) {
 	var data []byte
-	err := c.view(workerID, func(t *Tree) (err error) {
+	err := c.view(workerID, device, func(t *Tree) (err error) {
 		data, err = t.Read(path)
 		return err
 	})
@@ -203,8 +216,12 @@ func (c *Coordinator) ReadFile(workerID, path string) ([]byte, error) {
 }
 
 func (c *Coordinator) ListFiles(workerID, prefix string) ([]string, error) {
+	return c.listFiles(anyDevice, workerID, prefix)
+}
+
+func (c *Coordinator) listFiles(device, workerID, prefix string) ([]string, error) {
 	var paths []string
-	err := c.view(workerID, func(t *Tree) error {
+	err := c.view(workerID, device, func(t *Tree) error {
 		paths = t.List(prefix)
 		return nil
 	})
@@ -213,6 +230,10 @@ func (c *Coordinator) ListFiles(workerID, prefix string) ([]string, error) {
 
 // Enqueue queues a job on a worker's thread.
 func (c *Coordinator) Enqueue(workerID string, spec JobSpec) (Job, error) {
+	return c.enqueue(anyDevice, workerID, spec)
+}
+
+func (c *Coordinator) enqueue(device, workerID string, spec JobSpec) (Job, error) {
 	if err := spec.check(); err != nil {
 		return Job{}, err
 	}
@@ -221,7 +242,7 @@ func (c *Coordinator) Enqueue(workerID string, spec JobSpec) (Job, error) {
 		return Job{}, err
 	}
 	c.mu.Lock()
-	if w, ok := c.state.Workers[workerID]; !ok {
+	if w, ok := c.state.Workers[workerID]; !ok || !w.mayAct(device) {
 		c.mu.Unlock()
 		return Job{}, ErrNoWorker
 	} else if w.WrappedDEK == nil {
@@ -274,6 +295,7 @@ func (c *Coordinator) Run(ctx context.Context) {
 			return
 		case <-c.wake:
 		case <-tick.C:
+			c.ExpireUngranted()
 		}
 	}
 }
@@ -360,7 +382,7 @@ func (c *Coordinator) runJob(ctx context.Context, job Job, w Worker, spec JobSpe
 		JobFile:   filepath.Join(root, "job.json"),
 	}
 	var given map[string]string
-	if err := c.view(w.ID, func(t *Tree) (err error) {
+	if err := c.view(w.ID, anyDevice, func(t *Tree) (err error) {
 		given, err = materialize(t, dirs)
 		return err
 	}); err != nil {
@@ -395,7 +417,7 @@ func (c *Coordinator) runJob(ctx context.Context, job Job, w Worker, spec JobSpe
 		results.Writes[prefixJobs+job.ID+"/stderr.txt"] = result.Stderr
 	}
 	// The error isn't logged: it can name the worker's files.
-	if err := c.change(w.ID, func(t *Tree) error { return apply(t, results) }); err != nil {
+	if err := c.change(w.ID, anyDevice, func(t *Tree) error { return apply(t, results) }); err != nil {
 		return 0, 0, errors.New("couldn't keep the job's results")
 	}
 	kept, dropped = len(results.Writes), len(results.Dropped)
@@ -428,7 +450,7 @@ func (c *Coordinator) refreshIndex(ctx context.Context, job Job, w Worker) error
 	}
 	var digest string
 	current := false
-	if err := c.view(w.ID, func(t *Tree) error {
+	if err := c.view(w.ID, anyDevice, func(t *Tree) error {
 		digest = rootDigest(t)
 		if indexed, err := t.Read(pathIndexed); err == nil && string(indexed) == digest {
 			current = true
@@ -467,7 +489,7 @@ func (c *Coordinator) refreshIndex(ctx context.Context, job Job, w Worker) error
 		maps.Copy(results.Writes, logs)
 		results.Writes[pathIndexed] = []byte(digest)
 	}
-	if cerr := c.change(w.ID, func(t *Tree) error { return apply(t, results) }); cerr != nil && err == nil {
+	if cerr := c.change(w.ID, anyDevice, func(t *Tree) error { return apply(t, results) }); cerr != nil && err == nil {
 		err = errors.New("couldn't keep the index")
 	}
 	return err
@@ -519,14 +541,14 @@ func apply(t *Tree, r *Results) error {
 
 // view opens a worker's tree to read, under its lock so no commit removes an
 // object while it is read.
-func (c *Coordinator) view(workerID string, fn func(*Tree) error) error {
+func (c *Coordinator) view(workerID, device string, fn func(*Tree) error) error {
 	lock, w, err := c.workerLock(workerID)
 	if err != nil {
 		return err
 	}
 	lock.Lock()
 	defer lock.Unlock()
-	t, err := c.loadTree(w)
+	t, err := c.loadTree(w, device)
 	if err != nil {
 		return err
 	}
@@ -536,14 +558,14 @@ func (c *Coordinator) view(workerID string, fn func(*Tree) error) error {
 // change opens the latest version of a worker's tree, lets fn stage changes,
 // commits them and records the new version on the volume. A job's results are
 // applied this way, on top of whatever changed while it ran.
-func (c *Coordinator) change(workerID string, fn func(*Tree) error) error {
+func (c *Coordinator) change(workerID, device string, fn func(*Tree) error) error {
 	lock, w, err := c.workerLock(workerID)
 	if err != nil {
 		return err
 	}
 	lock.Lock()
 	defer lock.Unlock()
-	t, err := c.loadTree(w)
+	t, err := c.loadTree(w, device)
 	if err != nil {
 		return err
 	}
@@ -580,19 +602,23 @@ func (c *Coordinator) workerLock(workerID string) (*sync.Mutex, Worker, error) {
 }
 
 // loadTree takes the worker's version from the volume afresh: the copy in w may
-// predate a commit made while its caller waited for the lock.
-func (c *Coordinator) loadTree(w Worker) (*Tree, error) {
+// predate a commit made while its caller waited for the lock. It checks that
+// device may still act for the worker, under the tree's lock, which a grant
+// takes too: a request that raced a grant removing its device fails here.
+func (c *Coordinator) loadTree(w Worker, device string) (*Tree, error) {
 	c.mu.Lock()
 	held, ok := c.state.Workers[w.ID]
 	var version uint64
 	var wrapped []byte
 	if ok {
+		ok = held.mayAct(device)
 		version, wrapped = held.Version, held.WrappedDEK
 	}
 	c.mu.Unlock()
 	switch {
 	case !ok:
-		// Revoked while its caller waited for the lock.
+		// Revoked, or its device removed, while its caller waited for the
+		// lock.
 		return nil, ErrNoWorker
 	case wrapped == nil:
 		return nil, ErrNotGranted
@@ -601,6 +627,7 @@ func (c *Coordinator) loadTree(w Worker) (*Tree, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer clear(dek[:])
 	return LoadTree(c.cfg.Store, w.ID, dek, version)
 }
 

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -37,9 +38,14 @@ import (
 //     deletes its objects. Desktop reads what it keeps first.
 //
 // Every /v1 operation on a worker needs the channel's device to be on its
-// list, so neither a credential fount-infra signs nor the session key the
-// broker holds opens a worker: the device key does. fount-infra still has to
-// vouch for the device and its account each time it connects.
+// list. A grant or revoke needs the device key's own signature. Reads, writes,
+// listing and jobs are authorized by the channel's device alone (Caller.Device),
+// which the broker proves with the session key the device key granted it, for
+// up to channel.MaxSession: a broker's session key that leaks opens its
+// device's workers until the session grant expires, but can't change who may
+// act for them. The device list is what keeps fount-infra, which vouches for
+// the device and its account each time it connects, from minting a new device
+// that opens an account's workers.
 const (
 	GrantVersion = 1
 	GrantType    = "fount-worker-grant"
@@ -50,6 +56,12 @@ const (
 
 	// MaxDevices bounds a worker's device list.
 	MaxDevices = 16
+	// A worker made over the channel and not yet granted holds a place in the
+	// state for nothing: a device has at most MaxUngrantedPerDevice, an
+	// account MaxUngrantedPerAccount, and each goes after UngrantedTTL.
+	MaxUngrantedPerDevice  = 4
+	MaxUngrantedPerAccount = 16
+	UngrantedTTL           = 30 * time.Minute
 	// MaxGrantAge is how long a signed grant stays good: Desktop signs it just
 	// before it sends it.
 	MaxGrantAge = time.Hour
@@ -111,6 +123,9 @@ var (
 	ErrDEKChanged = errors.New("a grant can't change the worker's DEK")
 	// ErrBusy is a worker with a running job.
 	ErrBusy = errors.New("the worker has a running job")
+	// ErrTooManyUngranted is a device or account with as many ungranted
+	// workers as it may have.
+	ErrTooManyUngranted = errors.New("too many workers waiting for their DEK grant")
 )
 
 var b64 = base64.RawURLEncoding.Strict()
@@ -245,6 +260,12 @@ func withWraps(devices []Device, wraps map[string][]byte) error {
 	return nil
 }
 
+// mayAct is authorizes, with anyDevice for the dev API and the coordinator's
+// own jobs.
+func (w *Worker) mayAct(device string) bool {
+	return device == anyDevice || w.authorizes(device)
+}
+
 // authorizes says whether device may act for w over the client channel.
 // A worker made by the dev API has no devices, so no channel opens it.
 func (w *Worker) authorizes(device string) bool {
@@ -257,22 +278,83 @@ func (w *Worker) authorizes(device string) bool {
 }
 
 // CreateWorkerFor makes an empty worker for the caller's account, which only
-// the caller's device may act for until it grants the worker's DEK.
+// the caller's device may act for until it grants the worker's DEK. It goes
+// after UngrantedTTL without a grant.
 func (c *Coordinator) CreateWorkerFor(caller Caller) (Worker, error) {
 	if len(caller.DeviceKey) != ed25519.PublicKeySize || deviceID(caller.DeviceKey) != caller.Device {
 		return Worker{}, errors.New("the caller's device key isn't its device's")
+	}
+	if err := checkID("account", caller.Account); err != nil {
+		return Worker{}, err
 	}
 	id, err := newID("w")
 	if err != nil {
 		return Worker{}, err
 	}
-	return c.add(&Worker{ID: id, Account: caller.Account, Devices: []Device{{ID: caller.Device, Key: caller.DeviceKey}}, Created: time.Now().UTC()})
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.expireUngranted(now)
+	device, account := 0, 0
+	for _, w := range c.state.Workers {
+		if w.WrappedDEK != nil || w.Account != caller.Account {
+			continue
+		}
+		account++
+		if w.authorizes(caller.Device) {
+			device++
+		}
+	}
+	if device >= MaxUngrantedPerDevice || account >= MaxUngrantedPerAccount {
+		return Worker{}, ErrTooManyUngranted
+	}
+	w := &Worker{ID: id, Account: caller.Account, Devices: []Device{{ID: caller.Device, Key: caller.DeviceKey}}, Created: now.UTC()}
+	c.state.Workers[id] = w
+	if err := c.state.Save(c.cfg.StateDir); err != nil {
+		delete(c.state.Workers, id)
+		return Worker{}, err
+	}
+	return *w, nil
+}
+
+// ungrantedExpired says whether w is a worker made over the channel whose
+// grant didn't come in time.
+func (w *Worker) ungrantedExpired(now time.Time) bool {
+	return w.WrappedDEK == nil && len(w.Devices) > 0 && !now.Before(w.Created.Add(UngrantedTTL))
+}
+
+// expireUngranted forgets every ungranted worker past UngrantedTTL. They
+// have no objects and no jobs. The state is saved with the caller's change,
+// or by ExpireUngranted. Called with c.mu held; it reports whether any went.
+func (c *Coordinator) expireUngranted(now time.Time) bool {
+	gone := false
+	for id, w := range c.state.Workers {
+		if w.ungrantedExpired(now) {
+			delete(c.state.Workers, id)
+			delete(c.locks, id)
+			gone = true
+		}
+	}
+	return gone
+}
+
+// ExpireUngranted forgets ungranted workers past UngrantedTTL; Run calls it.
+func (c *Coordinator) ExpireUngranted() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.expireUngranted(time.Now()) {
+		if err := c.state.Save(c.cfg.StateDir); err != nil {
+			log.Printf("save state: %v", err)
+		}
+	}
 }
 
 // Grant takes a worker's DEK and device list from one of its devices, as
 // above. It returns the worker as it now stands.
 func (c *Coordinator) Grant(caller Caller, workerID string, dek DEK, token string, wraps map[string][]byte) (Worker, error) {
-	claims, devices, err := verifyGrant(token, caller, workerID, OpGrant, time.Now())
+	defer clear(dek[:])
+	now := time.Now()
+	claims, devices, err := verifyGrant(token, caller, workerID, OpGrant, now)
 	if err != nil {
 		return Worker{}, err
 	}
@@ -282,8 +364,20 @@ func (c *Coordinator) Grant(caller Caller, workerID string, dek DEK, token strin
 	if err := withWraps(devices, wraps); err != nil {
 		return Worker{}, err
 	}
+	lock, _, err := c.workerLock(workerID)
+	if err != nil {
+		return Worker{}, err
+	}
+	// The tree's lock first, as view and change take it, so a read or write
+	// in progress finishes under the list it was allowed by, and one after
+	// sees the new list.
+	lock.Lock()
+	defer lock.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if w, ok := c.state.Workers[workerID]; ok && w.ungrantedExpired(now) {
+		return Worker{}, ErrNoWorker
+	}
 	w, err := c.grantee(caller, workerID, claims.Seq)
 	if err != nil {
 		return Worker{}, err

@@ -27,8 +27,8 @@ type keyFlags struct {
 	commitment string
 	testAPI    bool
 	// statusListen is --status-listen, or --client-listen, which serves
-	// /health too. Vault needs one: the API's /health answers only once a
-	// vault has given the key.
+	// /health too. Vault needs one for the healthcheck, since it serves no
+	// dev API.
 	statusListen string
 }
 

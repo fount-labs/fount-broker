@@ -33,6 +33,9 @@ type Client struct {
 	// takes effect on the next one.
 	Identity func() (Identity, error)
 
+	// expiryMargin stands in for ExpiryMargin in tests.
+	expiryMargin time.Duration
+
 	// mu guards transport, the pool of channels for the current identity,
 	// which Reset replaces.
 	mu        sync.Mutex
@@ -40,9 +43,14 @@ type Client struct {
 	http      *http.Client
 }
 
+// ExpiryMargin is how long before its proof expires a client stops using a
+// channel, so a request isn't cut off when the coordinator closes it then.
+const ExpiryMargin = time.Minute
+
 // Dial opens a channel and returns it, ready for HTTP, with the peer the
 // coordinator says the client is. The channel closes, and refuses to send,
-// at the coordinator's verification's freshness deadline.
+// at the coordinator's verification's freshness deadline or ExpiryMargin
+// before the peer's Expires, whichever is first.
 func (c *Client) Dial(ctx context.Context) (net.Conn, Peer, error) {
 	id, err := c.Identity()
 	if err != nil {
@@ -145,17 +153,33 @@ func (c *Client) handshake(ctx context.Context, raw net.Conn, id Identity) (net.
 	case a.Kind != "welcome" || a.Account == "":
 		return nil, Peer{}, fmt.Errorf("the coordinator answered %q", a.Kind)
 	}
-	return freshUntil(tc, endorsed.Fresh), Peer{Account: a.Account, Device: a.Device, Expires: time.Unix(a.Expires, 0)}, nil
+	peer := Peer{Account: a.Account, Device: a.Device, Expires: time.Unix(a.Expires, 0)}
+	return freshUntil(tc, c.usableUntil(endorsed.Fresh, peer.Expires, now)), peer, nil
+}
+
+// usableUntil is when a channel stops taking requests: the freshness
+// deadline, or the margin before the coordinator closes it at expires; a
+// channel shorter than the margin is used until expires.
+func (c *Client) usableUntil(fresh, expires, now time.Time) time.Time {
+	end := expires.Add(-or(c.expiryMargin, ExpiryMargin))
+	if !end.After(now) {
+		end = expires
+	}
+	if !fresh.IsZero() && fresh.Before(end) {
+		return fresh
+	}
+	return end
 }
 
 // errStale is a write on a channel past its coordinator's freshness
-// deadline. Nothing is written, so the HTTP transport sends the request again
-// on a new channel, which verifies the coordinator afresh.
-var errStale = errors.New("the coordinator's attestation is no longer fresh")
+// deadline or near its proof's expiry. Nothing is written, so the HTTP
+// transport sends the request again on a new channel, which verifies the
+// coordinator afresh with the identity then current.
+var errStale = errors.New("the channel is past its coordinator's freshness deadline or its proof's expiry")
 
-// freshConn is a channel that closes at its coordinator's freshness
-// deadline. Writes check it too, since a pooled channel can be picked for a
-// request just before its timer fires.
+// freshConn is a channel that closes at fresh, usableUntil's. Writes check it
+// too, since a pooled channel can be picked for a request just before its
+// timer fires.
 type freshConn struct {
 	net.Conn
 	fresh time.Time
@@ -163,9 +187,6 @@ type freshConn struct {
 }
 
 func freshUntil(conn net.Conn, fresh time.Time) net.Conn {
-	if fresh.IsZero() {
-		return conn
-	}
 	return &freshConn{Conn: conn, fresh: fresh, timer: time.AfterFunc(time.Until(fresh), func() { conn.Close() })}
 }
 

@@ -52,7 +52,8 @@
 // it loads the volume. It refuses --test-api. --status-listen serves /health and /status, which
 // says where the key came from, on an address the shim can reach; vault needs
 // it or --client-listen, which serves both too, and the healthcheck must point
-// at one, since the API's /health answers only once the key has come.
+// at one. Vault serves no dev API: its workers come only over the client
+// channel, to the devices their grants name.
 package main
 
 import (
@@ -101,7 +102,7 @@ func main() {
 
 func run() error {
 	dir := flag.String("dir", "", "folder for the state, the stored objects, job folders and the dev wrapping key")
-	listen := flag.String("listen", "127.0.0.1:8790", "loopback address for the dev API")
+	listen := flag.String("listen", "127.0.0.1:8790", "loopback address for the dev API, with --wrapping-key dev")
 	runners := flag.Int("runners", 2, "runners in the pool")
 	slots := flag.Int("slots", 2, "jobs at once per runner")
 	timeout := flag.Duration("job-timeout", 30*time.Minute, "longest a job may run")
@@ -174,12 +175,15 @@ func run() error {
 	}
 
 	// Every listener binds before the wait for the key, so a coordinator
-	// that can't serve fails now, not once a vault answers.
-	ln, err := net.Listen("tcp", *listen)
-	if err != nil {
-		return fmt.Errorf("--listen: %w", err)
+	// that can't serve fails now, not once a vault answers. With the vault's
+	// key there is no dev API, so nothing listens on --listen.
+	var ln net.Listener
+	if keys.mode == keyDev {
+		if ln, err = net.Listen("tcp", *listen); err != nil {
+			return fmt.Errorf("--listen: %w", err)
+		}
+		defer ln.Close()
 	}
-	defer ln.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	status := &keyStatus{Mode: keys.mode, State: "waiting", Since: time.Now().UTC()}
@@ -229,11 +233,20 @@ func run() error {
 		log.Printf("client channel on %s%s, for device credentials of %d keys", *clientListen, channel.Path, len(clients.AccountKeys))
 	}
 
-	api := c.Handler()
-	if *test {
-		if api, err = testAPI(api); err != nil {
-			return err
-		}
+	done := make(chan struct{})
+	go func() {
+		c.Run(ctx)
+		close(done)
+	}()
+	api, err := devAPI(c, keys, *test)
+	if err != nil {
+		return err
+	}
+	if api == nil {
+		log.Printf("no dev API: with the vault's wrapping key, workers come only over the client channel")
+		<-ctx.Done()
+		<-done
+		return nil
 	}
 	srv := &http.Server{Handler: api, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
@@ -242,17 +255,9 @@ func run() error {
 		defer cancel()
 		srv.Shutdown(shutdown)
 	}()
-	done := make(chan struct{})
-	go func() {
-		c.Run(ctx)
-		close(done)
-	}()
-	switch {
-	case *test:
+	if *test {
 		log.Printf("test API on http://%s behind its bearer token; test data only", *listen)
-	case keys.mode == keyVault:
-		log.Printf("API on http://%s, loopback only, with the vault's wrapping key", *listen)
-	default:
+	} else {
 		log.Printf("dev API on http://%s, no client authentication", *listen)
 	}
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -260,6 +265,20 @@ func run() error {
 	}
 	<-done
 	return nil
+}
+
+// devAPI is what --listen serves: the dev API, behind the test API's token
+// with --test-api, or nil with the vault's wrapping key. The dev API opens
+// any worker without a device list, and a coordinator with the vault's key
+// must open a worker only to the devices its grant names.
+func devAPI(c *coordinator.Coordinator, keys keyFlags, test bool) (http.Handler, error) {
+	if keys.mode != keyDev {
+		return nil, nil
+	}
+	if test {
+		return testAPI(c.Handler())
+	}
+	return c.Handler(), nil
 }
 
 // serveBeyond serves h on ln, which may be beyond loopback, until ctx ends;

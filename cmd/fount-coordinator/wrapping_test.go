@@ -106,3 +106,27 @@ func TestStatusNamesTheKeyButNeverShowsIt(t *testing.T) {
 		t.Fatalf("the status listener serves the API: %d", code)
 	}
 }
+
+func TestTheVaultsKeyServesNoDevAPI(t *testing.T) {
+	dir := t.TempDir()
+	key, _ := coordinator.NewWrappingKey()
+	c, err := coordinator.New(coordinator.Config{
+		StateDir: dir + "/state", WorkDir: dir + "/work", Store: coordinator.DirStore{Root: dir + "/objects"},
+		Key: key, Pool: coordinator.NewPool(1, 1, nil), Runner: coordinator.LocalRunner{Command: []string{"false"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h, err := devAPI(c, vaultFlags(), false); h != nil || err != nil {
+		t.Errorf("vault: %v, %v", h, err)
+	}
+	h, err := devAPI(c, keyFlags{mode: keyDev}, false)
+	if err != nil || h == nil {
+		t.Fatalf("dev: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v0/workers", strings.NewReader(`{"account":"acme"}`)))
+	if rec.Code != 201 {
+		t.Errorf("dev: POST /v0/workers: %d %s", rec.Code, rec.Body)
+	}
+}

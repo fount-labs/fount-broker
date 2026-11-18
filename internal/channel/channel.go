@@ -15,8 +15,9 @@
 //     is the TLS one. Until then the client sends nothing, so a coordinator
 //     that isn't a release of that repo never sees a credential. The client
 //     sends no request on the channel at or after the verification's
-//     freshness deadline: it closes the channel then, and the next request
-//     dials and verifies afresh.
+//     freshness deadline, or within ExpiryMargin of the peer's Expires: it
+//     closes the channel then, and the next request dials and verifies
+//     afresh.
 //  3. The client sends a hello: its device credential (fount-infra's, which
 //     names the account), its device's public key, the device key's grant of a
 //     session key (identity.go), and the session key's signature over the
