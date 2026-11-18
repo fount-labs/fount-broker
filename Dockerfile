@@ -15,7 +15,8 @@ COPY internal internal
 ENV CGO_ENABLED=0 GOFLAGS=-trimpath GOTOOLCHAIN=local
 RUN go build -buildvcs=false -ldflags "-s -w -buildid= -X main.version=${VERSION}" -o /out/fount-broker ./cmd/fount-broker \
  && go build -buildvcs=false -ldflags "-s -w -buildid=" -o /out/fount-supervisor ./cmd/fount-supervisor \
- && go build -buildvcs=false -ldflags "-s -w -buildid=" -o /out/fount-coordinator ./cmd/fount-coordinator
+ && go build -buildvcs=false -ldflags "-s -w -buildid=" -o /out/fount-coordinator ./cmd/fount-coordinator \
+ && go build -buildvcs=false -tags dev -ldflags "-s -w -buildid= -X main.version=${VERSION}-dev" -o /out/fount-broker-dev ./cmd/fount-broker
 
 FROM alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f AS gvisor
 ARG GVISOR=20261109.0
@@ -27,6 +28,14 @@ RUN wget -q -O /gvisor.tar.bz2 "https://storage.googleapis.com/gvisor/releases/r
 
 FROM alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f AS broker
 COPY --from=build /out/fount-broker /fount-broker
+EXPOSE 7400
+ENTRYPOINT ["/fount-broker"]
+
+# The broker built with -tags dev, which reads endpoint overrides such as
+# FOUNT_BROKER_PROXY (internal/policy/endpoints_dev.go): for a test runner
+# whose jobs reach the dev proxy. Test data only.
+FROM alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f AS broker-dev
+COPY --from=build /out/fount-broker-dev /fount-broker
 EXPOSE 7400
 ENTRYPOINT ["/fount-broker"]
 
