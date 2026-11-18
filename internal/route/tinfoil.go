@@ -90,14 +90,20 @@ func (m *RouterMemory) forget(host string) {
 // The route goes straight to the router m holds, and discovers only when m
 // holds none or that router fails, so a slow or unreachable router list costs
 // once per process rather than once per route.
+//
+// The routes are other users' jobs, so one without a cache secret gets a
+// random one of its own, never a secret shared across the process as
+// tinfoil-go's default is: its requests share a prompt cache only with
+// themselves.
 func NewTinfoilRemembering(base string, cacheSecret func() string, m *RouterMemory) *Tinfoil {
-	t := NewTinfoil(base, cacheSecret)
+	secret := orOwnSecret(cacheSecret)
+	t := NewTinfoil(base, secret)
 	t.memory = m
 	t.discover = m.discoverWith(t.discover, func(ctx context.Context, host string) (enclave, error) {
 		return tinfoil.NewEnclaveHTTPClient(ctx, host, tinfoil.Pin{Repo: policy.TinfoilRouterRepo}, &tinfoil.EnclaveOptions{
 			TransportMode:     tinfoil.TransportModeEHBP,
 			BaseURL:           base,
-			UserCacheSecret:   orProcessSecret(cacheSecret()),
+			UserCacheSecret:   secret(),
 			VerificationCheck: checkRepo(policy.TinfoilRouterRepo),
 		})
 	})
@@ -127,26 +133,20 @@ func (m *RouterMemory) discoverWith(fresh func(context.Context) (enclave, error)
 	}
 }
 
-var (
-	processSecretOnce sync.Once
-	processSecret     string
-)
-
-// orProcessSecret is tinfoil-go's rule for a router client without a cache
-// secret, which a client for a named enclave doesn't apply: a random secret
-// made once per process.
-func orProcessSecret(s string) string {
-	if s != "" {
-		return s
+// orOwnSecret reads cacheSecret, or while it is empty a secret made for this
+// caller alone: 32 random bytes as hex, as tinfoil-go makes its own.
+func orOwnSecret(cacheSecret func() string) func() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
 	}
-	processSecretOnce.Do(func() {
-		b := make([]byte, 32)
-		if _, err := rand.Read(b); err != nil {
-			panic(err)
+	own := hex.EncodeToString(b)
+	return func() string {
+		if s := cacheSecret(); s != "" {
+			return s
 		}
-		processSecret = hex.EncodeToString(b)
-	})
-	return processSecret
+		return own
+	}
 }
 
 // NewTinfoilEnclave returns a route to the one enclave at host, which must be

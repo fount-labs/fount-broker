@@ -251,12 +251,17 @@ func TestKeepsTheRouterWhenTheRouteIsCancelled(t *testing.T) {
 	}
 }
 
-func TestProcessSecretOnlyWhenNoneIsSet(t *testing.T) {
-	if orProcessSecret("mine") != "mine" {
-		t.Fatal("replaced a set secret")
+func TestEachRouteHasItsOwnSecretWhenNoneIsSet(t *testing.T) {
+	set := ""
+	a, b := orOwnSecret(func() string { return set }), orOwnSecret(func() string { return "" })
+	if a() == "" || a() != a() {
+		t.Fatalf("a route's own secret changed: %q, %q", a(), a())
 	}
-	a, b := orProcessSecret(""), orProcessSecret("")
-	if a == "" || a != b {
-		t.Fatalf("process secrets %q, %q", a, b)
+	if a() == b() {
+		t.Fatal("two routes without a secret share one")
+	}
+	set = "mine"
+	if a() != "mine" {
+		t.Fatal("replaced a set secret")
 	}
 }

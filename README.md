@@ -383,7 +383,10 @@ customer data, keys or network.
    rest to the supervisor unread. The supervisor never sees a credential.
    The job brokers share only the Tinfoil router the first one discovered:
    each verifies it again with its own client and cache secret, and one
-   discovers again only when that router fails.
+   discovers again only when that router fails. The cache secret is the
+   coordinator's for the job's account, so one account's jobs share Tinfoil's
+   prompt cache and no two accounts do; a job without one gets a random secret
+   of its own, never one shared across the runner.
 4. The supervisor makes the job's folders from the streams, runs it with
    `sockets/<id>` at `/run/broker` and `--broker-socket /run/broker/job.sock`,
    a fair share of the cores as `--threads`, streams its output back, and
