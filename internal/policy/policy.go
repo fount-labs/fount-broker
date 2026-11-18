@@ -20,6 +20,10 @@ const (
 	CredentialTinfoilCacheSecret Credential = "tinfoil_cache_secret"
 	// CredentialOpenRouterKey is the user's own OpenRouter API key.
 	CredentialOpenRouterKey Credential = "openrouter_api_key"
+	// CredentialCloudSession is the device key's grant of a session key to
+	// this broker, and that key, for the coordinator's client channel
+	// (package channel). The device key stays in the app's keychain.
+	CredentialCloudSession Credential = "cloud_session"
 )
 
 // CredentialMailKeys is the mail_keys credential: each mail address's
@@ -28,7 +32,7 @@ const (
 const CredentialMailKeys = "mail_keys"
 
 // Credentials is every credential the app may hand the broker.
-var Credentials = []Credential{CredentialLicense, CredentialTinfoilCacheSecret, CredentialOpenRouterKey}
+var Credentials = []Credential{CredentialLicense, CredentialTinfoilCacheSecret, CredentialOpenRouterKey, CredentialCloudSession}
 
 func KnownCredential(name string) bool {
 	return slices.Contains(Credentials, Credential(name))

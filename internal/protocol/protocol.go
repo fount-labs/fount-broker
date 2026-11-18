@@ -11,6 +11,7 @@
 //	{"kind":"mail","id":N,"op":"get","mailbox":"<64 hex>","path":"<edge id>"}  body: empty, or a saved ledger for op restore
 //	{"kind":"mail","id":N,"op":"reply_token","mailbox":"<64 hex>","path":"<10 hex thread handle>"}
 //	{"kind":"mail","id":N,"op":"routing","mailbox":"<64 hex, or empty>","headers":{"Fount-Signature":"…"}}  body: the signed JSON
+//	{"kind":"cloud","id":N,"op":"PUT","path":"v1/workers/<id>/root/notes.md"}  body: the request's
 //
 // Broker to app:
 //
@@ -21,8 +22,10 @@
 //	{"kind":"result","id":N}  body: JSON
 //	{"kind":"error","id":N,"code":"…","message":"…"}
 //
-// A fetch gets one head, any number of data frames, then end or error. The
-// other requests get one result or one error. Mail ops and their results are
+// A fetch or a cloud request gets one head, any number of data frames, then
+// end or error. The other requests get one result or one error. A cloud
+// request is one of the coordinator's account API (package channel's
+// CheckRequest), its method as op. Mail ops and their results are
 // in package mail.
 package protocol
 
@@ -43,6 +46,7 @@ const (
 	KindCredential Kind = "credential"
 	KindStatus     Kind = "status"
 	KindMail       Kind = "mail"
+	KindCloud      Kind = "cloud"
 
 	KindReady  Kind = "ready"
 	KindHead   Kind = "head"
@@ -144,6 +148,8 @@ func DecodeRequest(header []byte) (Request, error) {
 		extra = mail || r.Dest != "" || r.Accept != "" || r.Path != "" || r.Name != "" || r.Route == ""
 	case KindMail:
 		extra = r.Dest != "" || r.Accept != "" || r.Name != "" || r.Route != "" || r.Op == ""
+	case KindCloud:
+		extra = r.Dest != "" || r.Accept != "" || r.Name != "" || r.Route != "" || r.Mailbox != "" || r.Headers != nil || r.Op == "" || r.Path == ""
 	default:
 		return Request{}, fmt.Errorf("%w: unknown kind %q", ErrMalformed, r.Kind)
 	}
