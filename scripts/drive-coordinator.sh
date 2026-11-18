@@ -7,6 +7,7 @@
 #   COORDINATOR=https://<domain> drive-coordinator.sh            smoke jobs, then the ramp
 #   SMOKE=0 RAMP="8 16" COORDINATOR=... drive-coordinator.sh     the ramp only, at 8 then 16
 #   REAL=1 ACCOUNT=<id> COORDINATOR=... drive-coordinator.sh     real-model jobs: no scripts
+#   MODEL=kimi-k3-1-pro REAL=1 ...                               another model (default DeepSeek)
 #
 # REAL=1 sends each job without its script, so the runner calls the model through the proxy with
 # the job's credential; ACCOUNT must then be one the proxy entitles. Real jobs have their own
@@ -24,6 +25,9 @@ SMOKE="${SMOKE:-1}"
 RAMP="${RAMP-8 16 24 32}"
 ACCOUNT="${ACCOUNT:-acct_drive_$(date +%s)}"
 REAL="${REAL:-0}"
+# The real jobs' model: DeepSeek V4.1 Flash by default, whose per-key rate limit on Tinfoil is
+# 90 RPM against Kimi K3.1's 20. Limits are fount's src/lib/models/registry.ts.
+MODEL="${MODEL:-deepseek-v4-1-flash}"
 [ -s "$TOKEN_FILE" ] || { echo "no token in $TOKEN_FILE" >&2; exit 1; }
 HEADERS="$(mktemp)"
 trap 'rm -f "$HEADERS"' EXIT
@@ -73,10 +77,18 @@ real_job() {
       prompt='Put 41 in A1 and a formula A1+1 in B1 of Blank.xlsx.' ;;
     *) echo "no real job $2" >&2; return 1 ;;
   esac
-  python3 - "$FIXTURES/write-job.json" "$prompt" "$2" <<'PY' | api -X POST "$API/v0/workers/$1/jobs" -d @- | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])'
+  python3 - "$FIXTURES/write-job.json" "$prompt" "$2" "$MODEL" <<'PY' | api -X POST "$API/v0/workers/$1/jobs" -d @- | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])'
 import json, sys, uuid
 f = json.load(open(sys.argv[1]))
-print(json.dumps({"threadId": "t-" + sys.argv[3], "sessionId": str(uuid.uuid4()), "instruction": sys.argv[2], "config": f["config"]}))
+config, model = f["config"], sys.argv[4]
+models = {
+    "kimi-k3-1-pro": ("K3.1 Pro", 200_000, 16_000),
+    "deepseek-v4-1-flash": ("V4.1 Flash", 1_048_576, 131_072),
+}
+name, context, output = models[model]
+config.update(model=model, modelId=model)
+config["modelInfo"].update(id=model, name=name, limit={"context": context, "output": output})
+print(json.dumps({"threadId": "t-" + sys.argv[3], "sessionId": str(uuid.uuid4()), "instruction": sys.argv[2], "config": config}))
 PY
 }
 # wait_job <job>: prints the final state as JSON.
