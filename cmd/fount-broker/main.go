@@ -68,6 +68,7 @@ func main() {
 		log.Printf("Cloud unavailable: %v", err)
 	} else if c != nil {
 		b.Cloud = c
+		b.Coordinator, _ = coordinator()
 	}
 	// Chat and the rest work without the tunnel, so failing to open it only
 	// leaves uv without a way out.

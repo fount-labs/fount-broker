@@ -393,3 +393,31 @@ func TestLatexFileRefusesAWholeBundleReply(t *testing.T) {
 		t.Fatalf("got %+v, want a network error before any data", r)
 	}
 }
+
+func TestReadyAnnouncesCoordinator(t *testing.T) {
+	for _, origin := range []string{"", "https://coordinator.example"} {
+		inR, inW := io.Pipe()
+		outR, outW := io.Pipe()
+		b := New("test", map[string]route.Route{}, NewVault())
+		b.Coordinator = origin
+		done := make(chan error, 1)
+		go func() { done <- b.Serve(context.Background(), inR, outW); outW.Close() }()
+		f, err := frame.Read(outR)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var r protocol.Reply
+		if err := json.Unmarshal(f.Header, &r); err != nil {
+			t.Fatal(err)
+		}
+		if r.Kind != protocol.KindReady || r.Coordinator != origin {
+			t.Errorf("ready with Coordinator %q: got %s", origin, f.Header)
+		}
+		if origin == "" && strings.Contains(string(f.Header), "coordinator") {
+			t.Errorf("ready names a coordinator the build doesn't pin: %s", f.Header)
+		}
+		inW.Close()
+		go io.Copy(io.Discard, outR)
+		<-done
+	}
+}

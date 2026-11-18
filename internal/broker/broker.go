@@ -41,6 +41,8 @@ type Broker struct {
 	// Cloud reaches Fount Cloud's coordinator over the attested client
 	// channel (package channel). Nil refuses cloud requests.
 	Cloud CloudService
+	// Coordinator is Cloud's origin, announced in the ready frame.
+	Coordinator string
 	// Locked refuses credential requests: a runner enclave filled the vault
 	// for one Cloud job (package relay), and the job can't change it.
 	Locked bool
@@ -79,7 +81,7 @@ func (b *Broker) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 		cancel()
 		b.wg.Wait()
 	}()
-	if err := b.reply(protocol.Reply{Kind: protocol.KindReady, Version: b.version, Protocol: protocol.Version, Proxy: b.ProxyURL}, nil); err != nil {
+	if err := b.reply(protocol.Reply{Kind: protocol.KindReady, Version: b.version, Protocol: protocol.Version, Proxy: b.ProxyURL, Coordinator: b.Coordinator}, nil); err != nil {
 		return err
 	}
 	for {

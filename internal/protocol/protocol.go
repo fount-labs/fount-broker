@@ -15,7 +15,7 @@
 //
 // Broker to app:
 //
-//	{"kind":"ready","version":"…","protocol":1,"proxy":"http://fount:…@127.0.0.1:N"}
+//	{"kind":"ready","version":"…","protocol":1,"proxy":"http://fount:…@127.0.0.1:N","coordinator":"https://…"}
 //	{"kind":"head","id":N,"status":200,"contentType":"text/event-stream","contentLength":N}
 //	{"kind":"data","id":N}  body: a chunk of the response
 //	{"kind":"end","id":N}
@@ -85,7 +85,11 @@ type Reply struct {
 	Protocol int    `json:"protocol,omitempty"`
 	// Proxy is the package tunnel's URL, password included, for uv's
 	// HTTPS_PROXY. Empty when the tunnel couldn't open.
-	Proxy       string `json:"proxy,omitempty"`
+	Proxy string `json:"proxy,omitempty"`
+	// Coordinator is the origin of the Fount Cloud coordinator this broker
+	// dials, which worker grants must name as their audience. Empty when the
+	// build pins none, or it couldn't be reached: Cloud is off.
+	Coordinator string `json:"coordinator,omitempty"`
 	Status      int    `json:"status,omitempty"`
 	ContentType string `json:"contentType,omitempty"`
 	// ContentLength is the response size when the server states it.
