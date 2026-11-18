@@ -254,7 +254,7 @@ Both APIs serve the same worker routes, under `/v0` (dev and test) and `/v1`
 | `GET /workers/{id}/threads` | `{"threads":[ThreadSummary…]}`, newest first |
 | `GET /workers/{id}/threads/{tid}` | The thread's display form, a `ThreadView` |
 | `GET /workers/{id}/threads/{tid}?since=N` | A `ThreadChanges`: everything (`full`) when `N` is 0 or past the thread's revision, else the header if the thread moved and each entry changed after `N` |
-| `POST /workers/{id}/threads/{tid}/ops` | A thread operation: `sendNote`, `cancelJob` |
+| `POST /workers/{id}/threads/{tid}/ops` | A thread operation: `sendNote`, `cancelJob`, `acceptProposal`, `discardProposal` |
 | `POST /workers/{id}/ops` | A worker operation: `startThread` |
 
 A worker's threads are records in its tree, under its DEK
@@ -273,15 +273,21 @@ builds itself with `--job-config`'s model settings (a file, or the JSON object
 inline); a note stops the thread's
 unfinished job first. `cancelJob` (`{"jobId"}`) stops a queued or running job
 and drops what it leaves. A turn opens when its job runs and ends done or
-failed with it. The other operations Fount has answer 501 until Cloud has
-questions, drafts, mail and file proposals.
+failed with it. `acceptProposal` and `discardProposal` (`{"jobId", "path"}`)
+decide one of a finished job's proposals: Accept makes it the worker's file if
+the file is still the version the job was given, else `FILES_CHANGED`; a second
+decision is `PROPOSAL_DECIDED`. The other operations Fount has answer 501 until
+Cloud has questions, drafts and mail.
 
 When a job ends the coordinator keeps the workspace's `.fount` folder, new files
 in the thread's `outputs/<job id>/`, and each change to the worker's files
 outside `threads/`, `instructions.md` and `memory.md` as a proposal at
 `jobs/<job id>/proposed/<path>`. `scratch/` is thrown away, and a change to an
-input is dropped and counted. A thread's turn lists the job's outputs, then
-the files it proposed.
+input is dropped and counted, and `jobs/<job id>/bases.json` keeps the hash of
+the version each proposal started from. A thread's turn lists the job's
+outputs, then the files it proposed: a pending one with its `proposal` path,
+which `GET /workers/{id}/files/jobs/<job id>/proposed/<path>` reads, and a
+decided one noted Accepted or Discarded.
 
 Its parse surfaces are the JobSpec, the API's small JSON bodies (operations
 are strict JSON of at most 512 KiB), its own thread records and, over the

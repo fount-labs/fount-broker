@@ -22,7 +22,8 @@ import (
 // operation changes nothing and answers with a §6 code; the actor is the
 // channel's device, never a field of the body.
 //
-// Built: startThread (a worker operation), sendNote and cancelJob. Every other
+// Built: startThread (a worker operation), sendNote, cancelJob, and
+// acceptProposal and discardProposal, Cloud's own. Every other
 // operation Desktop knows is ErrUnsupported, by name, so a client can tell
 // "not here yet" from a bad request.
 
@@ -72,24 +73,28 @@ type OpResult struct {
 type OpCode string
 
 const (
-	CodeNotFound    OpCode = "NOT_FOUND"
-	CodeEmptyText   OpCode = "EMPTY_TEXT"
-	CodeTextTooLong OpCode = "TEXT_TOO_LONG"
-	CodeOpIDReused  OpCode = "OP_ID_REUSED"
-	CodeNoModel     OpCode = "NO_MODEL"
-	CodeThreadCap   OpCode = "THREAD_CAP"
-	CodeJobFinished OpCode = "JOB_FINISHED"
+	CodeNotFound        OpCode = "NOT_FOUND"
+	CodeEmptyText       OpCode = "EMPTY_TEXT"
+	CodeTextTooLong     OpCode = "TEXT_TOO_LONG"
+	CodeOpIDReused      OpCode = "OP_ID_REUSED"
+	CodeNoModel         OpCode = "NO_MODEL"
+	CodeThreadCap       OpCode = "THREAD_CAP"
+	CodeJobFinished     OpCode = "JOB_FINISHED"
+	CodeFilesChanged    OpCode = "FILES_CHANGED"
+	CodeProposalDecided OpCode = "PROPOSAL_DECIDED"
 )
 
 // opMessages are §6's messages, as Desktop's Code::message words them.
 var opMessages = map[OpCode]string{
-	CodeNotFound:    "This thread is gone.",
-	CodeEmptyText:   "Write something first.",
-	CodeTextTooLong: "That's too long to send. Attach it as a file instead.",
-	CodeOpIDReused:  "Fount sent this action twice with different content. Try again.",
-	CodeNoModel:     "Choose a model for this worker's jobs first.",
-	CodeThreadCap:   fmt.Sprintf("This thread has reached its limit of %d jobs.", maxThreadJobs),
-	CodeJobFinished: "That job already finished.",
+	CodeNotFound:        "This thread is gone.",
+	CodeEmptyText:       "Write something first.",
+	CodeTextTooLong:     "That's too long to send. Attach it as a file instead.",
+	CodeOpIDReused:      "Fount sent this action twice with different content. Try again.",
+	CodeNoModel:         "Choose a model for this worker's jobs first.",
+	CodeThreadCap:       fmt.Sprintf("This thread has reached its limit of %d jobs.", maxThreadJobs),
+	CodeJobFinished:     "That job already finished.",
+	CodeFilesChanged:    "This file changed since the agent's change was made. Discard the change, or ask for it again.",
+	CodeProposalDecided: "This change was already accepted or discarded.",
 }
 
 func refused(rev uint64, code OpCode) OpResult {
@@ -97,7 +102,10 @@ func refused(rev uint64, code OpCode) OpResult {
 }
 
 // refusal is an operation the coordinator turns down with a code.
-type refusal struct{ code OpCode }
+type refusal struct {
+	code   OpCode
+	detail map[string]string
+}
 
 func (r refusal) Error() string { return string(r.code) }
 
@@ -111,8 +119,8 @@ var unsupportedThreadOps = map[string]string{
 	"discardDraft":       "drafts from a job's final answer",
 	"runHeldMail":        "mail intake",
 	"addRequester":       "mail intake and the worker's requesters",
-	"keepFileAsCopy":     "file proposals",
-	"redoOnLatest":       "file proposals and drafts",
+	"keepFileAsCopy":     "drafts from a job's final answer",
+	"redoOnLatest":       "drafts from a job's final answer",
 	"sendAgain":          "sending mail from Cloud",
 	"setThreadReplyMode": "the email side of a thread",
 	"markRead":           "read state per device",
@@ -136,6 +144,14 @@ type noteArgs struct {
 
 type cancelArgs struct {
 	JobID string `json:"jobId"`
+}
+
+// proposalArgs are acceptProposal's and discardProposal's: a job's proposal,
+// by the path it would have in the worker root.
+type proposalArgs struct {
+	JobID  string `json:"jobId"`
+	Path   string `json:"path"`
+	accept bool
 }
 
 func decodeArgs(raw json.RawMessage, v any) error {
@@ -163,7 +179,7 @@ func (a noteArgs) check() error {
 }
 
 // parseThreadOp checks an envelope for the thread at threadID and decodes its
-// args: a noteArgs or cancelArgs. It returns the hash a retry must match
+// args: a noteArgs, cancelArgs or proposalArgs. It returns the hash a retry must match
 // (§4.4): the thread, kind and args, not the base revision.
 func parseThreadOp(env opEnvelope, threadID string) (args any, hash string, err error) {
 	if err := checkID("op", env.OpID); err != nil {
@@ -185,6 +201,13 @@ func parseThreadOp(env opEnvelope, threadID string) (args any, hash string, err 
 			return nil, "", err
 		}
 		args, err = a, checkID("job", a.JobID)
+	case "acceptProposal", "discardProposal":
+		var a proposalArgs
+		if err := decodeArgs(env.Args, &a); err != nil {
+			return nil, "", err
+		}
+		a.accept = env.Kind == "acceptProposal"
+		args, err = a, cmp.Or(checkID("job", a.JobID), checkPath(a.Path))
 	default:
 		if needs, ok := unsupportedThreadOps[env.Kind]; ok {
 			return nil, "", fmt.Errorf("%s: %w; it needs %s", env.Kind, ErrUnsupported, needs)
@@ -278,9 +301,9 @@ func noteText(text string) (string, error) {
 	text = strings.TrimSpace(text)
 	switch {
 	case text == "":
-		return "", refusal{CodeEmptyText}
+		return "", refusal{code: CodeEmptyText}
 	case len(text) > maxNoteText:
-		return "", refusal{CodeTextTooLong}
+		return "", refusal{code: CodeTextTooLong}
 	}
 	return text, nil
 }
@@ -294,17 +317,17 @@ const replacedNote = "The user wrote you a note while you were working, so that 
 // from the thread, with the coordinator's model settings.
 func (c *Coordinator) noteJob(th *threadRecord, text string, replacing bool) (string, JobSpec, error) {
 	if len(c.cfg.JobConfig) == 0 {
-		return "", JobSpec{}, refusal{CodeNoModel}
+		return "", JobSpec{}, refusal{code: CodeNoModel}
 	}
 	if len(th.Jobs) >= maxThreadJobs {
-		return "", JobSpec{}, refusal{CodeThreadCap}
+		return "", JobSpec{}, refusal{code: CodeThreadCap}
 	}
 	instruction := text
 	if replacing {
 		instruction = replacedNote + text
 	}
 	if len(instruction) > maxInstruction {
-		return "", JobSpec{}, refusal{CodeTextTooLong}
+		return "", JobSpec{}, refusal{code: CodeTextTooLong}
 	}
 	id, err := newID("j")
 	if err != nil {
@@ -375,10 +398,13 @@ func (c *Coordinator) applyThreadOp(device, workerID, threadID string, env opEnv
 			ids, fx, err = c.sendNote(th, device, a, rev, now)
 		case cancelArgs:
 			fx, err = cancelJob(th, a, rev)
+		case proposalArgs:
+			err = decideProposal(t, th, a, rev)
 		}
 		var r refusal
 		if errors.As(err, &r) {
 			result = refused(th.Revision, r.code)
+			result.Detail = r.detail
 			return nil
 		}
 		if err != nil {
@@ -433,10 +459,70 @@ func (c *Coordinator) sendNote(th *threadRecord, device string, a noteArgs, rev 
 func cancelJob(th *threadRecord, a cancelArgs, rev uint64) (effects, error) {
 	j := th.job(a.JobID)
 	if j == nil || !j.unfinished() {
-		return effects{}, refusal{CodeJobFinished}
+		return effects{}, refusal{code: CodeJobFinished}
 	}
 	th.stopJob(a.JobID, rev)
 	return effects{cancel: []string{a.JobID}}, nil
+}
+
+// decideProposal accepts or discards one of a finished job's proposals
+// (cloud-in-home.md §5). Accept makes it the worker's file, if the file is
+// still the version the job was given: a file someone changed since, or one
+// made since a job proposed a new file of that name, is FILES_CHANGED and
+// changes nothing. Either way the proposal goes, and its turn says what became
+// of it.
+func decideProposal(t *Tree, th *threadRecord, a proposalArgs, rev uint64) error {
+	turn := th.proposalTurn(a.JobID, a.Path)
+	if turn == nil {
+		return fmt.Errorf("%w: job %s proposed no %s on this thread", ErrInvalid, a.JobID, a.Path)
+	}
+	if turn.Decided[a.Path] != "" {
+		return refusal{code: CodeProposalDecided}
+	}
+	proposed := prefixJobs + a.JobID + "/proposed/" + a.Path
+	decided := proposalDiscarded
+	if a.accept {
+		bases, err := loadBases(t, a.JobID)
+		if err != nil {
+			return err
+		}
+		base, known := bases[a.Path]
+		current, exists := t.Hash(prefixRoot + a.Path)
+		if !known || current != base || exists != (base != "") {
+			return refusal{code: CodeFilesChanged, detail: map[string]string{"path": a.Path}}
+		}
+		data, err := t.Read(proposed)
+		if err != nil {
+			return err
+		}
+		if err := t.Write(prefixRoot+a.Path, data); err != nil {
+			return err
+		}
+		decided = proposalAccepted
+	}
+	t.Remove(proposed)
+	if turn.Decided == nil {
+		turn.Decided = map[string]string{}
+	}
+	turn.Decided[a.Path], turn.Rev = decided, rev
+	return nil
+}
+
+// loadBases is a job's bases.json. A job collected before bases were kept
+// has none, so none of its proposals can be accepted, only discarded.
+func loadBases(t *Tree, jobID string) (map[string]string, error) {
+	bases := map[string]string{}
+	data, err := t.Read(basesPath(jobID))
+	if errors.Is(err, ErrNotFound) {
+		return bases, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(data, &bases); err != nil {
+		return nil, fmt.Errorf("%s: %w", basesPath(jobID), err)
+	}
+	return bases, nil
 }
 
 // applyWorkerOp checks and applies a worker operation: startThread, a new

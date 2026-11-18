@@ -18,7 +18,7 @@ import (
 
 // threadRunner holds each agent job until the test releases it or the job is
 // cancelled, and keeps each job's prompt. A job leaves out.md in its outputs
-// and report.md at the top of the worker's files.
+// and report.md, naming its prompt, at the top of the worker's files.
 type threadRunner struct {
 	mu      sync.Mutex
 	prompts []string
@@ -43,7 +43,7 @@ func (r *threadRunner) Run(ctx context.Context, _, _ string, job JobDirs) (RunRe
 	for _, out := range outputs {
 		os.WriteFile(filepath.Join(out, "out.md"), []byte("done"), fileMode)
 	}
-	os.WriteFile(filepath.Join(job.Workspace, "report.md"), []byte("report"), fileMode)
+	os.WriteFile(filepath.Join(job.Workspace, "report.md"), []byte("report: "+rj.Prompt), fileMode)
 	select {
 	case <-r.release:
 		return RunResult{}, nil
@@ -425,6 +425,73 @@ func TestCancelJob(t *testing.T) {
 	}
 }
 
+func TestAcceptAndDiscardAProposal(t *testing.T) {
+	c, r, w := newThreadCoordinator(t, `{"model":"m"}`)
+	tid := startThread(t, c, w, "op_1", "Write the report").ThreadID
+	r.release <- struct{}{}
+	th := waitThread(t, c, w, tid, "the job ends", func(th *threadRecord) bool { return th.Revision == 3 })
+	first := th.Jobs[0].ID
+	report := proposalArgs{JobID: first, Path: "report.md"}
+
+	res := threadOp(t, c, w, tid, "op_2", 3, "acceptProposal", report)
+	if !res.OK || res.Revision != 4 {
+		t.Fatalf("accept: %+v", res)
+	}
+	if data, _ := c.ReadFile(w.ID, prefixRoot+"report.md"); string(data) != "report: Write the report" {
+		t.Fatalf("the accepted file reads %q", data)
+	}
+	if left, _ := c.ListFiles(w.ID, prefixJobs+first+"/proposed/"); len(left) != 0 {
+		t.Errorf("the proposal is still there: %v", left)
+	}
+	th = readThread(t, c, w, tid)
+	turn := th.display(3)[0].(turnView)
+	if got := turn.Files[1]; got.Name != "report.md" || got.Note != "Accepted" || got.Proposal != "" || turn.Rev != 4 {
+		t.Errorf("the accepted turn shows %+v at %d", got, turn.Rev)
+	}
+	if again := threadOp(t, c, w, tid, "op_2", 3, "acceptProposal", report); !again.OK || again.Revision != 4 {
+		t.Fatalf("a retry: %+v", again)
+	}
+	if twice := threadOp(t, c, w, tid, "op_3", 4, "discardProposal", report); twice.Code != CodeProposalDecided || twice.Revision != 4 {
+		t.Fatalf("discarding an accepted proposal: %+v", twice)
+	}
+
+	// The next job changes report.md; someone changes it before it's accepted.
+	threadOp(t, c, w, tid, "op_4", 4, "sendNote", noteArgs{Text: "Add the totals"})
+	eventually(t, "the second job runs", func() bool { return r.started() == 2 })
+	r.release <- struct{}{}
+	th = waitThread(t, c, w, tid, "the second job ends", func(th *threadRecord) bool { return th.Status == StatusIdle })
+	second := th.Jobs[1].ID
+	if th.Entries[len(th.Entries)-1].Proposed[0] != "report.md" {
+		t.Fatalf("the second job proposed %v", th.Entries[len(th.Entries)-1].Proposed)
+	}
+	pending := th.display(0)[len(th.Entries)-1].(turnView).Files[1]
+	if pending.Note != "Proposed" || pending.Proposal != "report.md" {
+		t.Errorf("a pending proposal shows %+v", pending)
+	}
+	if err := c.putFile(anyDevice, w.ID, "report.md", []byte("mine")); err != nil {
+		t.Fatal(err)
+	}
+	rev := th.Revision
+	moved := threadOp(t, c, w, tid, "op_5", rev, "acceptProposal", proposalArgs{JobID: second, Path: "report.md"})
+	if moved.OK || moved.Code != CodeFilesChanged || moved.Detail["path"] != "report.md" || moved.Revision != rev {
+		t.Fatalf("accepting over a changed file: %+v", moved)
+	}
+	res = threadOp(t, c, w, tid, "op_6", rev, "discardProposal", proposalArgs{JobID: second, Path: "report.md"})
+	if !res.OK || res.Revision != rev+1 {
+		t.Fatalf("discard: %+v", res)
+	}
+	if data, _ := c.ReadFile(w.ID, prefixRoot+"report.md"); string(data) != "mine" {
+		t.Errorf("discarding changed the file: %q", data)
+	}
+	th = readThread(t, c, w, tid)
+	if got := th.display(rev)[0].(turnView).Files[1]; got.Note != "Discarded" || got.Proposal != "" {
+		t.Errorf("the discarded turn shows %+v", got)
+	}
+	if _, err := c.applyThreadOp(anyDevice, w.ID, tid, opEnvelope{OpID: "op_7", ThreadID: tid, Kind: "acceptProposal", Args: json.RawMessage(`{"jobId":"` + second + `","path":"other.md"}`)}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("a file the job never proposed: %v", err)
+	}
+}
+
 func TestOperationsThatArentHereOrArentRight(t *testing.T) {
 	c, _, w := newThreadCoordinator(t, ``)
 	if res := startThread(t, c, w, "op_1", "hi"); res.Code != CodeNoModel {
@@ -445,6 +512,7 @@ func TestOperationsThatArentHereOrArentRight(t *testing.T) {
 		{opEnvelope{OpID: "op_1", ThreadID: "thr_1", Kind: "sendNote"}, "thr_1", ErrInvalid},
 		{opEnvelope{OpID: "op_1", ThreadID: "thr_1", Kind: "sendNote", Args: json.RawMessage(`{"text":"hi","extra":1}`)}, "thr_1", ErrInvalid},
 		{opEnvelope{OpID: "op_1", ThreadID: "thr_1", Kind: "sendNote", Args: json.RawMessage(`{"text":"hi","files":["../x"]}`)}, "thr_1", ErrInvalid},
+		{opEnvelope{OpID: "op_1", ThreadID: "thr_1", Kind: "acceptProposal", Args: json.RawMessage(`{"jobId":"j_1","path":"../x"}`)}, "thr_1", ErrInvalid},
 	} {
 		if _, err := c.applyThreadOp(anyDevice, w.ID, tc.path, tc.env); !errors.Is(err, tc.want) {
 			t.Errorf("%s %s: %v, want %v", tc.env.Kind, tc.env.Args, err, tc.want)

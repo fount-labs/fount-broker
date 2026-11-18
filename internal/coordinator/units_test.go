@@ -228,9 +228,13 @@ func TestCollectKeepsOnlyWhatAJobMayWrite(t *testing.T) {
 		writes = append(writes, p)
 	}
 	slices.Sort(writes)
-	want := []string{"fount/conversations/s1.json", "jobs/j_1/proposed/files/memo.md", "jobs/j_1/proposed/files/new.md", "jobs/j_1/proposed/hello.md", "root/threads/t1/outputs/j_1/reply.md"}
+	want := []string{"fount/conversations/s1.json", "jobs/j_1/bases.json", "jobs/j_1/proposed/files/memo.md", "jobs/j_1/proposed/files/new.md", "jobs/j_1/proposed/hello.md", "root/threads/t1/outputs/j_1/reply.md"}
 	if !slices.Equal(writes, want) {
 		t.Fatalf("kept %v\nwant %v", writes, want)
+	}
+	// Each proposal's base is the version the job was given; a new file's is "".
+	if got, want := string(r.Writes["jobs/j_1/bases.json"]), `{"files/memo.md":"`+hashOf([]byte("v1"))+`","files/new.md":"","hello.md":""}`; got != want {
+		t.Errorf("bases %s\nwant %s", got, want)
 	}
 	slices.Sort(r.Dropped)
 	wantDropped := []string{"instructions.md", "memory.md", "threads/t1/e_1/message.md", "threads/t1/outputs/j_0/old.md", "threads/t1/outputs/j_1/key", "threads/t1/outputs/j_1/up", "threads/t2/outputs/j_1/x.md"}
