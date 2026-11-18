@@ -44,7 +44,9 @@ containers:
       - "--runners"
       - "1"
       - "--slots"
-      - "32" # the runner's fount-supervisor --max-jobs
+      - "16" # the runner's fount-supervisor --max-jobs
+      - "--account-jobs"
+      - "12" # one account's Tinfoil key: about 3-6 model calls a minute a job
       - "--wrapping-key"
       - "dev"
       - "--test-api"
