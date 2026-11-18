@@ -8,6 +8,7 @@
 //	  [--credentials <file.json>] [--wrapping-key dev --test-api --listen 0.0.0.0:8790]
 //	  [--wrapping-key vault --vaults <host,host> --vault-repo <owner/repo> --keyset-commitment <hex>
 //	   --status-listen 0.0.0.0:8791]
+//	  [--client-listen 0.0.0.0:8792 --account-keys <base64 SPKI,...> [--client-attestation tinfoil]]
 //	fount-coordinator health [http://127.0.0.1:8790/health]
 //
 // The runner command is started once per job with fount-runner's --workspace,
@@ -24,10 +25,19 @@
 // file's tokens instead, by the broker's names: a device credential, to reach
 // a proxy that doesn't take job credentials yet.
 //
+// --client-listen serves the attested client channel (package channel) on
+// its /fount-client upgrade, with /health and /status, so the shim needs one
+// port: the way Desktop's broker reaches an account's workers, files and jobs.
+// The coordinator proves itself with its attested fount-link key, and each
+// client its account with a device credential that one of --account-keys,
+// fount-infra's, signed, and its device with that device key's grant. Each
+// channel serves coordinator.AccountHandler for the account it proved. Dev
+// builds also take --client-attestation unattested, for a dev broker.
+//
 // --test-api lets the dev API listen beyond loopback behind a bearer token in
-// $FOUNT_TEST_API_TOKEN: the coordinator enclave's way in until the attested
-// client channel (m4-cloud-runners.md §7, P2). Test data only, while the
-// wrapping key is the dev one.
+// $FOUNT_TEST_API_TOKEN: the test coordinator enclave's way in, which the
+// client channel replaces (m4-cloud-runners.md §7, P2). Test data only, while
+// the wrapping key is the dev one.
 //
 // --wrapping-key says where the key that wraps every worker's DEK comes from:
 // vault (the default) is Fount Cloud's vault pair, which hands it only to an
@@ -56,9 +66,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/fount-labs/fount-broker/internal/channel"
 	"github.com/fount-labs/fount-broker/internal/coordinator"
 	"github.com/fount-labs/fount-broker/internal/healthcheck"
 	"github.com/fount-labs/fount-broker/internal/jobcred"
@@ -97,6 +109,9 @@ func run() error {
 	vaultRepo := flag.String("vault-repo", os.Getenv("FOUNT_VAULT_REPO"), "with --wrapping-key vault: GitHub repository whose releases the vaults must run")
 	commitment := flag.String("keyset-commitment", os.Getenv("FOUNT_KEYSET_COMMITMENT"), "with --wrapping-key vault: the vaults' KEYSET_COMMITMENT")
 	statusListen := flag.String("status-listen", "", "address for /health and /status, which may be beyond loopback")
+	clientListen := flag.String("client-listen", "", "address for the attested client channel ("+channel.Path+"), /health and /status, which may be beyond loopback")
+	accountKeys := flag.String("account-keys", "", "with --client-listen: fount-infra's device-credential keys, SPKI DER as base64, comma-separated (default $"+accountKeysEnv+")")
+	clientAttest := flag.String("client-attestation", attestTinfoil, "with --client-listen: how the coordinator proves itself: tinfoil, or unattested in a dev build")
 	flag.Parse()
 	if *dir == "" || (flag.NArg() == 0) == (*runnerAddr == "") {
 		return errors.New("usage: fount-coordinator --dir <folder> [flags] (-- <runner command...> | --runner-addr <host:port>)")
@@ -145,6 +160,10 @@ func run() error {
 	if err := keys.check(); err != nil {
 		return err
 	}
+	clients, err := clientFlags{listen: *clientListen, accountKeys: *accountKeys, attestation: *clientAttest}.server()
+	if err != nil {
+		return err
+	}
 
 	// Every listener binds before the wait for the key, so a coordinator
 	// that can't serve fails now, not once a vault answers.
@@ -161,17 +180,15 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("--status-listen: %w", err)
 		}
-		statusSrv := &http.Server{Handler: statusAPI(status), ReadHeaderTimeout: 10 * time.Second}
-		go func() {
-			<-ctx.Done()
-			statusSrv.Close()
-		}()
-		go func() {
-			if err := statusSrv.Serve(statusLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Printf("status listener: %v", err)
-				stop()
-			}
-		}()
+		serveBeyond(ctx, stop, "status", statusLn, statusAPI(status))
+	}
+	var channelReady atomic.Pointer[http.Handler]
+	if clients != nil {
+		clientLn, err := net.Listen("tcp", *clientListen)
+		if err != nil {
+			return fmt.Errorf("--client-listen: %w", err)
+		}
+		serveBeyond(ctx, stop, "client channel", clientLn, clientAPI(statusAPI(status), &channelReady))
 	}
 	key, err := wrappingKey(ctx, keys, status)
 	if err != nil {
@@ -192,6 +209,16 @@ func run() error {
 	})
 	if err != nil {
 		return err
+	}
+
+	if clients != nil {
+		clients.Handler = func(p channel.Peer) http.Handler { return c.AccountHandler(p.Account) }
+		h, err := clients.Start(ctx)
+		if err != nil {
+			return err
+		}
+		channelReady.Store(&h)
+		log.Printf("client channel on %s%s, for device credentials of %d keys", *clientListen, channel.Path, len(clients.AccountKeys))
 	}
 
 	api := c.Handler()
@@ -225,6 +252,22 @@ func run() error {
 	}
 	<-done
 	return nil
+}
+
+// serveBeyond serves h on ln, which may be beyond loopback, until ctx ends;
+// it stops the coordinator if the listener fails.
+func serveBeyond(ctx context.Context, stop func(), name string, ln net.Listener, h http.Handler) {
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		<-ctx.Done()
+		srv.Close()
+	}()
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("%s listener: %v", name, err)
+			stop()
+		}
+	}()
 }
 
 // The dev API has no client authentication, so it never listens beyond this
