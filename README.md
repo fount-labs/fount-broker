@@ -226,11 +226,24 @@ folder, serves an API with no authentication on loopback, and starts a command
 for each job:
 
 ```sh
-go run ./cmd/fount-coordinator --dir /tmp/coordinator -- scripts/dev-runner.sh
+go run ./cmd/fount-coordinator --dir /tmp/coordinator --wrapping-key dev -- scripts/dev-runner.sh
 ```
 
-Its parse surfaces are the JobSpec and the API's small JSON bodies. File
-contents, and everything a runner leaves behind, are stored as opaque bytes.
+`--wrapping-key` defaults to `vault`: the key that wraps every worker's data
+key comes from Fount Cloud's vault pair, in memory only, and the coordinator
+waits for a vault before it loads anything. Vault mode serves no dev API, so
+its workers come only over the client channel; it refuses `--test-api` and
+needs `--status-listen` or `--client-listen`, either of which serves `/health`
+and `/status` while it waits, for the healthcheck. Test coordinators and the
+dev build say `--wrapping-key dev`, a key file in `--dir`.
+
+Its parse surfaces are the JobSpec, the API's small JSON bodies and, over the
+client channel, a worker's DEK grant: claims signed by a device key
+([`grant.go`](internal/coordinator/grant.go)) naming the devices that may act
+for the worker from then on, each with an inclusion it signed itself
+([`devicekey.go`](internal/coordinator/devicekey.go)). File contents,
+everything a runner leaves behind, and the DEK as Desktop wraps it to each
+device (HPKE, to the device's X25519 key) are stored as opaque bytes.
 
 The coordinator never checks a sender itself. It reads mail only in format 3,
 takes who sent it from the edge's sealed check, and decides what the mail may do
@@ -311,7 +324,7 @@ A local run of all three, with a registry, both ends of the link unattested
 fount-broker runner --image registry:5000/fount-labs/runner@sha256:<digest> \
   --listen 0.0.0.0:7400 --coordinator-repo unattested   # FOUNT_BROKER_REGISTRY=http://registry:5000
 fount-supervisor serve --image sha256:<digest>   # privileged, --network none
-fount-coordinator --dir /tmp/coordinator --runner-addr http://127.0.0.1:7400 --runner-repo unattested
+fount-coordinator --dir /tmp/coordinator --wrapping-key dev --runner-addr http://127.0.0.1:7400 --runner-repo unattested
 ```
 
 `fount-supervisor run` takes one job as fount-runner's folder flags instead, so
@@ -319,7 +332,7 @@ the dev coordinator can run it as its runner command:
 
 ```sh
 fount-supervisor unpack --blobs <oci layout> --image sha256:<digest> --out /harness
-fount-coordinator --dir /tmp/coordinator -- fount-supervisor run --harness /harness
+fount-coordinator --dir /tmp/coordinator --wrapping-key dev -- fount-supervisor run --harness /harness
 ```
 
 Parse surfaces: the image index, manifest and config (JSON, after their digest

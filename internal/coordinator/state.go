@@ -25,11 +25,20 @@ type State struct {
 }
 
 type Worker struct {
-	ID         string    `json:"id"`
-	Account    string    `json:"account"`
+	ID      string `json:"id"`
+	Account string `json:"account"`
+	// WrappedDEK is nil for a worker made over the client channel until its
+	// DEK is granted (grant.go).
 	WrappedDEK []byte    `json:"wrappedDek"`
 	Version    uint64    `json:"version"`
 	Created    time.Time `json:"created"`
+	// Devices may act for the worker over the client channel, and GrantSeq
+	// numbers the last grant that set them. DEKCommitment is the one the
+	// grants signed, which a device opening its wrap checks. A worker the dev
+	// API made has none.
+	Devices       []Device `json:"devices,omitempty"`
+	GrantSeq      uint64   `json:"grantSeq,omitempty"`
+	DEKCommitment string   `json:"dekCommitment,omitempty"`
 }
 
 type JobState string

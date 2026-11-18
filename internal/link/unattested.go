@@ -43,3 +43,10 @@ func checkUnattested(doc, nonce []byte) (ed25519.PublicKey, error) {
 	}
 	return ed25519.PublicKey(d.Key), nil
 }
+
+// CheckUnattestedKey is the KeyChecker for an unattested document, which has
+// no freshness deadline.
+func CheckUnattestedKey(doc, nonce []byte) (Endorsement, error) {
+	key, err := checkUnattested(doc, nonce)
+	return Endorsement{Key: key}, err
+}

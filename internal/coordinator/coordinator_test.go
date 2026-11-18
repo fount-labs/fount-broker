@@ -80,6 +80,7 @@ func newTestCoordinator(t *testing.T, mode string, timeout time.Duration) (*Coor
 		Key:      key,
 		Pool:     NewPool(1, 2, nil),
 		Runner:   envRunner{LocalRunner{Command: []string{self}, Timeout: timeout}, mode},
+		Audience: testAudience,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -272,6 +273,35 @@ func TestRestartFailsInterruptedJobs(t *testing.T) {
 	}
 }
 
+func TestBootRefusesAKeyThatDoesntFitTheVolume(t *testing.T) {
+	dir := t.TempDir()
+	cfg := func(key WrappingKey) Config {
+		return Config{
+			StateDir: filepath.Join(dir, "state"),
+			WorkDir:  filepath.Join(dir, "work"),
+			Store:    DirStore{Root: filepath.Join(dir, "objects")},
+			Key:      key,
+			Pool:     NewPool(1, 1, nil),
+			Runner:   LocalRunner{Command: []string{"true"}},
+		}
+	}
+	devKey, _ := NewWrappingKey()
+	c, err := New(cfg(devKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.CreateWorker("acct", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(cfg(devKey)); err != nil {
+		t.Fatalf("the same key: %v", err)
+	}
+	vaultKey, _ := NewWrappingKey()
+	if _, err := New(cfg(vaultKey)); err == nil || !strings.Contains(err.Error(), "doesn't fit this volume") {
+		t.Fatalf("another key booted on the volume: %v", err)
+	}
+}
+
 func TestAPI(t *testing.T) {
 	c, _ := newTestCoordinator(t, "ok", 0)
 	srv := httptest.NewServer(c.Handler())
@@ -382,4 +412,104 @@ func TestEachRunGetsCredentialsMintedForItsJob(t *testing.T) {
 			t.Errorf("the %s got %v, want %s", run, got, want)
 		}
 	}
+}
+
+func TestTheAccountAPIServesOnlyItsAccount(t *testing.T) {
+	c, _ := newTestCoordinator(t, "ok", 0)
+	me := newTestDevice(t)
+	acme := httptest.NewServer(c.AccountHandler(me.caller("acme")))
+	defer acme.Close()
+	// The other account's device, and the same device's credential for the
+	// other account: neither reaches acme's worker.
+	other := httptest.NewServer(c.AccountHandler(newTestDevice(t).caller("other")))
+	defer other.Close()
+	mine := httptest.NewServer(c.AccountHandler(me.caller("other")))
+	defer mine.Close()
+
+	if code, out := do(t, acme, "POST", "/v1/workers", `{"account":"other"}`); code != http.StatusBadRequest {
+		t.Fatalf("a client-named account: %d %v", code, out)
+	}
+	if code, out := do(t, acme, "POST", "/v1/workers", `{"dek":"`+strings.Repeat("A", 43)+`="}`); code != http.StatusBadRequest {
+		t.Fatalf("a DEK outside a grant: %d %v", code, out)
+	}
+	code, w := do(t, acme, "POST", "/v1/workers", `{}`)
+	if code != http.StatusCreated || w["account"] != "acme" || w["granted"] != false {
+		t.Fatalf("create: %d %v", code, w)
+	}
+	id := w["id"].(string)
+	dek := mustDEK(t)
+	if code, out := do(t, acme, "POST", "/v1/workers/"+id+"/grant", me.grantBody(t, "acme", id, 1, dek)); code != http.StatusOK || out["granted"] != true {
+		t.Fatalf("grant: %d %v", code, out)
+	}
+	code, j := do(t, acme, "POST", "/v1/workers/"+id+"/jobs", `{"threadId":"t1","sessionId":"s1","instruction":"hi","config":{}}`)
+	if code != http.StatusAccepted {
+		t.Fatalf("enqueue: %d %v", code, j)
+	}
+	jobID := j["id"].(string)
+	waitJob(t, c, jobID)
+
+	for _, tc := range []struct {
+		method, path, body string
+		acme, other        int
+	}{
+		{"GET", "/v1/workers/" + id, "", 200, 404},
+		{"PUT", "/v1/workers/" + id + "/root/instructions.md", "be brief", 204, 404},
+		{"GET", "/v1/workers/" + id + "/files?prefix=root/", "", 200, 404},
+		{"GET", "/v1/workers/" + id + "/files/root/instructions.md", "", 200, 404},
+		{"POST", "/v1/workers/" + id + "/jobs", `{"threadId":"t2","sessionId":"s2","instruction":"hi","config":{}}`, 202, 404},
+		{"GET", "/v1/jobs/" + jobID, "", 200, 404},
+		{"POST", "/v1/workers/" + id + "/grant", `{"v":2,"dek":"` + strings.Repeat("A", 43) + `=","grant":"x.y"}`, 403, 404},
+		{"POST", "/v1/workers/" + id + "/grant", `{"v":1,"dek":"` + strings.Repeat("A", 43) + `=","grant":"x.y"}`, 400, 400},
+		{"POST", "/v1/workers/" + id + "/grant", `{"v":3,"dek":"` + strings.Repeat("A", 43) + `="}`, 400, 400},
+		{"GET", "/v0/workers/" + id, "", 404, 404},
+	} {
+		for name, srv := range map[string]*httptest.Server{"other": other, "mine": mine} {
+			if code, out := do(t, srv, tc.method, tc.path, tc.body); code != tc.other {
+				t.Errorf("%s: %s %s: %d %v, want %d", name, tc.method, tc.path, code, out, tc.other)
+			}
+		}
+		if code, out := do(t, acme, tc.method, tc.path, tc.body); code != tc.acme {
+			t.Errorf("acme: %s %s: %d %v, want %d", tc.method, tc.path, code, out, tc.acme)
+		}
+	}
+	c.mu.Lock()
+	var jobs []string
+	for id := range c.state.Jobs {
+		jobs = append(jobs, id)
+	}
+	c.mu.Unlock()
+	for _, id := range jobs {
+		waitJob(t, c, id)
+	}
+	if _, list := do(t, acme, "GET", "/v1/workers", ""); len(list["workers"].([]any)) != 1 {
+		t.Errorf("acme's workers: %v", list)
+	}
+	for _, srv := range []*httptest.Server{other, mine} {
+		if _, list := do(t, srv, "GET", "/v1/workers", ""); len(list["workers"].([]any)) != 0 {
+			t.Errorf("other's workers: %v", list)
+		}
+	}
+}
+
+func do(t *testing.T, srv *httptest.Server, method, path, body string) (int, map[string]any) {
+	t.Helper()
+	req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	json.NewDecoder(resp.Body).Decode(&out)
+	return resp.StatusCode, out
+}
+
+func TestAnAccountAPIForNoAccountPanics(t *testing.T) {
+	c, _ := newTestCoordinator(t, "ok", 0)
+	defer func() {
+		if recover() == nil {
+			t.Error("AccountHandler made a handler for no account")
+		}
+	}()
+	c.AccountHandler(Caller{Device: "d"})
 }

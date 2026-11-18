@@ -15,6 +15,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/fount-labs/fount-broker/internal/channel"
 	"github.com/fount-labs/fount-broker/internal/frame"
 	"github.com/fount-labs/fount-broker/internal/mail"
 	"github.com/fount-labs/fount-broker/internal/policy"
@@ -37,6 +38,9 @@ type Broker struct {
 	// Mail serves mail requests and holds the mail_keys credential. Nil
 	// refuses both.
 	Mail MailService
+	// Cloud reaches Fount Cloud's coordinator over the attested client
+	// channel (package channel). Nil refuses cloud requests.
+	Cloud CloudService
 	// Locked refuses credential requests: a runner enclave filled the vault
 	// for one Cloud job (package relay), and the job can't change it.
 	Locked bool
@@ -53,6 +57,11 @@ type MailService interface {
 	SetKeys(body []byte) error
 	Handle(ctx context.Context, op, mailbox, path string, body []byte) (any, error)
 	Passthrough(ctx context.Context, op, mailbox, path string, headers map[string]string, body []byte) (*mail.Result, error)
+}
+
+// CloudService is package channel's Client.
+type CloudService interface {
+	Do(ctx context.Context, method, target string, body []byte) (*http.Response, error)
 }
 
 func New(version string, routes map[string]route.Route, vault *Vault) *Broker {
@@ -122,7 +131,7 @@ func (b *Broker) dispatch(ctx context.Context, req protocol.Request, body []byte
 		}
 		b.vault.Set(policy.Credential(req.Name), string(body))
 		b.result(req.ID, map[string]bool{"ok": true})
-	case protocol.KindFetch, protocol.KindStatus, protocol.KindMail:
+	case protocol.KindFetch, protocol.KindStatus, protocol.KindMail, protocol.KindCloud:
 		reqCtx, ok := b.track(ctx, req.ID)
 		if !ok {
 			b.fail(req.ID, protocol.CodeBadRequest, fmt.Errorf("request %d is already in flight", req.ID))
@@ -135,6 +144,8 @@ func (b *Broker) dispatch(ctx context.Context, req protocol.Request, body []byte
 				b.fetch(reqCtx, req, body)
 			case protocol.KindMail:
 				b.mail(reqCtx, req, body)
+			case protocol.KindCloud:
+				b.cloud(reqCtx, req, body)
 			default:
 				b.status(reqCtx, req)
 			}
@@ -278,12 +289,54 @@ func clientHeaders(dest policy.Destination, sent map[string]string) (map[string]
 	return headers, nil
 }
 
+// cloud sends one request of the coordinator's account API over the client
+// channel and streams the answer back as a fetch's.
+func (b *Broker) cloud(ctx context.Context, req protocol.Request, body []byte) {
+	if b.Cloud == nil {
+		b.fail(req.ID, protocol.CodePolicy, errors.New("Cloud isn't available in this build"))
+		return
+	}
+	resp, err := b.Cloud.Do(ctx, req.Op, req.Path, body)
+	if err != nil {
+		switch {
+		case ctx.Err() != nil:
+			b.fail(req.ID, protocol.CodeCancelled, ctx.Err())
+		case errors.Is(err, channel.ErrOperation):
+			b.fail(req.ID, protocol.CodePolicy, err)
+		case errors.Is(err, channel.ErrIdentity), errors.Is(err, channel.ErrRefused):
+			b.fail(req.ID, protocol.CodeCredential, err)
+		case errors.Is(err, channel.ErrCoordinator):
+			b.fail(req.ID, protocol.CodeAttestation, err)
+		default:
+			b.fail(req.ID, protocol.CodeNetwork, err)
+		}
+		return
+	}
+	defer resp.Body.Close()
+	head := protocol.Reply{Kind: protocol.KindHead, ID: req.ID, Status: resp.StatusCode, ContentType: resp.Header.Get("Content-Type")}
+	if resp.ContentLength > 0 {
+		head.ContentLength = resp.ContentLength
+	}
+	if err := b.reply(head, nil); err != nil {
+		return
+	}
+	if err := b.stream(req.ID, resp, nil); err != nil {
+		b.failSend(ctx, req.ID, err)
+		return
+	}
+	_ = b.reply(protocol.Reply{Kind: protocol.KindEnd, ID: req.ID}, nil)
+}
+
+// stream sends resp's body as data frames, hashing it into digest if there is
+// one.
 func (b *Broker) stream(id uint64, resp *http.Response, digest hash.Hash) error {
 	buf := make([]byte, chunkSize)
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
-			digest.Write(buf[:n])
+			if digest != nil {
+				digest.Write(buf[:n])
+			}
 			if werr := b.reply(protocol.Reply{Kind: protocol.KindData, ID: id}, buf[:n]); werr != nil {
 				return werr
 			}

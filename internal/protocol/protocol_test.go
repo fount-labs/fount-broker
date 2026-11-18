@@ -19,6 +19,7 @@ func TestDecodeRequest(t *testing.T) {
 		`{"kind":"mail","id":10,"op":"license_entitlement","mailbox":""}`,
 		`{"kind":"mail","id":11,"op":"mailbox"}`,
 		`{"kind":"fetch","id":12,"dest":"fount.device_renew","headers":{"Fount-Device":"ab"}}`,
+		`{"kind":"cloud","id":13,"op":"GET","path":"v1/workers"}`,
 	}
 	for _, h := range valid {
 		if _, err := DecodeRequest([]byte(h)); err != nil {
@@ -44,6 +45,10 @@ func TestDecodeRequest(t *testing.T) {
 		"fetch with op":      `{"kind":"fetch","id":1,"dest":"x","op":"list"}`,
 		"fetch with mailbox": `{"kind":"fetch","id":1,"dest":"x","mailbox":"ab"}`,
 		"fetch bad headers":  `{"kind":"fetch","id":1,"dest":"x","headers":{"Fount-Device":1}}`,
+		"cloud no op":        `{"kind":"cloud","id":1,"path":"v1/workers"}`,
+		"cloud no path":      `{"kind":"cloud","id":1,"op":"GET"}`,
+		"cloud with dest":    `{"kind":"cloud","id":1,"op":"GET","path":"v1/workers","dest":"x"}`,
+		"cloud with headers": `{"kind":"cloud","id":1,"op":"GET","path":"v1/workers","headers":{"a":"b"}}`,
 		"credential mailbox": `{"kind":"credential","id":1,"name":"license","mailbox":"ab"}`,
 		"not json":           `kind=fetch`,
 		"wrong type":         `{"kind":"cancel","id":"1"}`,

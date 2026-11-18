@@ -32,12 +32,19 @@ var roots *x509.CertPool
 // Dial opens a connection to the link endpoint at base, an https:// URL (http://
 // in dev and tests), ready for Side.Client.
 func Dial(ctx context.Context, base string) (net.Conn, error) {
+	return DialUpgrade(ctx, base, Path, Protocol)
+}
+
+// DialUpgrade opens a connection upgraded to protocol on path at base: the
+// link's endpoint, or another that crosses the shim the same way (package
+// channel).
+func DialUpgrade(ctx context.Context, base, path, protocol string) (net.Conn, error) {
 	u, err := url.Parse(base)
 	if err != nil {
 		return nil, err
 	}
 	if u.Path != "" && u.Path != "/" || u.RawQuery != "" || u.User != nil {
-		return nil, fmt.Errorf("%s: name only the runner's origin", base)
+		return nil, fmt.Errorf("%s: name only the peer's origin", base)
 	}
 	host := u.Host
 	var conn net.Conn
@@ -55,7 +62,7 @@ func Dial(ctx context.Context, base string) (net.Conn, error) {
 		var d net.Dialer
 		conn, err = d.DialContext(ctx, "tcp", host)
 	default:
-		return nil, fmt.Errorf("%s: the runner is an http(s) URL", base)
+		return nil, fmt.Errorf("%s: the peer is an http(s) URL", base)
 	}
 	if err != nil {
 		return nil, err
@@ -64,9 +71,9 @@ func Dial(ctx context.Context, base string) (net.Conn, error) {
 	defer stop()
 	req := &http.Request{
 		Method:     http.MethodGet,
-		URL:        &url.URL{Scheme: u.Scheme, Host: u.Host, Path: Path},
+		URL:        &url.URL{Scheme: u.Scheme, Host: u.Host, Path: path},
 		Host:       u.Host,
-		Header:     http.Header{"Connection": {"Upgrade"}, "Upgrade": {Protocol}},
+		Header:     http.Header{"Connection": {"Upgrade"}, "Upgrade": {protocol}},
 		Proto:      "HTTP/1.1",
 		ProtoMajor: 1,
 		ProtoMinor: 1,
@@ -79,12 +86,12 @@ func Dial(ctx context.Context, base string) (net.Conn, error) {
 	resp, err := http.ReadResponse(br, req)
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("the runner's answer to the upgrade: %w", err)
+		return nil, fmt.Errorf("the peer's answer to the upgrade: %w", err)
 	}
-	if resp.StatusCode != http.StatusSwitchingProtocols || !strings.EqualFold(resp.Header.Get("Upgrade"), Protocol) {
+	if resp.StatusCode != http.StatusSwitchingProtocols || !strings.EqualFold(resp.Header.Get("Upgrade"), protocol) {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		conn.Close()
-		return nil, fmt.Errorf("the runner refused the upgrade: %s %q", resp.Status, body)
+		return nil, fmt.Errorf("the peer refused the upgrade: %s %q", resp.Status, body)
 	}
 	if ctx.Err() != nil {
 		conn.Close()
@@ -96,26 +103,33 @@ func Dial(ctx context.Context, base string) (net.Conn, error) {
 // Listener is the runner broker's end: an http.Handler for Path whose
 // upgraded connections Accept returns, ready for Side.Server.
 type Listener struct {
-	addr  net.Addr
-	conns chan net.Conn
-	once  sync.Once
-	done  chan struct{}
+	addr           net.Addr
+	path, protocol string
+	conns          chan net.Conn
+	once           sync.Once
+	done           chan struct{}
 }
 
 func NewListener(addr net.Addr) *Listener {
-	return &Listener{addr: addr, conns: make(chan net.Conn), done: make(chan struct{})}
+	return NewUpgradeListener(addr, Path, Protocol)
+}
+
+// NewUpgradeListener is a Listener for another endpoint: path, upgraded to
+// protocol.
+func NewUpgradeListener(addr net.Addr, path, protocol string) *Listener {
+	return &Listener{addr: addr, path: path, protocol: protocol, conns: make(chan net.Conn), done: make(chan struct{})}
 }
 
 var ErrClosed = errors.New("the link listener is closed")
 
 func (l *Listener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != Path {
+	if r.URL.Path != l.path {
 		http.NotFound(w, r)
 		return
 	}
-	if !headerHas(r.Header, "Connection", "upgrade") || !strings.EqualFold(r.Header.Get("Upgrade"), Protocol) {
-		w.Header().Set("Upgrade", Protocol)
-		http.Error(w, "this endpoint takes only an upgrade to "+Protocol, http.StatusUpgradeRequired)
+	if !headerHas(r.Header, "Connection", "upgrade") || !strings.EqualFold(r.Header.Get("Upgrade"), l.protocol) {
+		w.Header().Set("Upgrade", l.protocol)
+		http.Error(w, "this endpoint takes only an upgrade to "+l.protocol, http.StatusUpgradeRequired)
 		return
 	}
 	rc := http.NewResponseController(w)
@@ -125,7 +139,7 @@ func (l *Listener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetDeadline(time.Time{})
-	if _, err := io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: "+Protocol+"\r\n\r\n"); err != nil {
+	if _, err := io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: "+l.protocol+"\r\n\r\n"); err != nil {
 		conn.Close()
 		return
 	}

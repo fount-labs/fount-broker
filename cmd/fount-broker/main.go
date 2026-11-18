@@ -64,6 +64,11 @@ func main() {
 	} else {
 		b.Mail = m
 	}
+	if c, err := newCloud(vault); err != nil {
+		log.Printf("Cloud unavailable: %v", err)
+	} else if c != nil {
+		b.Cloud = c
+	}
 	// Chat and the rest work without the tunnel, so failing to open it only
 	// leaves uv without a way out.
 	if tunnel, err := proxy.Listen(policy.PythonPackageHosts); err != nil {

@@ -1,0 +1,22 @@
+{
+  "comment": "Device inclusion and DEK wrap vectors (internal/coordinator/devicekey.go). Bytes are hex. Test keys only. Rewrite: DEVICE_VECTORS_WRITE=1 go test -run TestDeviceVectors ./internal/coordinator",
+  "ed25519_seed": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+  "ed25519_public": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+  "x25519_private": "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
+  "x25519_public": "5869aff450549732cbaaed5e5df9b30a6da31cb0e5742bad5ad4a1a768f1a67b",
+  "device": "65b60673d6ed884bf01c2c222d82ada0",
+  "audience": "https://coordinator.example",
+  "account": "acct_vectors",
+  "worker": "w_0123456789abcdef01234567",
+  "seq": 1,
+  "dek": "4142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+  "dek_commitment": "xGwAkaak6WCSFJwTATH_qA1rIk8mHZ0lMTfjtkz0Ye8",
+  "inclusion_claims": "{\"v\":1,\"typ\":\"fount-worker-device\",\"aud\":\"https://coordinator.example\",\"acct\":\"acct_vectors\",\"worker\":\"w_0123456789abcdef01234567\",\"dek\":\"xGwAkaak6WCSFJwTATH_qA1rIk8mHZ0lMTfjtkz0Ye8\",\"dev\":\"65b60673d6ed884bf01c2c222d82ada0\",\"key\":\"ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ\",\"enc\":\"WGmv9FBUlzLLqu1eXfmzCm2jHLDldCutWtShp2jxpns\",\"seq\":1}",
+  "inclusion": "eyJ2IjoxLCJ0eXAiOiJmb3VudC13b3JrZXItZGV2aWNlIiwiYXVkIjoiaHR0cHM6Ly9jb29yZGluYXRvci5leGFtcGxlIiwiYWNjdCI6ImFjY3RfdmVjdG9ycyIsIndvcmtlciI6IndfMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3IiwiZGVrIjoieEd3QWthYWs2V0NTRkp3VEFUSF9xQTFySWs4bUhaMGxNVGZqdGt6MFllOCIsImRldiI6IjY1YjYwNjczZDZlZDg4NGJmMDFjMmMyMjJkODJhZGEwIiwia2V5IjoiZWJWV0xvX21WUGxBZUxFUzZLbUxwNUFmaFRybWxiN1g0T09SQzYwRWxtUSIsImVuYyI6IldHbXY5RkJVbHpMTHF1MWVYZm16Q20yakhMRGxkQ3V0V3RTaHAyanhwbnMiLCJzZXEiOjF9.-90SlS7AeYD-VhJqLeuaoWQWMe68-kgD4wA_APlf2VTwzye_Gd77uukeDQbDfroqidPG7vVQcdlPCJqWr8kKCg",
+  "wrap_info": "fount-worker-dek-wrap-v1",
+  "wrap_aad": "666f756e742d776f726b65722d64656b2d777261702d6161642d763100000c616363745f766563746f7273001a775f30313233343536373839616263646566303132333435363700203635623630363733643665643838346266303163326332323264383261646130002b784777416b61616b36574353464a77544154485f71413172496b386d485a306c4d54666a746b7a30596538",
+  "wrap": "2a92b7344e112cbbc2c1674b413a5a35399a978e14abc40dfd36b4affbe24264bcb5db34874ea11a82f210311c7b5305a1b387e75afc78997984785febdd838a271edc0759894fa7a8561fca7e39c69e",
+  "wraps_digest": "ogfo5aE1beX7qYlMUu93RVB-3bZZralnPD0XSgfB4SA",
+  "grant_claims": "{\"v\":2,\"typ\":\"fount-worker-grant\",\"op\":\"grant\",\"aud\":\"https://coordinator.example\",\"acct\":\"acct_vectors\",\"worker\":\"w_0123456789abcdef01234567\",\"dev\":\"65b60673d6ed884bf01c2c222d82ada0\",\"seq\":1,\"dek\":\"xGwAkaak6WCSFJwTATH_qA1rIk8mHZ0lMTfjtkz0Ye8\",\"devices\":[\"ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ\"],\"wraps\":\"ogfo5aE1beX7qYlMUu93RVB-3bZZralnPD0XSgfB4SA\",\"iat\":1798761600}",
+  "grant": "eyJ2IjoyLCJ0eXAiOiJmb3VudC13b3JrZXItZ3JhbnQiLCJvcCI6ImdyYW50IiwiYXVkIjoiaHR0cHM6Ly9jb29yZGluYXRvci5leGFtcGxlIiwiYWNjdCI6ImFjY3RfdmVjdG9ycyIsIndvcmtlciI6IndfMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3IiwiZGV2IjoiNjViNjA2NzNkNmVkODg0YmYwMWMyYzIyMmQ4MmFkYTAiLCJzZXEiOjEsImRlayI6InhHd0FrYWFrNldDU0ZKd1RBVEhfcUExcklrOG1IWjBsTVRmanRrejBZZTgiLCJkZXZpY2VzIjpbImViVldMb19tVlBsQWVMRVM2S21McDVBZmhUcm1sYjdYNE9PUkM2MEVsbVEiXSwid3JhcHMiOiJvZ2ZvNWFFMWJlWDdxWWxNVXU5M1JWQi0zYlpacmFsblBEMFhTZ2ZCNFNBIiwiaWF0IjoxNzk4NzYxNjAwfQ.yCVixYj2B-vkcTiV6_K4IcywoJucWm0Z1QS3OP1eMoJrNeIpiDE9PKDxRUy9BLPy88W3JoBJmI_Y5uqlp9RFCg"
+}

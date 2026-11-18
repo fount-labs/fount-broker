@@ -90,6 +90,20 @@ func (a *SocketAttester) Attest(ctx context.Context, nonce []byte) ([]byte, erro
 // already refuses a document whose freshness proofs have lapsed. Caching a
 // peer's key across links would have to honour that deadline.
 func TinfoilChecker(repo string) (Checker, error) {
+	check, err := TinfoilKeyChecker(repo, KeyID)
+	if err != nil {
+		return nil, err
+	}
+	return func(doc, nonce []byte) (ed25519.PublicKey, error) {
+		e, err := check(doc, nonce)
+		return e.Key, err
+	}, nil
+}
+
+// TinfoilKeyChecker is TinfoilChecker for the peer's attested key id, and
+// says when the verification stops being fresh, for a connection that
+// outlives one request.
+func TinfoilKeyChecker(repo, id string) (KeyChecker, error) {
 	v, err := verify.NewVerifier()
 	if err != nil {
 		return nil, err
@@ -97,28 +111,34 @@ func TinfoilChecker(repo string) (Checker, error) {
 	if err := v.CheckPinVerifiability(verify.Pin{Repo: repo}); err != nil {
 		return nil, fmt.Errorf("pin %q: %w", repo, err)
 	}
-	return func(doc, nonce []byte) (ed25519.PublicKey, error) {
+	return func(doc, nonce []byte) (Endorsement, error) {
 		verified, err := v.VerifyV3(doc, nonce, verify.Pin{Repo: repo})
 		if err != nil {
-			return nil, err
+			return Endorsement{}, err
 		}
-		spki, ok := verified.CryptoMaterialData(KeyID, document.KeySPKIV1Format)
+		spki, ok := verified.CryptoMaterialData(id, document.KeySPKIV1Format)
 		if !ok {
-			return nil, fmt.Errorf("the attestation endorses no %q key", KeyID)
+			return Endorsement{}, fmt.Errorf("the attestation endorses no %q key", id)
 		}
 		der, err := hex.DecodeString(spki)
 		if err != nil {
-			return nil, err
+			return Endorsement{}, err
 		}
 		pub, err := x509.ParsePKIXPublicKey(der)
 		if err != nil {
-			return nil, err
+			return Endorsement{}, err
 		}
 		key, ok := pub.(ed25519.PublicKey)
 		if !ok {
-			return nil, errors.New("the endorsed link key isn't Ed25519")
+			return Endorsement{}, fmt.Errorf("the endorsed %q key isn't Ed25519", id)
 		}
-		return key, nil
+		fresh := verified.FreshnessExpiresAt()
+		if fresh.IsZero() {
+			// tinfoil-go sets it for every V3 document; one without would
+			// otherwise be trusted for as long as a connection lasts.
+			return Endorsement{}, errors.New("the verification has no freshness deadline")
+		}
+		return Endorsement{Key: key, Fresh: fresh}, nil
 	}, nil
 }
 
