@@ -28,8 +28,9 @@
 //
 // --job-config is the model settings, a JSON object passed to the runner
 // unread, of every job a thread operation (startThread, sendNote) starts: the
-// coordinator builds those jobs itself. Without it they are refused with
-// NO_MODEL.
+// coordinator builds those jobs itself: a file, or the object itself when it
+// starts with `{`, as a Tinfoil deploy can't ship a file. Without it they are
+// refused with NO_MODEL.
 //
 // --client-listen serves the attested client channel (package channel) on
 // its /fount-client upgrade, with /health and /status, so the shim needs one
@@ -79,6 +80,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -116,7 +118,7 @@ func run() error {
 	timeout := flag.Duration("job-timeout", 30*time.Minute, "longest a job may run")
 	runnerAddr := flag.String("runner-addr", "", "a runner enclave broker's origin, https://<domain>, in place of a runner command")
 	credentials := flag.String("credentials", "", "JSON file of every job's broker credentials, with --runner-addr")
-	jobConfig := flag.String("job-config", "", "JSON file of the model settings for every job a thread operation starts; without it those operations are refused with NO_MODEL")
+	jobConfig := flag.String("job-config", "", "JSON file, or a JSON object, of the model settings for every job a thread operation starts; without it those operations are refused with NO_MODEL")
 	test := flag.Bool("test-api", false, "listen beyond loopback, behind the bearer token in $"+testTokenEnv+"; test data only")
 	runnerRepo := flag.String("runner-repo", os.Getenv("FOUNT_RUNNER_REPO"), "GitHub repository whose releases the runner enclave must run, or unattested")
 	keyMode := flag.String("wrapping-key", keyVault, "where the wrapping key comes from: vault, Fount Cloud's vaults, held in memory only; or dev, a file in --dir, for test coordinators")
@@ -171,13 +173,9 @@ func run() error {
 	} else if *credentials != "" {
 		return errors.New("--credentials needs --runner-addr")
 	}
-	var config json.RawMessage
-	if *jobConfig != "" {
-		data, err := os.ReadFile(*jobConfig)
-		if err != nil {
-			return err
-		}
-		config = json.RawMessage(bytes.TrimSpace(data))
+	config, err := readJobConfig(*jobConfig)
+	if err != nil {
+		return err
 	}
 	if !*test {
 		if err := loopbackOnly(*listen); err != nil {
@@ -361,4 +359,26 @@ func devWrappingKey(path string) (coordinator.WrappingKey, error) {
 	}
 	copy(key[:], data)
 	return key, nil
+}
+
+// readJobConfig reads --job-config: empty, an inline JSON object, or a file
+// holding one.
+func readJobConfig(value string) (json.RawMessage, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	data := []byte(value)
+	if !strings.HasPrefix(value, "{") {
+		read, err := os.ReadFile(value)
+		if err != nil {
+			return nil, err
+		}
+		data = bytes.TrimSpace(read)
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil {
+		return nil, fmt.Errorf("--job-config: not a JSON object: %w", err)
+	}
+	return json.RawMessage(data), nil
 }

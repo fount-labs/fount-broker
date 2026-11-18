@@ -269,7 +269,8 @@ is `{"opId","threadId","baseRevision","kind","args"}`, a worker operation
 changes nothing. A retry with the same `opId` and arguments gets the first
 answer; other arguments get `OP_ID_REUSED`. `startThread` and `sendNote`
 (`{"text"}`) add a note and queue a job working from it, which the coordinator
-builds itself with `--job-config`'s model settings; a note stops the thread's
+builds itself with `--job-config`'s model settings (a file, or the JSON object
+inline); a note stops the thread's
 unfinished job first. `cancelJob` (`{"jobId"}`) stops a queued or running job
 and drops what it leaves. A turn opens when its job runs and ends done or
 failed with it. The other operations Fount has answer 501 until Cloud has
