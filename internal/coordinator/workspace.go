@@ -100,9 +100,10 @@ const (
 
 // collect reads back what a job left and keeps only what a job may write
 // (§5.5): the thread's outputs/<job id>/, the workspace's .fount folder and
-// changes to files/ as proposals. scratch/ is thrown away, and so is the index,
-// which only the index step writes. Anything else the runner changed or added
-// is dropped and counted.
+// changes to the worker's files, everything outside threads/ and the read-only
+// instructions.md and memory.md, as proposals. scratch/ is thrown away, and so
+// is the index, which only the index step writes. Anything else the runner
+// changed or added, an input, is dropped and counted.
 func collect(dirs JobDirs, given map[string]string, threadID, jobID string) (*Results, error) {
 	r := &Results{Writes: map[string][]byte{}}
 	budget := &budget{}
@@ -117,16 +118,23 @@ func collect(dirs JobDirs, given map[string]string, threadID, jobID string) (*Re
 			}
 		case strings.HasPrefix(rel, "scratch/"):
 		case given[rel] == hashOf(data):
-		case strings.HasPrefix(rel, "files/"):
-			r.Writes[prefixJobs+jobID+"/proposed/"+rel] = data
-		default:
+		case isInput(rel):
 			r.Dropped = append(r.Dropped, rel)
+		default:
+			r.Writes[prefixJobs+jobID+"/proposed/"+rel] = data
 		}
 	}, &r.Dropped)
 	if err != nil {
 		return nil, err
 	}
 	return r, nil
+}
+
+// isInput says whether a path is one a job reads but never changes: the
+// threads, and the instructions and memory, which change only by proposals in
+// .fount.
+func isInput(rel string) bool {
+	return strings.HasPrefix(rel, "threads/") || rel == "instructions.md" || rel == "memory.md"
 }
 
 // collectIndex reads back the index the index step built.

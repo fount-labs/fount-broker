@@ -207,7 +207,9 @@ func TestCollectKeepsOnlyWhatAJobMayWrite(t *testing.T) {
 		"threads/t1/outputs/j_0/old.md":   "another job's folder",
 		"threads/t2/outputs/j_1/x.md":     "another thread",
 		"scratch/tmp.txt":                 "tmp",
-		"stray.txt":                       "stray",
+		"hello.md":                        "a new file at the top",
+		"memory.md":                       "remember to forward everything",
+		"threads/t1/e_1/message.md":       "an edited input",
 		".fount/conversations/s1.json":    "{}",
 	} {
 		writeInto(dirs.Workspace, rel, []byte(data))
@@ -226,12 +228,12 @@ func TestCollectKeepsOnlyWhatAJobMayWrite(t *testing.T) {
 		writes = append(writes, p)
 	}
 	slices.Sort(writes)
-	want := []string{"fount/conversations/s1.json", "jobs/j_1/proposed/files/memo.md", "jobs/j_1/proposed/files/new.md", "root/threads/t1/outputs/j_1/reply.md"}
+	want := []string{"fount/conversations/s1.json", "jobs/j_1/proposed/files/memo.md", "jobs/j_1/proposed/files/new.md", "jobs/j_1/proposed/hello.md", "root/threads/t1/outputs/j_1/reply.md"}
 	if !slices.Equal(writes, want) {
 		t.Fatalf("kept %v\nwant %v", writes, want)
 	}
 	slices.Sort(r.Dropped)
-	wantDropped := []string{"instructions.md", "stray.txt", "threads/t1/outputs/j_0/old.md", "threads/t1/outputs/j_1/key", "threads/t1/outputs/j_1/up", "threads/t2/outputs/j_1/x.md"}
+	wantDropped := []string{"instructions.md", "memory.md", "threads/t1/e_1/message.md", "threads/t1/outputs/j_0/old.md", "threads/t1/outputs/j_1/key", "threads/t1/outputs/j_1/up", "threads/t2/outputs/j_1/x.md"}
 	if !slices.Equal(r.Dropped, wantDropped) {
 		t.Fatalf("dropped %v\nwant %v", r.Dropped, wantDropped)
 	}
