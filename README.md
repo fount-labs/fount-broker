@@ -280,7 +280,8 @@ When a job ends the coordinator keeps the workspace's `.fount` folder, new files
 in the thread's `outputs/<job id>/`, and each change to the worker's files
 outside `threads/`, `instructions.md` and `memory.md` as a proposal at
 `jobs/<job id>/proposed/<path>`. `scratch/` is thrown away, and a change to an
-input is dropped and counted.
+input is dropped and counted. A thread's turn lists the job's outputs, then
+the files it proposed.
 
 Its parse surfaces are the JobSpec, the API's small JSON bodies (operations
 are strict JSON of at most 512 KiB), its own thread records and, over the
