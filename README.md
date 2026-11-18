@@ -244,13 +244,45 @@ origin in its `ready` frame. `--cloud-credentials-only` takes only fount-infra's
 hour-long Cloud credentials. Tinfoil's shim forwards one port, so with
 `--test-api` the client port serves the test API's `/v0/` too.
 
+Both APIs serve the same worker routes, under `/v0` (dev and test) and `/v1`
+(the client channel, for the channel's account and device):
+
+| Route | Does |
+|---|---|
+| `GET /workers/{id}`, `PUT /workers/{id}/root/{path}`, `GET /workers/{id}/files[/{path}]` | The worker and its files |
+| `POST /workers/{id}/jobs`, `GET /jobs/{id}` | Queue a JobSpec (tests), and a job's state: `queued`, `running`, `finished`, `failed` or `cancelled` |
+| `GET /workers/{id}/threads` | `{"threads":[ThreadSummary…]}`, newest first |
+| `GET /workers/{id}/threads/{tid}` | The thread's display form, a `ThreadView` |
+| `GET /workers/{id}/threads/{tid}?since=N` | A `ThreadChanges`: everything (`full`) when `N` is 0 or past the thread's revision, else the header if the thread moved and each entry changed after `N` |
+| `POST /workers/{id}/threads/{tid}/ops` | A thread operation: `sendNote`, `cancelJob` |
+| `POST /workers/{id}/ops` | A worker operation: `startThread` |
+
+A worker's threads are records in its tree, under its DEK
+([`thread.go`](internal/coordinator/thread.go)), and the coordinator is their
+only writer. The shapes are Fount's (`view.rs`, `ops.rs` in the app, and
+`thread-operations.md` §4 to §7): every change moves a thread's revision on by
+one and every entry keeps the revision it last changed at. A thread operation
+is `{"opId","threadId","baseRevision","kind","args"}`, a worker operation
+`{"opId","kind","args"}`, and either answers 200 with
+`{"ok","revision","entryIds"?,"code"?,"message"?,"threadId"?}`: a refusal is
+`ok: false` with a code such as `EMPTY_TEXT`, `NO_MODEL` or `JOB_FINISHED`, and
+changes nothing. A retry with the same `opId` and arguments gets the first
+answer; other arguments get `OP_ID_REUSED`. `startThread` and `sendNote`
+(`{"text"}`) add a note and queue a job working from it, which the coordinator
+builds itself with `--job-config`'s model settings; a note stops the thread's
+unfinished job first. `cancelJob` (`{"jobId"}`) stops a queued or running job
+and drops what it leaves. A turn opens when its job runs and ends done or
+failed with it. The other operations Fount has answer 501 until Cloud has
+questions, drafts, mail and file proposals.
+
 When a job ends the coordinator keeps the workspace's `.fount` folder, new files
 in the thread's `outputs/<job id>/`, and each change to the worker's files
 outside `threads/`, `instructions.md` and `memory.md` as a proposal at
 `jobs/<job id>/proposed/<path>`. `scratch/` is thrown away, and a change to an
 input is dropped and counted.
 
-Its parse surfaces are the JobSpec, the API's small JSON bodies and, over the
+Its parse surfaces are the JobSpec, the API's small JSON bodies (operations
+are strict JSON of at most 512 KiB), its own thread records and, over the
 client channel, a worker's DEK grant: claims signed by a device key
 ([`grant.go`](internal/coordinator/grant.go)) naming the devices that may act
 for the worker from then on, each with an inclusion it signed itself

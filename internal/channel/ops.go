@@ -12,13 +12,15 @@ import (
 // CheckRequest accepts only the account API's operations
 // (coordinator.AccountHandler), and returns the URL to send. target is the
 // path without its leading slash, as the app gives it, with a query only on a
-// file listing:
+// file listing or a thread's changes:
 //
 //	POST v1/workers                       GET v1/workers
 //	GET  v1/workers/{id}                  POST v1/workers/{id}/grant
 //	POST v1/workers/{id}/revoke           POST v1/workers/{id}/jobs
 //	PUT  v1/workers/{id}/root/{path...}   GET  v1/workers/{id}/files?prefix=…
 //	GET  v1/workers/{id}/files/{path...}  GET  v1/jobs/{id}
+//	GET  v1/workers/{id}/threads          GET  v1/workers/{id}/threads/{tid}[?since=N]
+//	POST v1/workers/{id}/threads/{tid}/ops  POST v1/workers/{id}/ops
 //
 // The coordinator checks every path again; this keeps the broker from
 // carrying anything else.
@@ -42,7 +44,7 @@ func checkRequest(method, target string) (*url.URL, error) {
 		}
 	}
 	ok := false
-	listing := false
+	listing, changes := false, false
 	if len(seg) >= 2 && seg[0] == "v1" {
 		switch {
 		case seg[1] == "workers" && len(seg) == 2:
@@ -53,7 +55,13 @@ func checkRequest(method, target string) (*url.URL, error) {
 			switch {
 			case len(seg) == 3:
 				ok = method == http.MethodGet
-			case len(seg) == 4 && (seg[3] == "grant" || seg[3] == "revoke" || seg[3] == "jobs"):
+			case len(seg) == 4 && (seg[3] == "grant" || seg[3] == "revoke" || seg[3] == "jobs" || seg[3] == "ops"):
+				ok = method == http.MethodPost
+			case len(seg) == 4 && seg[3] == "threads":
+				ok = method == http.MethodGet
+			case len(seg) == 5 && seg[3] == "threads" && threadID.MatchString(seg[4]):
+				ok, changes = method == http.MethodGet, true
+			case len(seg) == 6 && seg[3] == "threads" && threadID.MatchString(seg[4]) && seg[5] == "ops":
 				ok = method == http.MethodPost
 			case len(seg) == 4 && seg[3] == "files":
 				ok, listing = method == http.MethodGet, true
@@ -70,8 +78,13 @@ func checkRequest(method, target string) (*url.URL, error) {
 	u := &url.URL{Scheme: "http", Host: host, Path: "/" + path}
 	if hasQuery {
 		q, err := url.ParseQuery(query)
-		if !listing || err != nil || len(q) != 1 || len(q["prefix"]) != 1 {
-			return nil, fmt.Errorf("path %q: only a file listing takes a query, prefix", target)
+		switch {
+		case err != nil || len(q) != 1:
+			return nil, fmt.Errorf("path %q: one query parameter at most", target)
+		case listing && len(q["prefix"]) == 1:
+		case changes && len(q["since"]) == 1 && revision.MatchString(q.Get("since")):
+		default:
+			return nil, fmt.Errorf("path %q: only a file listing takes a query, prefix, and a thread, since", target)
 		}
 		u.RawQuery = q.Encode()
 	}
@@ -81,4 +94,6 @@ func checkRequest(method, target string) (*url.URL, error) {
 var (
 	workerID = regexp.MustCompile(`^w_[0-9a-f]{24}$`)
 	jobID    = regexp.MustCompile(`^j_[0-9a-f]{24}$`)
+	threadID = regexp.MustCompile(`^thr_[0-9a-f]{24}$`)
+	revision = regexp.MustCompile(`^[0-9]{1,20}$`)
 )

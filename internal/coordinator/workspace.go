@@ -12,8 +12,9 @@ import (
 	"syscall"
 )
 
-// A worker's tree has four parts. Only "root/" is the worker root the agent sees
-// (m4-cloud-runners.md §5.5); the rest are kept for the runner or the app.
+// A worker's tree has five parts. Only "root/" is the worker root the agent sees
+// (m4-cloud-runners.md §5.5); the rest are kept for the runner or the app, and
+// "record/" (thread.go) only for the app: no job is given it.
 const (
 	prefixRoot  = "root/"
 	prefixFount = "fount/" // the workspace's .fount folder: sessions and transcripts

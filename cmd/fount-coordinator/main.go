@@ -3,7 +3,7 @@
 // local runner command. See package coordinator for what isn't built yet.
 //
 //	fount-coordinator --dir <folder> --wrapping-key dev [--listen 127.0.0.1:8790] [--runners 2] [--slots 2]
-//	  [--account-jobs 12] [--job-timeout 30m] -- <runner command...>
+//	  [--account-jobs 12] [--job-timeout 30m] [--job-config <file.json>] -- <runner command...>
 //	fount-coordinator --dir <folder> [flags] --runner-addr https://<domain> --runner-repo <owner/repo>
 //	  [--credentials <file.json>] [--wrapping-key dev --test-api --listen 0.0.0.0:8790]
 //	  [--wrapping-key vault --vaults <host,host> --vault-repo <owner/repo> --keyset-commitment <hex>
@@ -25,6 +25,11 @@
 // dev build signs with a key kept in --dir instead. The key is logged. --credentials gives every job the
 // file's tokens instead, by the broker's names: a device credential, to reach
 // a proxy that doesn't take job credentials yet.
+//
+// --job-config is the model settings, a JSON object passed to the runner
+// unread, of every job a thread operation (startThread, sendNote) starts: the
+// coordinator builds those jobs itself. Without it they are refused with
+// NO_MODEL.
 //
 // --client-listen serves the attested client channel (package channel) on
 // its /fount-client upgrade, with /health and /status, so the shim needs one
@@ -58,6 +63,7 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -110,6 +116,7 @@ func run() error {
 	timeout := flag.Duration("job-timeout", 30*time.Minute, "longest a job may run")
 	runnerAddr := flag.String("runner-addr", "", "a runner enclave broker's origin, https://<domain>, in place of a runner command")
 	credentials := flag.String("credentials", "", "JSON file of every job's broker credentials, with --runner-addr")
+	jobConfig := flag.String("job-config", "", "JSON file of the model settings for every job a thread operation starts; without it those operations are refused with NO_MODEL")
 	test := flag.Bool("test-api", false, "listen beyond loopback, behind the bearer token in $"+testTokenEnv+"; test data only")
 	runnerRepo := flag.String("runner-repo", os.Getenv("FOUNT_RUNNER_REPO"), "GitHub repository whose releases the runner enclave must run, or unattested")
 	keyMode := flag.String("wrapping-key", keyVault, "where the wrapping key comes from: vault, Fount Cloud's vaults, held in memory only; or dev, a file in --dir, for test coordinators")
@@ -163,6 +170,14 @@ func run() error {
 		}
 	} else if *credentials != "" {
 		return errors.New("--credentials needs --runner-addr")
+	}
+	var config json.RawMessage
+	if *jobConfig != "" {
+		data, err := os.ReadFile(*jobConfig)
+		if err != nil {
+			return err
+		}
+		config = json.RawMessage(bytes.TrimSpace(data))
 	}
 	if !*test {
 		if err := loopbackOnly(*listen); err != nil {
@@ -227,6 +242,7 @@ func run() error {
 		Credentials: mint,
 		Audience:    *audience,
 		AccountJobs: *accountJobs,
+		JobConfig:   config,
 	})
 	if err != nil {
 		return err
