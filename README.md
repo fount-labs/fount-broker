@@ -226,8 +226,16 @@ folder, serves an API with no authentication on loopback, and starts a command
 for each job:
 
 ```sh
-go run ./cmd/fount-coordinator --dir /tmp/coordinator -- scripts/dev-runner.sh
+go run ./cmd/fount-coordinator --dir /tmp/coordinator --wrapping-key dev -- scripts/dev-runner.sh
 ```
+
+`--wrapping-key` defaults to `vault`: the key that wraps every worker's data
+key comes from Fount Cloud's vault pair, in memory only, and the coordinator
+waits for a vault before it loads anything. Vault mode refuses `--test-api` and
+needs `--status-listen`, which serves `/health` and `/status` while it waits;
+point the healthcheck there, since the API's `/health` answers only once the
+key has come. Test coordinators and the dev build say `--wrapping-key dev`, a
+key file in `--dir`.
 
 Its parse surfaces are the JobSpec and the API's small JSON bodies. File
 contents, and everything a runner leaves behind, are stored as opaque bytes.
@@ -311,7 +319,7 @@ A local run of all three, with a registry, both ends of the link unattested
 fount-broker runner --image registry:5000/fount-labs/runner@sha256:<digest> \
   --listen 0.0.0.0:7400 --coordinator-repo unattested   # FOUNT_BROKER_REGISTRY=http://registry:5000
 fount-supervisor serve --image sha256:<digest>   # privileged, --network none
-fount-coordinator --dir /tmp/coordinator --runner-addr http://127.0.0.1:7400 --runner-repo unattested
+fount-coordinator --dir /tmp/coordinator --wrapping-key dev --runner-addr http://127.0.0.1:7400 --runner-repo unattested
 ```
 
 `fount-supervisor run` takes one job as fount-runner's folder flags instead, so
@@ -319,7 +327,7 @@ the dev coordinator can run it as its runner command:
 
 ```sh
 fount-supervisor unpack --blobs <oci layout> --image sha256:<digest> --out /harness
-fount-coordinator --dir /tmp/coordinator -- fount-supervisor run --harness /harness
+fount-coordinator --dir /tmp/coordinator --wrapping-key dev -- fount-supervisor run --harness /harness
 ```
 
 Parse surfaces: the image index, manifest and config (JSON, after their digest

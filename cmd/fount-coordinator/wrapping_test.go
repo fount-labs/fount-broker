@@ -22,6 +22,8 @@ func vaultFlags() keyFlags {
 		vaults:     "cloud-vault-a.fount.containers.tinfoil.dev,cloud-vault-b.fount.containers.tinfoil.dev",
 		vaultRepo:  "fount-labs/fount-cloud-vault",
 		commitment: testCommitment,
+
+		statusListen: "0.0.0.0:8791",
 	}
 }
 
@@ -44,6 +46,9 @@ func TestKeyFlags(t *testing.T) {
 		"a vault repo with a tag":           func(f *keyFlags) { f.vaultRepo = "fount-labs/fount-cloud-vault@v0.1.0" },
 		"a vault repo path":                 func(f *keyFlags) { f.vaultRepo = "fount-labs/fount-cloud-vault/x" },
 		"no commitment":                     func(f *keyFlags) { f.commitment = "" },
+		"an uppercase commitment":           func(f *keyFlags) { f.commitment = strings.ToUpper(testCommitment) },
+		"a short commitment":                func(f *keyFlags) { f.commitment = testCommitment[:62] },
+		"no status listener":                func(f *keyFlags) { f.statusListen = "" },
 		"vault flags with the dev key":      func(f *keyFlags) { f.mode = keyDev },
 	} {
 		f := vaultFlags()

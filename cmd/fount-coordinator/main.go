@@ -2,12 +2,12 @@
 // keeps Cloud workers' files under their keys, queues jobs and runs each with a
 // local runner command. See package coordinator for what isn't built yet.
 //
-//	fount-coordinator --dir <folder> [--listen 127.0.0.1:8790] [--runners 2] [--slots 2]
+//	fount-coordinator --dir <folder> --wrapping-key dev [--listen 127.0.0.1:8790] [--runners 2] [--slots 2]
 //	  [--job-timeout 30m] -- <runner command...>
 //	fount-coordinator --dir <folder> [flags] --runner-addr https://<domain> --runner-repo <owner/repo>
-//	  [--credentials <file.json>] [--test-api --listen 0.0.0.0:8790]
-//	  [--wrapping-key vault --vaults <host,host> --vault-repo <owner/repo> --keyset-commitment <hex>]
-//	  [--status-listen 0.0.0.0:8790]
+//	  [--credentials <file.json>] [--wrapping-key dev --test-api --listen 0.0.0.0:8790]
+//	  [--wrapping-key vault --vaults <host,host> --vault-repo <owner/repo> --keyset-commitment <hex>
+//	   --status-listen 0.0.0.0:8791]
 //	fount-coordinator health [http://127.0.0.1:8790/health]
 //
 // The runner command is started once per job with fount-runner's --workspace,
@@ -36,7 +36,9 @@
 // (fount-labs/fount-cloud-coordinator), which must say --wrapping-key dev. The
 // vault's key lives in memory only, and a coordinator waits for a vault before
 // it loads the volume. It refuses --test-api. --status-listen serves /health and /status, which
-// says where the key came from, on an address the shim can reach.
+// says where the key came from, on an address the shim can reach; vault needs
+// it, and the healthcheck must point at it, since the API's /health answers
+// only once the key has come.
 package main
 
 import (
@@ -139,25 +141,33 @@ func run() error {
 			return err
 		}
 	}
-	keys := keyFlags{mode: *keyMode, dir: *dir, vaults: *vaults, vaultRepo: *vaultRepo, commitment: *commitment, testAPI: *test}
+	keys := keyFlags{mode: *keyMode, dir: *dir, vaults: *vaults, vaultRepo: *vaultRepo, commitment: *commitment, testAPI: *test, statusListen: *statusListen}
 	if err := keys.check(); err != nil {
 		return err
 	}
-	if *statusListen != "" && *statusListen == *listen {
-		return errors.New("--status-listen and --listen are the same address")
-	}
 
+	// Every listener binds before the wait for the key, so a coordinator
+	// that can't serve fails now, not once a vault answers.
+	ln, err := net.Listen("tcp", *listen)
+	if err != nil {
+		return fmt.Errorf("--listen: %w", err)
+	}
+	defer ln.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	status := &keyStatus{Mode: keys.mode, State: "waiting", Since: time.Now().UTC()}
 	if *statusListen != "" {
-		statusSrv := &http.Server{Addr: *statusListen, Handler: statusAPI(status), ReadHeaderTimeout: 10 * time.Second}
+		statusLn, err := net.Listen("tcp", *statusListen)
+		if err != nil {
+			return fmt.Errorf("--status-listen: %w", err)
+		}
+		statusSrv := &http.Server{Handler: statusAPI(status), ReadHeaderTimeout: 10 * time.Second}
 		go func() {
 			<-ctx.Done()
 			statusSrv.Close()
 		}()
 		go func() {
-			if err := statusSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := statusSrv.Serve(statusLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Printf("status listener: %v", err)
 				stop()
 			}
@@ -190,7 +200,7 @@ func run() error {
 			return err
 		}
 	}
-	srv := &http.Server{Addr: *listen, Handler: api, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: api, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -202,12 +212,15 @@ func run() error {
 		c.Run(ctx)
 		close(done)
 	}()
-	if *test {
+	switch {
+	case *test:
 		log.Printf("test API on http://%s behind its bearer token; test data only", *listen)
-	} else {
+	case keys.mode == keyVault:
+		log.Printf("API on http://%s, loopback only, with the vault's wrapping key", *listen)
+	default:
 		log.Printf("dev API on http://%s, no client authentication", *listen)
 	}
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	<-done

@@ -15,6 +15,7 @@ import (
 
 	"github.com/fount-labs/fount-broker/internal/coordinator"
 	"github.com/fount-labs/fount-broker/internal/vaultkey"
+	"github.com/fount-labs/fount-mail-vault/wire"
 )
 
 // keyFlags say where the wrapping key comes from.
@@ -25,6 +26,9 @@ type keyFlags struct {
 	vaultRepo  string
 	commitment string
 	testAPI    bool
+	// statusListen is --status-listen. Vault needs it: the API's /health
+	// answers only once a vault has given the key.
+	statusListen string
 }
 
 const (
@@ -58,6 +62,12 @@ func (f keyFlags) check() error {
 	}
 	if f.commitment == "" {
 		return errors.New("--wrapping-key vault needs --keyset-commitment, the vaults' KEYSET_COMMITMENT")
+	}
+	if err := wire.ValidateCommitment(f.commitment); err != nil {
+		return fmt.Errorf("--keyset-commitment: %w", err)
+	}
+	if f.statusListen == "" {
+		return errors.New("--wrapping-key vault needs --status-listen, for the healthcheck while it waits for a vault")
 	}
 	return nil
 }

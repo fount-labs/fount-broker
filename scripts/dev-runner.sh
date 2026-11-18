@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Starts one job in the fount-runner image, for the dev coordinator:
 #
-#   fount-coordinator --dir /tmp/coord -- scripts/dev-runner.sh
+#   fount-coordinator --dir /tmp/coord --wrapping-key dev -- scripts/dev-runner.sh
 #
 # The coordinator adds --workspace, --job, --data and --index; this mounts those
 # folders into the image, offline. The image comes from the Fount repo's
