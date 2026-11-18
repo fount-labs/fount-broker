@@ -4,9 +4,11 @@
 # fount-labs/fount-cloud-coordinator, the repo runners pin with
 # FOUNT_COORDINATOR_REPO.
 #
-# TEST DATA ONLY. Its way in is the dev API behind a bearer token (--test-api)
-# and its wrapping key is the dev one (--wrapping-key dev), made at boot in the
-# state volume. It must say dev: vault is the default and refuses --test-api,
+# TEST DATA ONLY. Its ways in are the attested client channel (--client-listen),
+# which takes dev fount-infra's credentials and grants naming this enclave's
+# origin, and the dev API behind a bearer token (--test-api), both on the shim's
+# one port. Its wrapping key is the dev one (--wrapping-key dev), made at boot
+# in the state volume. It must say dev: vault is the default and refuses --test-api,
 # and the real coordinators take theirs from the Cloud vaults.
 cvm-version: 0.14.18 # https://github.com/tinfoilsh/cvmimage/releases/latest, no `v`
 cpus: 4
@@ -20,6 +22,10 @@ attested-keys:
   # this enclave's attestation (fount-infra proxy-server/coordinator-keys.ts).
   - id: job-signing
     key: ed25519
+  # Its end of the attested client channel (internal/channel): the TLS key
+  # Desktop's broker checks against this repo's releases.
+  - id: fount-client
+    key: ed25519
 
 networks:
   coordinator-out:
@@ -31,9 +37,9 @@ networks:
 
 containers:
   - name: coordinator
-    image: "ghcr.io/fount-labs/fount-broker/coordinator@sha256:178e0c73e07b60778e75e2b4d79da2817998a729c657ca348daa8097b80e9f23" # v0.5.2
+    image: "ghcr.io/fount-labs/fount-broker/coordinator@sha256:54d52962b5ad58ee60d22501de58e6b9bfcda3370f165217d1e526b51df45e86" # fount-broker v0.5.6
     networks: [coordinator-out]
-    keys: [fount-link, job-signing]
+    keys: [fount-link, job-signing, fount-client]
     attestation: true
     restart: always
     command:
@@ -51,24 +57,37 @@ containers:
       - "dev"
       - "--test-api"
       - "--listen"
-      - "0.0.0.0:8790"
+      - "127.0.0.1:8790" # the shim reaches the test API on the client port
+      - "--client-listen"
+      - "0.0.0.0:8792"
+      - "--client-audience"
+      - "https://coordinator-a.fount.containers.tinfoil.dev"
+      # Hour-long Cloud credentials only, not 7-day device ones, so a device
+      # fount-infra revokes, or an account whose Cloud lapses, is shut out
+      # within the hour.
+      - "--cloud-credentials-only"
     volumes:
       - state:/state
     env:
       - FOUNT_RUNNER_REPO: "fount-labs/fount-cloud-runner"
+      # Dev fount-infra's credential-signing key (KMS, RSA 2048), SPKI DER as
+      # base64: device and Cloud credentials it signs open the channel.
+      - FOUNT_ACCOUNT_KEYS: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAw01Y3RHnRhbml3U4l6eqCKTjchjBndkC3cNpI1jjCWNdrNj5pgTGcjNSX1QAUpd5dt693ArmdN9aadYDNS1kGDYXfKtw4o4Q7pOvRFkFiuZcqfz+GBtr7rkwDhGzJhJHuRvuzFxmoa5CBMNF+s68kBVro27UCw81PWI0z34ZLsBfimkURMhzWrPI+OXlycsmflLIJgUZn0UvweuutSjbW8RDT0YiozbBrWW4dZ4PI6WaZOywNS5Zr3/5uQDn3s3tLyFRwxAOKkWXcyzBTPNwKDrKViGYSiWIvKwGhQGB+sWtnzjYZM6tr8yRH7BKzVyNspriuwEHNhj+F0yeMasfeQIDAQAB"
     secrets:
       # The test API's bearer token, 32 random bytes as hex.
       - FOUNT_TEST_API_TOKEN
     healthcheck:
-      test: ["CMD", "/fount-coordinator", "health", "http://127.0.0.1:8790/health"]
+      test: ["CMD", "/fount-coordinator", "health", "http://127.0.0.1:8792/health"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 1m
 
 shim:
-  upstream-port: 8790
+  upstream-port: 8792
   upstream-container: coordinator
   paths:
     - /health
+    - /status
+    - /fount-client # the client channel, an HTTP upgrade
     - /v0/* # the test API, behind its bearer token

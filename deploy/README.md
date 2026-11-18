@@ -5,9 +5,11 @@ The broker and supervisor images come from `Dockerfile`, built and attested by t
 
 `coordinator/tinfoil-config.yml` is the coordinator enclave, P2's first slice (m4-cloud-runners.md
 §7): the coordinator image with attested `fount-link` and `job-signing` keys, sending jobs to
-`runner-a` over the link. Until the key work lands it takes jobs through the dev API behind a
-bearer token (`--test-api`, Tinfoil secret `FOUNT_TEST_API_TOKEN`) with the dev wrapping key, so
-it handles test data only. The deployed copy is public `fount-labs/fount-cloud-coordinator`.
+`runner-a` over the link, and a `fount-client` key for the attested client channel
+(`--client-listen`), which takes dev fount-infra's Cloud credentials only. It also serves the dev
+API behind a bearer token (`--test-api`, Tinfoil secret `FOUNT_TEST_API_TOKEN`) on the same port,
+and its wrapping key is the dev one, so it handles test data only. The deployed copy is public
+`fount-labs/fount-cloud-coordinator` (v0.3.2 runs as `coordinator-a`).
 
 The proxy learns each boot's `job-signing` key from the coordinator's attestation
 (fount-infra `proxy-server/coordinator-keys.ts`, `@tinfoilsh/verifier` 2.0.0-rc.2 pinned),

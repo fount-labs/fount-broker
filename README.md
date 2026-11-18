@@ -221,9 +221,9 @@ format is in [`internal/protocol`](internal/protocol/protocol.go).
 In Fount Cloud the broker's role grows into the coordinator
 ([`internal/coordinator`](internal/coordinator/coordinator.go)): it holds each
 Cloud worker's data key and files, queues jobs, and hands each one to a runner
-with no network. It isn't in releases. The dev build keeps everything in one
-folder, serves an API with no authentication on loopback, and starts a command
-for each job:
+with no network. Releases build its image for the test coordinator enclave
+(`deploy/coordinator`). The dev build keeps everything in one folder, serves an
+API with no authentication on loopback, and starts a command for each job:
 
 ```sh
 go run ./cmd/fount-coordinator --dir /tmp/coordinator --wrapping-key dev -- scripts/dev-runner.sh
@@ -236,6 +236,19 @@ its workers come only over the client channel; it refuses `--test-api` and
 needs `--status-listen` or `--client-listen`, either of which serves `/health`
 and `/status` while it waits, for the healthcheck. Test coordinators and the
 dev build say `--wrapping-key dev`, a key file in `--dir`.
+
+Desktop's broker reaches a coordinator over the attested client channel
+([`internal/channel`](internal/channel/channel.go)), served by `--client-listen`
+with `--client-audience`, the origin grants must name. The broker announces that
+origin in its `ready` frame. `--cloud-credentials-only` takes only fount-infra's
+hour-long Cloud credentials. Tinfoil's shim forwards one port, so with
+`--test-api` the client port serves the test API's `/v0/` too.
+
+When a job ends the coordinator keeps the workspace's `.fount` folder, new files
+in the thread's `outputs/<job id>/`, and each change to the worker's files
+outside `threads/`, `instructions.md` and `memory.md` as a proposal at
+`jobs/<job id>/proposed/<path>`. `scratch/` is thrown away, and a change to an
+input is dropped and counted.
 
 Its parse surfaces are the JobSpec, the API's small JSON bodies and, over the
 client channel, a worker's DEK grant: claims signed by a device key
