@@ -1,9 +1,11 @@
 package coordinator
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 )
 
 // Regression tests for the security review of 2026-11-19.
@@ -69,4 +71,47 @@ func TestTwoWorkersClaimingAMailboxGetNeither(t *testing.T) {
 		t.Fatal("a mailbox two workers claim went to one of them")
 	}
 	_ = victim
+}
+
+// H3: whoever accepts an admin invite gets a device that, before the fix,
+// signed a list at once dropping every other admin.
+func TestARecordAdmittedDeviceSignsNoListUntilAListIncludesIt(t *testing.T) {
+	f := newTeamFixture(t)
+	secret := make([]byte, InviteSecretSize)
+	rand.Read(secret)
+	commit, _ := InviteCommit("acme", "m_ann", "i_ann", secret)
+	f.tt.members["m_ann"] = ListMember{ID: "m_ann", Email: "ann@firm.com", Role: RoleAdmin,
+		Invite: &ListInvite{ID: "i_ann", Commit: commit, Exp: time.Now().Add(time.Hour).Unix()}}
+	if err := f.tt.push(f.owner, "acme", nil); err != nil {
+		t.Fatal(err)
+	}
+	eve := newTestDevice(t)
+	seq, _ := f.tt.head()
+	if _, err := f.c.AcceptInvite(withEmail(eve.caller("eve_acct"), "ann@firm.com"), "acme", "i_ann", "m_ann", secret, eve.include(t, "acme", "eve_acct", seq+1)); err != nil {
+		t.Fatal(err)
+	}
+	// The new device reaches the workers at once.
+	if _, _, err := f.c.access(eve.caller("eve_acct"), f.w1.ID, RoleAdmin); err != nil {
+		t.Fatalf("the invited admin can't reach the worker: %v", err)
+	}
+	takeover := newTestTeam(t, f.c, "acme")
+	takeover.workers = f.tt.workers
+	takeover.set("m_ann", "eve_acct", RoleAdmin, eve)
+	takeover.since[eve.id()] = seq + 1
+	if err := takeover.push(eve, "eve_acct", nil); !errors.Is(err, ErrNotAdmin) {
+		t.Fatalf("a record-admitted device's takeover list: %v", err)
+	}
+	if _, _, err := f.c.access(f.owner.caller("acme"), f.w1.ID, RoleReviewer); err != nil {
+		t.Fatalf("the owner lost access: %v", err)
+	}
+
+	// Once an admin's list includes it, it's an admin like any other.
+	f.tt.set("m_ann", "eve_acct", RoleAdmin, eve)
+	f.tt.since[eve.id()] = seq + 1
+	if err := f.tt.push(f.owner, "acme", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.tt.push(eve, "eve_acct", nil); err != nil {
+		t.Fatalf("a listed admin device: %v", err)
+	}
 }

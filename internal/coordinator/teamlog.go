@@ -152,7 +152,7 @@ func reduceTeam(team, aud string, log []TeamEntry) (*teamState, error) {
 // applyList makes a list the state; what it leaves out is gone.
 func (s *teamState) applyList(l TeamList, aud string) error {
 	s.members, s.byID, s.byDevice, s.workers = nil, map[string]*Member{}, map[string]*Member{}, map[string]string{}
-	s.name = l.Name
+	s.name, s.lastList = l.Name, l.Seq
 	for _, w := range l.Workers {
 		s.workers[w.ID] = w.DEK
 	}
@@ -326,8 +326,8 @@ func (c *Coordinator) checkList(prior *teamState, l TeamList, caller Caller, dek
 		if lm := listMemberOf(l, caller.Device, c.cfg.Audience); lm == nil || lm.Role != RoleAdmin || lm.Account != caller.Account {
 			return fmt.Errorf("%w: a team's first list names its signer as an admin", ErrNotAdmin)
 		}
-	} else if m := prior.byDevice[caller.Device]; m == nil || m.Role != RoleAdmin || m.Account != caller.Account {
-		return ErrNotAdmin
+	} else if err := prior.maySignLists(caller); err != nil {
+		return err
 	}
 	refuse := func(format string, args ...any) error {
 		return fmt.Errorf("%w: %s", ErrListRefused, fmt.Sprintf(format, args...))
