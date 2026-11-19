@@ -7,11 +7,11 @@
 //	fount-coordinator --dir <folder> [flags] --runner-addr https://<domain> --runner-repo <owner/repo>
 //	  [--credentials <file.json>] [--wrapping-key dev --test-api --listen 0.0.0.0:8790]
 //	  [--wrapping-key vault --vaults <host,host> --vault-repo <owner/repo> --keyset-commitment <hex>
-//	   --status-listen 0.0.0.0:8791]
+//	   [--coordinator-authority-key <base64>] --status-listen 0.0.0.0:8791]
 //	  [--client-listen 0.0.0.0:8792 --account-keys <base64 SPKI,...> [--client-attestation tinfoil]
 //	   [--cloud-credentials-only]] [--mail [--mail-generation-authority <file>]]
 //	  [--backup-bucket https://<bucket>.s3.<region>.amazonaws.com --backup-region <region>
-//	   [--backup-forwarder <host:port>] --dev-vault <file> [--restore latest|roots/<key> [--restore-dry-run]]]
+//	   [--backup-forwarder <host:port>] [--dev-vault <file>] [--restore latest|roots/<key> [--restore-dry-run]]]
 //	fount-coordinator health [http://127.0.0.1:8790/health]
 //
 // The runner command is started once per job with fount-runner's --workspace,
@@ -64,11 +64,18 @@
 // at one. Vault serves no dev API: its workers come only over the client
 // channel, to the devices their grants name.
 //
+// --coordinator-authority-key, with the vault's key, is the Cloud vaults'
+// GENERATION_AUTHORITY_KEY: every boot then takes a generation from the
+// vault, which fences the coordinator before it at the vault and the edge.
+// --mail with the vault's key needs it.
+//
 // --backup-bucket backs the volume up to S3 and counts every security change
 // in the vault (coordinator.BackupConfig); --restore puts a backup onto an
 // empty --dir before serving, and --restore-dry-run checks one and writes
-// nothing. Until the Cloud vault has a generation and counter they need
-// --wrapping-key dev and --dev-vault, a file standing in for both. See
+// nothing, and takes no generation. With the vault's key they need
+// --coordinator-authority-key, and the bucket's credentials come from the
+// vault; with the dev key, --dev-vault, a file standing in for the vault's
+// generation and counter, and the credentials from $AWS_*. See
 // docs/backups.md.
 package main
 
@@ -140,6 +147,7 @@ func run() error {
 	vaults := flag.String("vaults", os.Getenv("FOUNT_VAULTS"), "with --wrapping-key vault: the vaults' hostnames, comma-separated")
 	vaultRepo := flag.String("vault-repo", os.Getenv("FOUNT_VAULT_REPO"), "with --wrapping-key vault: GitHub repository whose releases the vaults must run")
 	commitment := flag.String("keyset-commitment", os.Getenv("FOUNT_KEYSET_COMMITMENT"), "with --wrapping-key vault: the vaults' KEYSET_COMMITMENT")
+	authorityKey := flag.String("coordinator-authority-key", os.Getenv("FOUNT_COORDINATOR_AUTHORITY_KEY"), "with --wrapping-key vault: the Cloud vaults' GENERATION_AUTHORITY_KEY (the edge's COORDINATOR_AUTHORITY_KEY); every boot then takes a generation, fencing the coordinator before it, and backups count in the vault")
 	statusListen := flag.String("status-listen", "", "address for /health and /status, which may be beyond loopback")
 	clientListen := flag.String("client-listen", "", "address for the attested client channel ("+channel.Path+"), /health and /status, which may be beyond loopback")
 	accountKeys := flag.String("account-keys", "", "with --client-listen: fount-infra's device-credential keys, SPKI DER as base64, comma-separated (default $"+accountKeysEnv+")")
@@ -150,7 +158,7 @@ func run() error {
 	mailAuthority := flag.String("mail-generation-authority", "", "with --mail and --wrapping-key dev: a file holding the Ed25519 seed a dev edge has as COORDINATOR_AUTHORITY_KEY, made on first run; the coordinator signs its own generation certificates with it, standing in for the vault")
 	audience := flag.String("client-audience", os.Getenv("FOUNT_CLIENT_AUDIENCE"), "with --client-listen: the coordinator's origin, https://<host>, which worker grants must name")
 	backups := backupFlags{getenv: os.Getenv}
-	flag.StringVar(&backups.bucket, "backup-bucket", os.Getenv("FOUNT_BACKUP_BUCKET"), "back the volume up to this S3 bucket, its endpoint https://<bucket>.s3.<region>.amazonaws.com; credentials from $AWS_ACCESS_KEY_ID and $AWS_SECRET_ACCESS_KEY")
+	flag.StringVar(&backups.bucket, "backup-bucket", os.Getenv("FOUNT_BACKUP_BUCKET"), "back the volume up to this S3 bucket, its endpoint https://<bucket>.s3.<region>.amazonaws.com; credentials from the vault with --wrapping-key vault, else from $AWS_ACCESS_KEY_ID and $AWS_SECRET_ACCESS_KEY")
 	flag.StringVar(&backups.region, "backup-region", os.Getenv("FOUNT_BACKUP_REGION"), "with --backup-bucket: the bucket's region")
 	flag.StringVar(&backups.forwarder, "backup-forwarder", os.Getenv("FOUNT_BACKUP_FORWARDER"), "with --backup-bucket: host:port of the S3 forwarder container every connection to the bucket goes through, in an enclave")
 	flag.DurationVar(&backups.interval, "backup-interval", coordinator.DefaultBackupInterval, "with --backup-bucket: how often a changed volume is backed up")
@@ -212,11 +220,12 @@ func run() error {
 	}
 	// --client-listen serves /health and /status too, so it does for vault's
 	// --status-listen.
-	keys := keyFlags{mode: *keyMode, dir: *dir, vaults: *vaults, vaultRepo: *vaultRepo, commitment: *commitment, testAPI: *test, statusListen: cmp.Or(*statusListen, *clientListen)}
+	keys := keyFlags{mode: *keyMode, dir: *dir, vaults: *vaults, vaultRepo: *vaultRepo, commitment: *commitment, authority: *authorityKey,
+		mail: *mailLoop, dryRun: backups.dryRun, testAPI: *test, statusListen: cmp.Or(*statusListen, *clientListen)}
 	if err := keys.check(); err != nil {
 		return err
 	}
-	backups.keyMode, backups.dir = keys.mode, *dir
+	backups.keyMode, backups.dir, backups.authority = keys.mode, *dir, keys.authority
 	if err := backups.check(); err != nil {
 		return err
 	}
@@ -254,7 +263,7 @@ func run() error {
 		}
 		serveBeyond(ctx, stop, "client channel", clientLn, clientAPI(statusAPI(status, &jobs), &channelReady, *test, &testReady))
 	}
-	key, err := wrappingKey(ctx, keys, status)
+	key, side, err := wrappingKey(ctx, keys, status)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
@@ -267,6 +276,7 @@ func run() error {
 	if *mailLoop && intake == nil {
 		return errors.New("--mail needs a runner that runs intake")
 	}
+	backups.vault = side
 	dur, err := backups.openDurable(*mailAuthority)
 	if err != nil {
 		return err
@@ -281,7 +291,7 @@ func run() error {
 		}
 		return err
 	}
-	mailCfg, err := mailConfig(*mailLoop, *mailAuthority, keys.mode, *dir, dur.generations())
+	mailCfg, err := mailConfig(*mailLoop, *mailAuthority, keys.mode, *dir, generations(dur, side))
 	if err != nil {
 		return err
 	}
@@ -461,10 +471,10 @@ func readJobConfig(value string) (json.RawMessage, error) {
 }
 
 // mailConfig is the mail loop's, against the attested mail edge. It renews
-// Cloud mailboxes only with --mail-entitlements (run). Until the vault
-// issues generation certificates (decision 18), only a dev coordinator has a
-// generation, from --mail-generation-authority, and reads the edge's changes
-// feed; without one the loop names none, and polls each mailbox.
+// Cloud mailboxes only with --mail-entitlements (run). Its generation is the
+// Cloud vault's (decision 18), or a dev one from --dev-vault or
+// --mail-generation-authority; with one the loop reads the edge's changes
+// feed. A dev coordinator without one names none, and polls each mailbox.
 func mailConfig(on bool, authority, keyMode, dir string, gen mail.GenerationSource) (coordinator.MailConfig, error) {
 	if !on {
 		if authority != "" && gen == nil {
@@ -474,14 +484,14 @@ func mailConfig(on bool, authority, keyMode, dir string, gen mail.GenerationSour
 	}
 	cfg := coordinator.MailConfig{Service: mail.New(route.NewMailEdge(), coordinator.NoLocalCheck{}), Send: true}
 	if gen != nil {
-		// Backups count under this process's generation from the dev
-		// vault, and mail runs under the same one.
+		// Mail runs under this process's generation, from the Cloud vault
+		// or the dev vault, the one backups count under.
 		cfg.Generations = gen
 		cfg.Changes = coordinator.EdgeChanges{Service: cfg.Service}
 		return cfg, nil
 	}
 	if authority == "" {
-		log.Printf("mail: no coordinator generation: the vault doesn't issue them yet, so the mail loop names none")
+		log.Printf("mail: no coordinator generation (a dev coordinator without --dev-vault or --mail-generation-authority), so the mail loop names none")
 		return cfg, nil
 	}
 	if keyMode != keyDev {

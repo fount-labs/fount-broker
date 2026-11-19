@@ -11,11 +11,18 @@
 // keyset against the commitment in its own measured config, and the vault's
 // document against the vault repo, then derives the wrapping key from it. It
 // never generates a keyset, and never serves one: it's a leaf, not a peer.
+//
+// A Cloud vault pair (COORDINATOR_MODE) also gives the coordinator its
+// generation (fount-mail-vault docs/COORDINATOR-COUNTER.md): with Boot, the
+// pull attests to a fresh per-boot key, and the vault answers a certificate
+// for it under the authority key in this release's config. Counter is the
+// vault's rollback counter.
 package vaultkey
 
 import (
 	"context"
 	"crypto/ecdh"
+	"crypto/ed25519"
 	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -29,6 +36,7 @@ import (
 	"github.com/fount-labs/fount-mail-vault/wire"
 
 	"github.com/fount-labs/fount-broker/internal/coordinator"
+	"github.com/fount-labs/fount-broker/internal/mail"
 )
 
 // wrappingInfo separates the wrapping key from anything else derived from the
@@ -49,6 +57,13 @@ type Source struct {
 	// Check verifies a vault's document and returns the key it endorses.
 	Check  wire.HolderCheck
 	Client *http.Client
+	// Authority is the generation authority's public key, the vaults'
+	// GENERATION_AUTHORITY_KEY, from this release's config.
+	Authority ed25519.PublicKey
+	// Boot makes each fetch boot a generation, which fences every
+	// coordinator before it. It needs Authority. A restore dry run fetches
+	// without it.
+	Boot bool
 }
 
 // Fetched is a wrapping key and where it came from.
@@ -57,6 +72,11 @@ type Fetched struct {
 	Commitment string
 	Vault      string
 	Elapsed    time.Duration
+	// S3 is the backup bucket's credentials, when the vault holds them
+	// (vaultctl import-s3).
+	S3 *wire.S3Credentials
+	// Generation is the one this fetch booted, with Boot.
+	Generation *mail.Generation
 }
 
 // Fetch asks each vault once, in order, and returns the first keyset that
@@ -67,7 +87,7 @@ func (s *Source) Fetch(ctx context.Context) (*Fetched, error) {
 	}
 	var errs []error
 	for _, vault := range s.Vaults {
-		got, err := wire.Pull(ctx, s.Client, vault, s.Transfer, s.Attester, s.Check, s.Commitment)
+		got, gen, err := s.pull(ctx, vault)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", vault, err))
 			continue
@@ -77,9 +97,32 @@ func (s *Source) Fetch(ctx context.Context) (*Fetched, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &Fetched{Key: key, Commitment: commitment, Vault: vault, Elapsed: got.Elapsed}, nil
+		return &Fetched{Key: key, Commitment: commitment, Vault: vault, Elapsed: got.Elapsed, S3: got.S3, Generation: gen}, nil
 	}
 	return nil, errors.Join(errs...)
+}
+
+// pull is one vault's keyset, and with Boot a generation. A boot whose
+// answer is lost moves the vault's generation anyway; the next one moves it
+// again, and nothing ever used the lost one.
+func (s *Source) pull(ctx context.Context, vault string) (*wire.PullResult, *mail.Generation, error) {
+	if !s.Boot {
+		got, err := wire.Pull(ctx, s.Client, vault, s.Transfer, s.Attester, s.Check, s.Commitment)
+		return got, nil, err
+	}
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	got, err := wire.PullBoot(ctx, s.Client, vault, s.Transfer, s.Attester, s.Check, s.Commitment, pub, s.Authority)
+	if err != nil {
+		return nil, nil, err
+	}
+	cert, err := wire.VerifyGenerationCertificate(got.GenerationCertificate, s.Authority)
+	if err != nil {
+		return nil, nil, err
+	}
+	return got, &mail.Generation{Number: cert.Generation, Certificate: got.GenerationCertificate, Key: priv}, nil
 }
 
 // Backoff is how long Wait waits between rounds: first, doubling to most.
@@ -122,6 +165,10 @@ func (s *Source) check() error {
 		return errors.New("a vault source needs the transfer key, an attester and a client")
 	case s.Check == nil:
 		return errors.New("a vault source needs a check of the vault's document")
+	case s.Authority != nil && len(s.Authority) != ed25519.PublicKeySize:
+		return errors.New("the generation authority is an Ed25519 public key")
+	case s.Boot && s.Authority == nil:
+		return errors.New("booting a generation needs the generation authority's key")
 	}
 	if err := wire.ValidateCommitment(s.Commitment); err != nil {
 		return fmt.Errorf("the keyset commitment: %w", err)

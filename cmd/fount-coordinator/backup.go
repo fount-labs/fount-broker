@@ -39,6 +39,11 @@ type backupFlags struct {
 	keyMode string
 	dir     string
 	getenv  func(string) string
+	// authority is --coordinator-authority-key, with --wrapping-key vault.
+	authority string
+	// vault is what the Cloud vaults gave this boot, with --wrapping-key
+	// vault: set after the key is fetched, before openDurable.
+	vault *vaultSide
 }
 
 const restoreLatest = "latest"
@@ -75,10 +80,19 @@ func (f backupFlags) check() error {
 	}
 	switch f.keyMode {
 	case keyVault:
-		// The Cloud vault releases the wrapping key and nothing else yet:
-		// no generation and no counter, and backups without the counter
-		// could be rolled back by whoever holds the bucket.
-		return errors.New("--backup-bucket with --wrapping-key vault needs the Cloud vault's generation and counter, which aren't built (fount-mail-vault docs/COORDINATOR-COUNTER.md)")
+		// Backups without the vault's counter could be rolled back by
+		// whoever holds the bucket.
+		switch {
+		case f.authority == "":
+			return errors.New("--backup-bucket with --wrapping-key vault needs --coordinator-authority-key, for the Cloud vault's generation and counter")
+		case f.devVault != "":
+			return errors.New("--dev-vault is for --wrapping-key dev; the Cloud vault counts these backups")
+		case f.getenv("AWS_ACCESS_KEY_ID") != "" || f.getenv("AWS_SECRET_ACCESS_KEY") != "" || f.getenv("AWS_SESSION_TOKEN") != "":
+			// The deployer's environment isn't measured; the vault's
+			// credentials go only to an attested coordinator release.
+			return errors.New("--backup-bucket with --wrapping-key vault takes the bucket's credentials from the vault (vaultctl import-s3), not $AWS_*; unset them")
+		}
+		return nil
 	case keyDev:
 		if f.devVault == "" {
 			return errors.New("--backup-bucket with --wrapping-key dev needs --dev-vault <file>, the stand-in for the Cloud vault's generation and counter")
@@ -96,16 +110,19 @@ func (f backupFlags) check() error {
 	return nil
 }
 
-// bucket is the backup bucket's client.
+// openBucket is the backup bucket's client: with the vault's key, under the
+// credentials the vault released with it; otherwise from the environment.
 func (f backupFlags) openBucket() (*s3bucket.Bucket, error) {
-	return s3bucket.New(s3bucket.Config{
-		Endpoint:        f.bucket,
-		Region:          f.region,
-		AccessKeyID:     f.getenv("AWS_ACCESS_KEY_ID"),
-		SecretAccessKey: f.getenv("AWS_SECRET_ACCESS_KEY"),
-		SessionToken:    f.getenv("AWS_SESSION_TOKEN"),
-		Forwarder:       f.forwarder,
-	})
+	cfg := s3bucket.Config{Endpoint: f.bucket, Region: f.region, Forwarder: f.forwarder}
+	if f.keyMode == keyVault {
+		if f.vault == nil || f.vault.s3 == nil {
+			return nil, errors.New("--backup-bucket: the vault released no bucket credentials; import them with vaultctl import-s3")
+		}
+		cfg.AccessKeyID, cfg.SecretAccessKey = f.vault.s3.AccessKeyID, f.vault.s3.SecretAccessKey
+	} else {
+		cfg.AccessKeyID, cfg.SecretAccessKey, cfg.SessionToken = f.getenv("AWS_ACCESS_KEY_ID"), f.getenv("AWS_SECRET_ACCESS_KEY"), f.getenv("AWS_SESSION_TOKEN")
+	}
+	return s3bucket.New(cfg)
 }
 
 // devVault is --dev-vault: the vault file and the key that signs its
@@ -173,8 +190,9 @@ type durable struct {
 	gen *coordinator.FixedGeneration
 }
 
-// openDurable opens the bucket and the dev vault and, unless this is a dry
-// run, takes this process's generation.
+// openDurable opens the bucket and the vault's counter and, unless this is a
+// dry run, takes this process's generation: from the Cloud vault, which
+// gave it with the key, or from the dev vault.
 func (f backupFlags) openDurable(authority string) (*durable, error) {
 	if !f.on() {
 		return nil, nil
@@ -182,6 +200,16 @@ func (f backupFlags) openDurable(authority string) (*durable, error) {
 	bucket, err := f.openBucket()
 	if err != nil {
 		return nil, err
+	}
+	if f.keyMode == keyVault {
+		d := &durable{bucket: bucket, vault: f.vault.counter, gen: f.vault.gen}
+		if !f.dryRun && d.gen == nil {
+			return nil, errors.New("backups need a generation, and the vault gave none")
+		}
+		if d.gen != nil {
+			log.Printf("backup: generation %d, backups to %s", d.gen.G.Number, f.bucket)
+		}
+		return d, nil
 	}
 	vault, err := f.openDevVault(authority)
 	if err != nil {
@@ -257,11 +285,14 @@ func (f backupFlags) restoreVolume(ctx context.Context, d *durable, key coordina
 	return nil
 }
 
-// generations is the mail loop's generation source with backups on: the
-// same one backups count under.
-func (d *durable) generations() mail.GenerationSource {
-	if d == nil || d.gen == nil {
-		return nil
+// generations is the mail loop's generation source: the one backups count
+// under, or else the one the Cloud vault gave this boot.
+func generations(d *durable, side *vaultSide) mail.GenerationSource {
+	switch {
+	case d != nil && d.gen != nil:
+		return d.gen
+	case side != nil && side.gen != nil:
+		return side.gen
 	}
-	return d.gen
+	return nil
 }
