@@ -63,7 +63,7 @@ func init() {
 		CodeBadMessage:          "Fount couldn't build this email. Nothing was sent.",
 		CodeMailLapsed:          "This worker's Fount Mail has lapsed. Renew it, then send again.",
 		CodeSendingOff:          "Fount Mail isn't sending email yet. Nothing was sent.",
-		CodeWorkerPaused:        "This worker is paused. Resume it with your passkey first.",
+		CodeWorkerPaused:        "This worker is paused. Resume it first.",
 		CodeAttachmentsTooLarge: "The attached files are too large for one email. Untick some and send again.",
 		CodeAttachmentMissing:   "An attached file is gone from the workspace. Untick it and send again.",
 		CodeApprovalUnsigned:    "Fount couldn't check this device's signature on the approval. Nothing was sent. Open the draft again and approve it.",

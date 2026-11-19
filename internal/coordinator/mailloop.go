@@ -377,9 +377,21 @@ func (c *Coordinator) syncMail(ctx context.Context, w Worker, now time.Time) err
 	if err := c.enrollMail(ctx, w); err != nil {
 		return err
 	}
+	settings, err := c.sendOwedSettings(ctx, w)
+	if err != nil {
+		// Mail is still read, and the worker isn't kicked: what the edge
+		// hasn't taken is sent again on the next pass over it, and an
+		// unsent pause is held to here meanwhile (whyNotRun).
+		c.fenced(ctx, w.Mailbox, err)
+		log.Printf("worker %s: the edge hasn't taken its settings: %v", w.ID, err)
+	}
 	listing, err := m.service.List(ctx, w.Mailbox)
 	if err != nil {
 		return fmt.Errorf("listing: %w", err)
+	}
+	var errs []error
+	if err := c.takeEdgePause(w, settings, listing.Paused); err != nil {
+		errs = append(errs, err)
 	}
 	paused := pauseOf(listing.Paused)
 	if listing.Lapsed != nil && *listing.Lapsed || m.isLapsed(w.ID) {
@@ -409,7 +421,6 @@ func (c *Coordinator) syncMail(ctx context.Context, w Worker, now time.Time) err
 	slices.SortFunc(fetched, func(a, b *mail.Message) int {
 		return cmp.Or(cmp.Compare(a.ReceivedAt, b.ReceivedAt), cmp.Compare(a.Sequence, b.Sequence), strings.Compare(a.ID, b.ID))
 	})
-	var errs []error
 	for _, msg := range fetched {
 		err := c.receiveMail(ctx, w.ID, msg, c.restoredPause(msg, paused), now)
 		var stopped intakeStopped
@@ -965,7 +976,7 @@ func (c *Coordinator) whyNotRun(s *MailSettings, l *mailLedger, th *threadRecord
 		return "automatic runs are off"
 	case time.UnixMilli(msg.ReceivedAt).Before(s.AutoRunSince):
 		return "it arrived before automatic runs were turned on"
-	case paused == pausePaused:
+	case paused == pausePaused || s.Paused:
 		return "the worker is paused"
 	case paused == pauseUnknown:
 		return "Fount couldn't tell whether the worker is paused"
