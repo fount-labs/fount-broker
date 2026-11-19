@@ -3,6 +3,7 @@ package coordinator
 import (
 	"bytes"
 	"context"
+	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -184,4 +185,55 @@ func TestALegacyMailboxIsSealedOnPrepare(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// M1: losing an admin rotated the signing key only; the decryption key they
+// may have read kept opening new mail. Now it's rotated too, and mail the
+// edge sealed to the old key before still opens.
+func TestARotationReplacesTheDecryptionKeyToo(t *testing.T) {
+	r := genRig(t, MailConfig{})
+	w, mb := r.worker()
+	r.edge.deliver(mb, email{from: "dana@example.com", to: testWorkerAddr})
+	r.pass()
+	stored := func() Mailbox {
+		var out Mailbox
+		if err := r.c.view(w.ID, anyDevice, func(t *Tree) error {
+			m, err := loadMailbox(t)
+			if m != nil {
+				out = *m
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	first := stored().DecryptionKey
+	r.c.mu.Lock()
+	r.c.state.Teams["t_rot"] = &Team{ID: "t_rot", Rotate: []string{w.ID}}
+	r.c.mu.Unlock()
+	r.pass()
+	got := stored()
+	if bytes.Equal(got.DecryptionKey, first) || got.NextDecryptionKey != nil {
+		t.Fatalf("the decryption key wasn't rotated: %+v", got)
+	}
+	priv, err := ecdh.X25519().NewPrivateKey(got.DecryptionKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if at := r.edge.coord.Mailbox(mb.MailboxID).DecryptionKey; !bytes.Equal(at, priv.PublicKey().Bytes()) {
+		t.Fatal("the edge has another decryption key")
+	}
+	if len(got.OlderDecryptionKeys) != 1 || !bytes.Equal(got.OlderDecryptionKeys[0], first) {
+		t.Fatalf("the old key wasn't kept: %d", len(got.OlderDecryptionKeys))
+	}
+	// Mail the edge sealed to the old key, and to the new, both open.
+	old := r.edge.deliver(mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "sealed before"})
+	cur := r.edge.deliver(got, email{from: "dana@example.com", to: testWorkerAddr, subject: "sealed after"})
+	r.pass()
+	for _, id := range []string{old, cur} {
+		if r.ledger(w.ID).Acted[id].Outcome == "" {
+			t.Errorf("mail %s wasn't read", id)
+		}
+	}
 }

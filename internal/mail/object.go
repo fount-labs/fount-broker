@@ -2,6 +2,7 @@ package mail
 
 import (
 	"bytes"
+	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/hpke"
 	"crypto/sha256"
@@ -175,11 +176,11 @@ func (o *Object) Open(k *Keys) (Opened, error) {
 	if !bytes.Equal(o.MailboxID, k.MailboxID) {
 		return Opened{}, ErrWrongMailbox
 	}
-	sum := sha256.Sum256(k.Decryption.PublicKey().Bytes())
-	if !bytes.Equal(o.PubKeyHash, sum[:]) {
+	dec := k.decryptionFor(o.PubKeyHash)
+	if dec == nil {
 		return Opened{}, ErrWrongKey
 	}
-	priv, err := hpke.NewDHKEMPrivateKey(k.Decryption)
+	priv, err := hpke.NewDHKEMPrivateKey(dec)
 	if err != nil {
 		return Opened{}, err
 	}
@@ -192,6 +193,21 @@ func (o *Object) Open(k *Keys) (Opened, error) {
 		return Opened{}, fmt.Errorf("%w: %v", ErrDecrypt, err)
 	}
 	return unframe(o.Version, pt)
+}
+
+// decryptionFor is the key of k's whose public key hashes to pubKeyHash, or
+// nil.
+func (k *Keys) decryptionFor(pubKeyHash []byte) *ecdh.PrivateKey {
+	for _, d := range append([]*ecdh.PrivateKey{k.Decryption}, k.Older...) {
+		if d == nil {
+			continue
+		}
+		sum := sha256.Sum256(d.PublicKey().Bytes())
+		if bytes.Equal(pubKeyHash, sum[:]) {
+			return d
+		}
+	}
+	return nil
 }
 
 // unframe splits a decrypted plaintext of the given version into its envelope,

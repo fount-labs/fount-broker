@@ -2,6 +2,7 @@ package mail
 
 import (
 	"context"
+	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -543,7 +544,8 @@ func (s *Service) RotateSigningKey(ctx context.Context, mailbox string, next ed2
 // already has: a retry whose first answer was lost.
 func AlreadyCurrent(err error) bool {
 	var e *EdgeError
-	return errors.As(err, &e) && e.Status == http.StatusConflict && e.Code == "" && strings.Contains(e.Message, "already the mailbox's signing key")
+	return errors.As(err, &e) && e.Status == http.StatusConflict && e.Code == "" &&
+		(strings.Contains(e.Message, "already the mailbox's signing key") || strings.Contains(e.Message, "already the mailbox's decryption key"))
 }
 
 // LapseState is POST /coordinator/lapse's answer.
@@ -590,4 +592,41 @@ func (s *Service) Lapse(ctx context.Context, mailbox string, lapsed bool) (Lapse
 		st.HoldUntil = time.Unix(out.HoldUntil, 0).UTC()
 	}
 	return st, nil
+}
+
+// RotateDecryptionKey replaces an enrolled worker's X25519 decryption key at
+// the edge with next's public key (security review 2026-11-19, M1; POST
+// /coordinator/decryption-key), signed by the current generation's key. Mail
+// the edge stores from then on is sealed to next; mail already stored stays
+// sealed to the old key, which the caller keeps in Keys.Older. A retry after
+// a lost answer meets the edge's 409 for the current key: AlreadyCurrent
+// reports it.
+func (s *Service) RotateDecryptionKey(ctx context.Context, mailbox string, next *ecdh.PrivateKey) error {
+	if !validHex(mailbox, 32) || next == nil || next.Curve() != ecdh.X25519() {
+		return fmt.Errorf("%w: a mailbox is 64 lowercase hex characters and a key X25519", ErrRequest)
+	}
+	pub := next.PublicKey().Bytes()
+	body, err := json.Marshal(map[string]string{
+		"mailbox_id":     mailbox,
+		"decryption_key": base64.StdEncoding.EncodeToString(pub),
+	})
+	if err != nil {
+		return err
+	}
+	data, err := s.coordinatorCall(ctx, "/coordinator/decryption-key", body, maxJSON)
+	if err != nil {
+		return err
+	}
+	var out struct {
+		MailboxID string `json:"mailbox_id"`
+		KeySHA256 string `json:"decryption_key_sha256"`
+	}
+	if err := strictJSON(data, &out); err != nil {
+		return err
+	}
+	sum := sha256.Sum256(pub)
+	if out.MailboxID != mailbox || out.KeySHA256 != hex.EncodeToString(sum[:]) {
+		return fmt.Errorf("%w: POST /coordinator/decryption-key answered %s", ErrEdge, out.MailboxID)
+	}
+	return nil
 }

@@ -58,6 +58,11 @@ type Mailbox struct {
 	// asked so a lost answer is retried with the same key (rotate.go).
 	// Reply tokens aren't keyed from any of these (Coordinator.mailKeys).
 	NextSigningKey []byte `json:"nextSigningKey,omitempty"`
+	// NextDecryptionKey is a rotation's new X25519 key, kept the same way,
+	// and OlderDecryptionKeys the ones it replaced, newest first, for mail
+	// the edge sealed to them before (rotate.go).
+	NextDecryptionKey   []byte   `json:"nextDecryptionKey,omitempty"`
+	OlderDecryptionKeys [][]byte `json:"olderDecryptionKeys,omitempty"`
 }
 
 // replyTokenKeyInfo labels the reply-token key (decision 25).
@@ -103,7 +108,18 @@ func (m Mailbox) keys() (*mail.Keys, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: decryptionKey must be a 32-byte X25519 key", ErrInvalid)
 	}
-	return &mail.Keys{MailboxID: id, Signing: ed25519.NewKeyFromSeed(m.SigningKey), Decryption: dec}, nil
+	k := &mail.Keys{MailboxID: id, Signing: ed25519.NewKeyFromSeed(m.SigningKey), Decryption: dec}
+	for _, raw := range append([][]byte{m.NextDecryptionKey}, m.OlderDecryptionKeys...) {
+		if raw == nil {
+			continue
+		}
+		older, err := ecdh.X25519().NewPrivateKey(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%w: a kept decryption key isn't a 32-byte X25519 key", ErrInvalid)
+		}
+		k.Older = append(k.Older, older)
+	}
+	return k, nil
 }
 
 func (m Mailbox) check() error {

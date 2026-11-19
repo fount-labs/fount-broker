@@ -63,6 +63,8 @@ type CoordinatedMailbox struct {
 	Changed   uint64
 	// SigningKey is the address signing key a rotation set, nil before one.
 	SigningKey ed25519.PublicKey
+	// DecryptionKey is the X25519 public key a rotation set, nil before one.
+	DecryptionKey []byte
 }
 
 func NewCoordination(authority ed25519.PublicKey) *Coordination {
@@ -256,7 +258,7 @@ func (c *Coordination) Serve(w http.ResponseWriter, r *http.Request, body []byte
 			return true
 		}
 		json.NewEncoder(w).Encode(map[string]uint64{"generation": c.gen})
-	case "POST /coordinator/lapse", "POST /coordinator/changes", "POST /coordinator/signing-key", "POST /coordinator/invite":
+	case "POST /coordinator/lapse", "POST /coordinator/changes", "POST /coordinator/signing-key", "POST /coordinator/decryption-key", "POST /coordinator/invite":
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		c.calls = append(c.calls, route)
@@ -278,6 +280,8 @@ func (c *Coordination) Serve(w http.ResponseWriter, r *http.Request, body []byte
 			c.lapse(w, body)
 		case "POST /coordinator/signing-key":
 			c.rotate(w, body, addressKey)
+		case "POST /coordinator/decryption-key":
+			c.rotateDecryption(w, body)
 		case "POST /coordinator/invite":
 			mailbox, message, ref := c.invite(body)
 			if ref != nil {
@@ -368,6 +372,37 @@ func (c *Coordination) rotate(w http.ResponseWriter, body []byte, addressKey fun
 	c.touch(m)
 	sum := sha256.Sum256(key)
 	json.NewEncoder(w).Encode(map[string]string{"mailbox_id": req.MailboxID, "signing_key_sha256": hex.EncodeToString(sum[:])})
+}
+
+// rotateDecryption is POST /coordinator/decryption-key: a new X25519 key,
+// not the one a rotation set last.
+func (c *Coordination) rotateDecryption(w http.ResponseWriter, body []byte) {
+	var req struct {
+		MailboxID     string `json:"mailbox_id"`
+		DecryptionKey string `json:"decryption_key"`
+	}
+	if json.Unmarshal(body, &req) != nil {
+		refuse(http.StatusBadRequest, "", "bad request body").Write(w)
+		return
+	}
+	key, err := base64.StdEncoding.DecodeString(req.DecryptionKey)
+	if err != nil || len(key) != 32 {
+		refuse(http.StatusBadRequest, "", "bad request body").Write(w)
+		return
+	}
+	m := c.mailboxes[req.MailboxID]
+	if m == nil || !m.Enrolled {
+		refuse(http.StatusConflict, "not_coordinated", "the mailbox isn't enrolled").Write(w)
+		return
+	}
+	if bytes.Equal(m.DecryptionKey, key) {
+		refuse(http.StatusConflict, "", "routing: that is already the mailbox's decryption key").Write(w)
+		return
+	}
+	m.DecryptionKey = key
+	c.touch(m)
+	sum := sha256.Sum256(key)
+	json.NewEncoder(w).Encode(map[string]string{"mailbox_id": req.MailboxID, "decryption_key_sha256": hex.EncodeToString(sum[:])})
 }
 
 // invite checks POST /coordinator/invite as the edge's send.Policy.CheckInvite
