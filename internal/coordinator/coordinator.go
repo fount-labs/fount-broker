@@ -114,6 +114,9 @@ func New(cfg Config) (*Coordinator, error) {
 		return nil, errors.New("coordinator config: the mail loop needs an intake runner")
 	}
 	c := &Coordinator{cfg: cfg, state: state, busy: map[string]bool{}, accountJobs: map[string]int{}, locks: map[string]*sync.Mutex{}, cancels: map[string]context.CancelFunc{}, queued: map[string]string{}, wake: make(chan struct{}, 1), mail: newMailLoop(cfg.Mail)}
+	if c.cfg.Mail.Ack == nil && c.cfg.Mail.Send != nil {
+		c.cfg.Mail.Ack = c
+	}
 	if err := c.state.Save(cfg.StateDir); err != nil {
 		return nil, err
 	}

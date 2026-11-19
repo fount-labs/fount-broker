@@ -40,8 +40,12 @@ type MailConfig struct {
 	// Changes is the edge's batched listing (M). Nil lists each mailbox
 	// every SweepInterval.
 	Changes MailChanges
-	// Ack sends the fixed acknowledgement (decision 8). Nil sends none.
+	// Ack sends the fixed acknowledgement (decision 8). Nil with Send set is
+	// the coordinator's own, on the send journal; nil without sends none.
 	Ack Acknowledger
+	// Send is the edge's sending side (sendclient.go), which the send
+	// journal posts through. Nil sends nothing: approved mail waits.
+	Send MailSender
 	// Entitlements is fount-infra's issuer of Cloud mailboxes' entitlements
 	// (decision 12). Nil renews nothing.
 	Entitlements Entitlements
@@ -403,6 +407,9 @@ func (c *Coordinator) syncMail(ctx context.Context, w Worker, now time.Time) err
 	if err := c.runPending(ctx, w.ID); err != nil {
 		errs = append(errs, err)
 	}
+	if err := c.runSends(ctx, w.ID); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
 }
 
@@ -751,6 +758,18 @@ func (c *Coordinator) place(t *Tree, workerID string, mb *Mailbox, s *MailSettin
 		th.Participants = append(th.Participants, sender)
 	}
 
+	// What a reply on th is besides a turn of its own, decided here and
+	// below at "answer by email": first an approval by email (sendapproval.go),
+	// which starts no turn; then, for a reply that would start one, an answer
+	// to th's waiting question.
+	approval, err := c.emailApproval(t, th, mb, s, msg, check, in, now)
+	if err != nil {
+		return act, err
+	}
+	if approval {
+		verdict, reason = verdictApproval, ""
+	}
+
 	folder := MessageFolder(asMail(msg))
 	entry := &mailEntry{
 		EdgeID: msg.ID, ReceivedAt: msg.ReceivedAt, Sender: sender, Signed: alignedDomain(check),
@@ -758,7 +777,8 @@ func (c *Coordinator) place(t *Tree, workerID string, mb *Mailbox, s *MailSettin
 		Folder: folder, Instruction: in.r.Spec.Instruction, Unread: in.unread != nil,
 	}
 	if check != nil {
-		entry.SenderName = check.From.Name
+		h := check.Headers
+		entry.SenderName, entry.MessageID, entry.InReplyTo, entry.References, entry.Subject = check.From.Name, angled(h.MessageID), h.InReplyTo, h.References, h.Subject
 	}
 	var spec *JobSpec
 	switch verdict {
@@ -781,15 +801,20 @@ func (c *Coordinator) place(t *Tree, workerID string, mb *Mailbox, s *MailSettin
 		if why != "" {
 			entry.Held, entry.Reason = heldWaiting, why
 		}
-	case string(decide.Context):
+	case string(decide.Context), verdictApproval:
 	default:
 		entry.Held = heldWaiting
+	}
+	rev := th.Revision + 1
+	if spec != nil && verdict == verdictThreadReply {
+		// Answer by email: lane E's answerByMail(th, sender, text,
+		// mailJobID(msg.ID), rev, now) goes here; a spec it returns replaces
+		// spec.
 	}
 	if err := writeMailFolder(t, mailFolderPath(th.ID, folder, entry.Held == heldWaiting), msg, in); err != nil {
 		return act, err
 	}
 	run := spec != nil
-	rev := th.Revision + 1
 	if run {
 		entry.Intake, entry.JobID = intakePending, mailJobID(msg.ID)
 	}
@@ -815,6 +840,9 @@ func (c *Coordinator) place(t *Tree, workerID string, mb *Mailbox, s *MailSettin
 		}
 	case entry.Held == heldWaiting:
 		act.Outcome = outcomeHeld
+		if err := c.problemNotice(t, workerID, th.ID, noticeHeld, msg.ID, now); err != nil {
+			return act, err
+		}
 	default:
 		act.Outcome = outcomeContext
 	}
