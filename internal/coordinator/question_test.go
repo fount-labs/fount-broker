@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -246,40 +247,43 @@ func TestAQuestionIsForwardedToARequesterOnTheThread(t *testing.T) {
 	th, q := askedThread(t, c, w)
 	forward := map[string]any{"questionId": q.ID, "questionRev": q.Rev, "to": "Lee@Client.example"}
 
-	// Without drafts (lane D) it isn't here yet.
-	raw, _ := json.Marshal(forward)
-	if _, err := c.applyThreadOp(anyDevice, w.ID, th.ID, opEnvelope{OpID: "op_f", ThreadID: th.ID, Kind: "forwardQuestion", Args: raw}); !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("forward without drafts: %v", err)
-	}
-
-	var drafted []string
-	QuestionDraft = func(_ *Tree, th *threadRecord, q *threadEntry, to string, rev uint64, now time.Time) (string, error) {
-		drafted = append(drafted, q.ID+" to "+to)
-		return th.push(rev, now, threadEntry{Kind: entryEvent, Code: "question_draft"})
-	}
-	t.Cleanup(func() { QuestionDraft = nil })
-
 	// Lee isn't on the thread, nor a requester.
 	if res := threadOp(t, c, w, th.ID, "op_f1", th.Revision, "forwardQuestion", forward); res.Code != CodeRecipientNotAllowed {
 		t.Fatalf("forward to a stranger: %+v", res)
 	}
+	if err := c.SetMailbox(w.ID, newMailbox(t, testWorkerAddr), []Requester{{Address: "lee@client.example"}}); err != nil {
+		t.Fatal(err)
+	}
+	// Lee is on the thread, which is on Full: the question was already emailed.
 	err := c.change(w.ID, anyDevice, func(tr *Tree) error {
 		th, err := loadThread(tr, th.ID)
 		if err != nil {
 			return err
 		}
-		th.Participants = []string{"lee@client.example"}
+		th.Participants, th.ReplyMode = []string{"lee@client.example"}, modeFull
 		if err := saveThread(tr, th); err != nil {
 			return err
 		}
-		return writeJSON(tr, mailSettingsPath, &MailSettings{Requesters: []Requester{{Address: "lee@client.example"}}})
+		return writeJSON(tr, replySettingsPath, &replySettings{Mode: modeFull})
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if res := threadOp(t, c, w, th.ID, "op_full", th.Revision, "forwardQuestion", forward); res.Code != CodeNotNotify {
+		t.Fatalf("forward on Full: %+v", res)
+	}
+	th = readThread(t, c, w, th.ID)
+	if res := threadOp(t, c, w, th.ID, "op_notify", th.Revision, "setThreadReplyMode", map[string]string{"mode": modeNotify}); !res.OK {
+		t.Fatalf("setThreadReplyMode: %+v", res)
+	}
+	th = readThread(t, c, w, th.ID)
 	res := threadOp(t, c, w, th.ID, "op_f2", th.Revision, "forwardQuestion", forward)
-	if !res.OK || len(drafted) != 1 || drafted[0] != q.ID+" to lee@client.example" {
-		t.Fatalf("forward: %+v %v", res, drafted)
+	if !res.OK || len(res.EntryIDs) != 1 {
+		t.Fatalf("forward: %+v", res)
+	}
+	if d := readThread(t, c, w, th.ID).entry(res.EntryIDs[0]); d == nil || d.Draft == nil || d.Draft.Content != draftContentQuestion || d.Draft.QuestionID != q.ID ||
+		!slices.Equal(d.Draft.To, []string{"lee@client.example"}) || d.Draft.Hash == "" {
+		t.Fatalf("the forward's draft %+v", d)
 	}
 	if res := threadOp(t, c, w, th.ID, "op_f3", th.Revision, "forwardQuestion", forward); res.Code != CodeQuestionChanged {
 		t.Errorf("forward at the old rev: %+v", res)

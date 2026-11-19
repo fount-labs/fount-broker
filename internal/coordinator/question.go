@@ -31,6 +31,7 @@ const (
 	CodeQuestionClosed   OpCode = "QUESTION_CLOSED"
 	CodeQuestionChanged  OpCode = "QUESTION_CHANGED"
 	CodeAlreadyForwarded OpCode = "ALREADY_FORWARDED"
+	CodeNotNotify        OpCode = "NOT_NOTIFY"
 )
 
 func init() {
@@ -39,6 +40,7 @@ func init() {
 		CodeQuestionClosed:   "This question was closed when the job stopped.",
 		CodeQuestionChanged:  "This question changed since you saw it. Look again, then try.",
 		CodeAlreadyForwarded: "This question is already forwarded. Send or discard that draft.",
+		CodeNotNotify:        "This thread is on Full, so the question was already emailed.",
 	})
 }
 
@@ -132,11 +134,6 @@ type (
 	}
 )
 
-// QuestionDraft is lane D's: it adds to th the draft that sends question q
-// to the requester to, for approval like any draft, and returns its entry
-// id. forwardQuestion is unsupported while it is nil.
-var QuestionDraft func(t *Tree, th *threadRecord, q *threadEntry, to string, rev uint64, now time.Time) (string, error)
-
 // parseQuestionOp decodes a question operation's args, or reports the kind
 // isn't one.
 func parseQuestionOp(env opEnvelope) (any, bool, error) {
@@ -155,9 +152,6 @@ func parseQuestionOp(env opEnvelope) (any, bool, error) {
 		}
 		a = questionArgs{QuestionID: w.QuestionID, QuestionRev: w.QuestionRev}
 	case "forwardQuestion":
-		if QuestionDraft == nil {
-			return nil, true, fmt.Errorf("%s: %w; it needs drafts and sending mail from Cloud", env.Kind, ErrUnsupported)
-		}
 		var w forwardQuestionArgs
 		if err := decodeArgs(env.Args, &w); err != nil {
 			return nil, true, err
@@ -219,7 +213,7 @@ func (c *Coordinator) applyQuestion(t *Tree, th *threadRecord, device string, a 
 	}
 	switch a.Kind {
 	case "forwardQuestion":
-		ids, err := forwardQuestion(t, th, q, device, a.To, rev, now)
+		ids, err := c.forwardQuestion(t, th, q, device, a.To, rev, now)
 		return ids, effects{}, err
 	case "dismissQuestion":
 		fx, err := c.settleQuestion(th, q, questionAnswer{Device: device, Via: viaApp, At: now, Skipped: true}, json.RawMessage(`{"answers":{}}`), rev)
@@ -300,9 +294,9 @@ func (c *Coordinator) resumeJob(th *threadRecord, q *threadEntry, payload json.R
 
 // forwardQuestion is Desktop's forward_question: the question goes to a
 // requester on the thread as a draft, which is sent only once approved.
-// Desktop refuses it on a thread on Full, where the question was already
-// emailed; Cloud threads have no reply mode yet, so none is refused for it.
-func forwardQuestion(t *Tree, th *threadRecord, q *threadEntry, device, to string, rev uint64, now time.Time) ([]string, error) {
+// As Desktop does, it's refused on a thread on Full, where the question was
+// already emailed. The draft is questionDraft's (draftquestion.go).
+func (c *Coordinator) forwardQuestion(t *Tree, th *threadRecord, q *threadEntry, device, to string, rev uint64, now time.Time) ([]string, error) {
 	if q.Forward != nil {
 		return nil, refusal{code: CodeAlreadyForwarded}
 	}
@@ -317,10 +311,15 @@ func forwardQuestion(t *Tree, th *threadRecord, q *threadEntry, device, to strin
 	if !allowed {
 		return nil, refusal{code: CodeRecipientNotAllowed, detail: map[string]string{"to": to}}
 	}
-	draft, err := QuestionDraft(t, th, q, to, rev, now)
+	if th.replyMode() == modeFull {
+		return nil, refusal{code: CodeNotNotify}
+	}
+	draft, err := c.questionDraft(t, th, q, to, rev, now)
 	if err != nil {
 		return nil, err
 	}
+	// The draft's push may have moved th's entries: find q again.
+	q = th.entry(q.ID)
 	q.Forward, q.Rev = &questionForward{To: to, Device: device, At: now, DraftID: draft}, rev
 	return []string{draft}, nil
 }

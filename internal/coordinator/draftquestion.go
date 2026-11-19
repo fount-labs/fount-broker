@@ -9,10 +9,9 @@ import (
 
 const draftContentQuestion = "question"
 
-// questionDraft is forwardQuestion's draft (lane E's QuestionDraft, which
-// this method value fills): the question q, asked of the requester to, as a
-// draft on th at rev with its bytes, approved and sent like any other. It
-// returns the draft's entry id. The caller checked to is a requester on th.
+// questionDraft is forwardQuestion's draft: the question q, asked of the
+// requester to, as a draft on th at rev with its bytes, approved and sent
+// like any other. It returns the draft's entry id. The caller checked to is a requester on th.
 func (c *Coordinator) questionDraft(t *Tree, th *threadRecord, q *threadEntry, to string, rev uint64, now time.Time) (string, error) {
 	mb, err := loadMailbox(t)
 	if errors.Is(err, ErrNoMailbox) {
