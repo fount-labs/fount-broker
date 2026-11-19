@@ -598,7 +598,7 @@ func (th *threadRecord) display(since uint64) []DisplayEntry {
 			head.Kind = "question"
 			out = append(out, questionView{entryHead: head, WaitID: e.WaitID, State: e.State, Question: e.Text, Detail: e.Detail})
 		case entryMail:
-			out = append(out, mailIn(head, e))
+			out = append(out, mailIn(head, th.ID, e))
 		}
 	}
 	return out

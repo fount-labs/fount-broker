@@ -29,7 +29,9 @@ type mailEntry struct {
 	// Held is "held" while it waits for someone, then "run" or "added".
 	// Empty for mail that ran by itself or needs nothing.
 	Held string `json:"held,omitempty"`
-	// Folder is the email's folder in the thread, a MessageFolder.
+	// Folder is the email's folder in the thread, a MessageFolder. While the
+	// email is held it is kept in the record, not the worker root
+	// (mailFolderPath).
 	Folder string `json:"folder"`
 	// Instruction is the turn's instruction intake made, kept for running
 	// held mail later. Unread says intake couldn't read the email, and the
@@ -176,14 +178,19 @@ type mailInView struct {
 	Held    bool            `json:"held,omitempty"`
 	// HeldState is what became of held mail: "held", "run" or "added".
 	HeldState string `json:"heldState,omitempty"`
+	// Files is the email's folder in the worker's tree, ending in "/", for
+	// reading its files with GET /workers/{id}/files/{path}: in the record
+	// while it is held, in the worker root once it may run.
+	Files string `json:"files"`
 }
 
-func mailIn(head entryHead, e threadEntry) mailInView {
+func mailIn(head entryHead, threadID string, e threadEntry) mailInView {
 	head.Kind = "mail-in"
 	m := e.Mail
 	v := mailInView{
 		entryHead: head, From: namedAddress{Name: m.SenderName, Address: m.Sender},
 		Held: m.Held == heldWaiting, HeldState: m.Held,
+		Files: mailFolderPath(threadID, m.Folder, m.Held == heldWaiting || m.Held == heldAdded),
 	}
 	switch {
 	case m.CheckError:

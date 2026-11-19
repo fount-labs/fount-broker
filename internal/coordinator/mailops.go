@@ -122,6 +122,9 @@ func (c *Coordinator) runHeldMail(t *Tree, th *threadRecord, a heldMailArgs, rev
 	if err != nil {
 		return effects{}, err
 	}
+	if err := moveHeldFolder(t, th.ID, m.Folder); err != nil {
+		return effects{}, err
+	}
 	m.Held, m.Intake, m.JobID, e.Rev = heldRun, intakePending, mailJobID(m.EdgeID), rev
 	err = owe(t, pendingMail{Kind: pendingJob, ThreadID: th.ID, EdgeID: m.EdgeID, JobID: m.JobID, Spec: &spec})
 	return effects{mail: true}, err

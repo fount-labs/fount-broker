@@ -24,6 +24,7 @@ import (
 //	record/mail/pending.json   what the coordinator still owes a message once acted on (mailintake.go)
 //	record/mail/handles.json   each reply-token handle's thread
 //	root/threads/<thread>/<YYYY-MM-DD-edge id>/   each message's folder, as intake wrote it
+//	record/mail/held/<thread>/<YYYY-MM-DD-edge id>/   a held message's, until it is run
 //
 // The volume holds only the mailbox id (Worker.Mailbox), so the poller knows
 // which workers have mail without opening their trees.
@@ -34,6 +35,8 @@ const (
 	mailLedgerPath   = prefixMailRecord + "ledger.json"
 	mailPendingPath  = prefixMailRecord + "pending.json"
 	mailHandlesPath  = prefixMailRecord + "handles.json"
+	// heldMailDir holds held mail's folders, by thread (mailFolderPath).
+	heldMailDir = prefixMailRecord + "held/"
 )
 
 // ErrNoMailbox is a worker with no address yet.

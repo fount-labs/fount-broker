@@ -713,7 +713,7 @@ func (c *Coordinator) place(t *Tree, workerID string, mb *Mailbox, s *MailSettin
 	default:
 		entry.Held = heldWaiting
 	}
-	if err := writeMailFolder(t, th.ID, folder, msg, in); err != nil {
+	if err := writeMailFolder(t, mailFolderPath(th.ID, folder, entry.Held == heldWaiting), msg, in); err != nil {
 		return act, err
 	}
 	run := spec != nil
@@ -749,25 +749,56 @@ func (c *Coordinator) place(t *Tree, workerID string, mb *Mailbox, s *MailSettin
 	return act, nil
 }
 
-// writeMailFolder puts the email's folder in the thread: what intake wrote,
-// or the raw email alone when it couldn't read it. Thread files are written
-// once.
-func writeMailFolder(t *Tree, threadID, folder string, msg *mail.Message, in intook) error {
+// mailFolderPath is where an email's folder is in the worker's tree, ending
+// in "/". Mail that may run is in the worker root, threads/<thread>/<folder>,
+// where its turn reads it. Held mail is in the coordinator's record instead,
+// sealed with the rest of the tree but given to no job, so a stranger's email
+// can't steer another turn on the worker; runHeldMail moves it into the root
+// (moveHeldFolder).
+func mailFolderPath(threadID, folder string, held bool) string {
+	if held {
+		return heldMailDir + threadID + "/" + folder + "/"
+	}
+	return prefixRoot + "threads/" + threadID + "/" + folder + "/"
+}
+
+// writeMailFolder puts the email's folder at dir: what intake wrote, or the
+// raw email alone when it couldn't read it. Thread files are written once.
+func writeMailFolder(t *Tree, dir string, msg *mail.Message, in intook) error {
 	files := in.r.Files
 	if in.unread != nil || files == nil {
 		files = map[string][]byte{"message.eml": msg.Raw}
 	}
 	for _, name := range slices.Sorted(maps.Keys(files)) {
-		rel := "threads/" + threadID + "/" + folder + "/" + name
-		if err := checkPath(rel); err != nil {
+		if err := checkPath(name); err != nil {
 			return fmt.Errorf("%w: intake's file %q", ErrIntake, name)
 		}
-		if t.Has(prefixRoot + rel) {
+		if t.Has(dir + name) {
 			continue
 		}
-		if err := t.Write(prefixRoot+rel, files[name]); err != nil {
+		if err := t.Write(dir+name, files[name]); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// moveHeldFolder moves a held email's folder from the record into the worker
+// root, as running it makes it a turn's input.
+func moveHeldFolder(t *Tree, threadID, folder string) error {
+	from, to := mailFolderPath(threadID, folder, true), mailFolderPath(threadID, folder, false)
+	for _, p := range t.List(from) {
+		rel := strings.TrimPrefix(p, from)
+		if !t.Has(to + rel) {
+			data, err := t.Read(p)
+			if err != nil {
+				return err
+			}
+			if err := t.Write(to+rel, data); err != nil {
+				return err
+			}
+		}
+		t.Remove(p)
 	}
 	return nil
 }
