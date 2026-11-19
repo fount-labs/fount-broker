@@ -95,7 +95,7 @@ require (
 	k8s.io/klog/v2 v2.140.0 // indirect
 )
 
-// fleet/V-counter: the Cloud vault's generation and counter (fount-mail-vault
-// fleet/V-counter). Before merging, push that branch and point the require
+// The Cloud vault's generation and counter are on fount-mail-vault's local main
+// (35f2439), not yet pushed. Before a release, push it and point the require
 // above at its pseudo-version instead.
-replace github.com/fount-labs/fount-mail-vault/wire => ../vault-V/wire
+replace github.com/fount-labs/fount-mail-vault/wire => ../fount-mail-vault/wire
