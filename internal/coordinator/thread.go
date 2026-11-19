@@ -43,7 +43,8 @@ const (
 var ErrNoThread = errors.New("no such thread")
 
 // ThreadStatus is thread-operations.md §3's, first match wins. A Cloud thread
-// has no questions, drafts or held mail yet, so it is working or idle.
+// has no drafts or held mail yet, so it is working, waiting on a question its
+// job ended on, or idle.
 type ThreadStatus string
 
 const (
@@ -79,10 +80,14 @@ type threadRecord struct {
 }
 
 const (
-	entryNote  = "note"
-	entryTurn  = "turn"
-	entryEvent = "event"
+	entryNote     = "note"
+	entryTurn     = "turn"
+	entryEvent    = "event"
+	entryQuestion = "question"
 )
+
+// A question's states, Desktop's QuestionStateView.
+const questionOpen = "open"
 
 const (
 	turnLive      = "live"
@@ -115,6 +120,13 @@ type threadEntry struct {
 	// An event's code and arguments: fixed text, filled in when shown.
 	Code string            `json:"code,omitempty"`
 	Args map[string]string `json:"args,omitempty"`
+	// An ended turn's steps, from its turn summary (jobresult.go); its final
+	// text is Text.
+	Steps []workStep `json:"steps,omitempty"`
+	// A question's wait, its state in State, its text in Text and the job
+	// that asked it in JobID.
+	WaitID string `json:"waitId,omitempty"`
+	Detail string `json:"detail,omitempty"`
 }
 
 type threadJob struct {
@@ -197,6 +209,9 @@ func (th *threadRecord) status() ThreadStatus {
 	if slices.ContainsFunc(th.Jobs, threadJob.unfinished) {
 		return StatusWorking
 	}
+	if slices.ContainsFunc(th.Entries, func(e threadEntry) bool { return e.Kind == entryQuestion && e.State == questionOpen }) {
+		return StatusWaiting
+	}
 	return StatusIdle
 }
 
@@ -251,9 +266,26 @@ type jobView struct {
 // failed when it fails. A job the thread already saw end is never changed
 // again: a cancel the thread recorded stands even if the job finished first.
 // outputs lists a finished job's outputs. It reports whether anything changed.
-// jobFiles are what a finished job left: its outputs and its proposals.
+// jobFiles are what a finished job left: its outputs and its proposals, and
+// its turn summary, nil when its events have none that holds.
 type jobFiles struct {
 	outputs, proposed []string
+	turn              *turnSummary
+}
+
+// endTurn fills an ended turn from what its job left, and asks the question
+// the job ended on.
+func (th *threadRecord) endTurn(e *threadEntry, f jobFiles, rev uint64, now time.Time) error {
+	e.State, e.Outputs, e.Proposed = turnDone, f.outputs, f.proposed
+	if f.turn == nil {
+		return nil
+	}
+	e.Text, e.Steps = f.turn.Text, f.turn.Steps
+	if q := f.turn.Question; q != nil {
+		_, err := th.push(rev, now, threadEntry{Kind: entryQuestion, JobID: e.JobID, State: questionOpen, WaitID: q.WaitID, Text: q.Text, Detail: q.Detail})
+		return err
+	}
+	return nil
 }
 
 func (th *threadRecord) followJobs(jobs map[string]jobView, left func(jobID string) jobFiles, now time.Time) (bool, error) {
@@ -279,16 +311,20 @@ func (th *threadRecord) followJobs(jobs map[string]jobView, left func(jobID stri
 			}
 		case cur.State == JobFinished && live == nil:
 			// It ran between two reads, so it was never seen running.
-			files := left(j.ID)
-			if _, err := th.push(rev, th.UpdatedAt, threadEntry{Kind: entryTurn, JobID: j.ID, State: turnDone, Outputs: files.outputs, Proposed: files.proposed}); err != nil {
+			turn := threadEntry{Kind: entryTurn, JobID: j.ID}
+			if _, err := th.push(rev, th.UpdatedAt, turn); err != nil {
+				return changed, err
+			}
+			if err := th.endTurn(&th.Entries[len(th.Entries)-1], left(j.ID), rev, now); err != nil {
 				return changed, err
 			}
 		case live != nil && cur.State != JobRunning:
 			live.Rev = rev
 			switch cur.State {
 			case JobFinished:
-				files := left(j.ID)
-				live.State, live.Outputs, live.Proposed = turnDone, files.outputs, files.proposed
+				if err := th.endTurn(live, left(j.ID), rev, now); err != nil {
+					return changed, err
+				}
 			case JobFailed:
 				live.State = turnFailed
 			case JobCancelled:
@@ -351,6 +387,11 @@ func (c *Coordinator) follow(t *Tree, th *threadRecord) (bool, error) {
 		proposed := prefixJobs + jobID + "/proposed/"
 		for _, p := range t.List(proposed) {
 			f.proposed = append(f.proposed, strings.TrimPrefix(p, proposed))
+		}
+		if events, err := t.Read(prefixJobs + jobID + "/events.jsonl"); err == nil {
+			// A summary that doesn't hold is dropped; the error would quote
+			// nothing, but the turn shows its state and files without it.
+			f.turn, _ = readTurnSummary(events)
 		}
 		return f
 	}
@@ -429,16 +470,26 @@ type noteView struct {
 	Text   string `json:"text"`
 }
 
-// turnView is an agent turn. Its steps and final text are in the runner's
-// events, which the coordinator doesn't read, so a turn shows its state, its
-// outputs and the files it proposed, as Desktop's turns do. A pending
-// proposal names its path, for opening it to Accept or Discard.
+// turnView is an agent turn: its steps and final text from the runner's turn
+// summary, its outputs and the files it proposed, as Desktop's turns are
+// drawn. A pending proposal names its path, for opening it to Accept or
+// Discard.
 type turnView struct {
 	entryHead
 	JobID string           `json:"jobId"`
-	Steps []struct{}       `json:"steps"`
+	Steps []workStep       `json:"steps"`
+	Text  string           `json:"text,omitempty"`
 	Files []attachmentView `json:"files,omitempty"`
 	Live  bool             `json:"live,omitempty"`
+}
+
+// questionView is Desktop's Question entry: what a job ended waiting on.
+type questionView struct {
+	entryHead
+	WaitID   string `json:"waitId,omitempty"`
+	State    string `json:"state"`
+	Question string `json:"question"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 type attachmentView struct {
@@ -515,7 +566,10 @@ func (th *threadRecord) display(since uint64) []DisplayEntry {
 			out = append(out, noteView{entryHead: head, Author: "You", Text: e.Text})
 		case entryTurn:
 			head.Kind = "agent-turn"
-			v := turnView{entryHead: head, JobID: e.JobID, Steps: []struct{}{}, Live: e.State == turnLive}
+			v := turnView{entryHead: head, JobID: e.JobID, Steps: e.Steps, Text: e.Text, Live: e.State == turnLive}
+			if v.Steps == nil {
+				v.Steps = []workStep{}
+			}
 			for _, p := range e.Outputs {
 				v.Files = append(v.Files, attachmentView{Name: path.Base(p)})
 			}
@@ -530,6 +584,9 @@ func (th *threadRecord) display(since uint64) []DisplayEntry {
 		case entryEvent:
 			head.Kind = "event"
 			out = append(out, eventView{entryHead: head, Code: e.Code, Text: eventText(e.Code, e.Args)})
+		case entryQuestion:
+			head.Kind = "question"
+			out = append(out, questionView{entryHead: head, WaitID: e.WaitID, State: e.State, Question: e.Text, Detail: e.Detail})
 		}
 	}
 	return out

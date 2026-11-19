@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "parserVersion": 2,
+  "message": "e_41c",
+  "instruction": "Please reconcile the attached statement.",
+  "instructionSource": "owner",
+  "note": "certain",
+  "reply": false,
+  "attachments": [
+    {
+      "path": "attachments/01-statement.csv",
+      "contentType": "text/csv",
+      "size": 26,
+      "inline": false
+    }
+  ],
+  "flags": []
+}
