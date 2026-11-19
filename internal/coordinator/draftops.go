@@ -15,7 +15,7 @@ import (
 // discardDraft and sendAgain are a reviewer's; setThreadReplyMode and
 // setDefaultMode an admin's.
 //
-//	approveDraft        {draftId, draftRev, text?, attachments?, changes?, hash?}
+//	approveDraft        {draftId, draftRev, text?, attachments?, changes?, hash?, editingOk?}
 //	discardDraft        {draftId}
 //	sendAgain           {sentId, duplicateOk?}
 //	setThreadReplyMode  {mode}
@@ -37,6 +37,7 @@ const (
 	CodeSending             OpCode = "SENDING"
 	CodeSendFailed          OpCode = "SEND_FAILED"
 	CodeSendLimit           OpCode = "SEND_LIMIT"
+	CodeInviteLimit         OpCode = "INVITE_LIMIT"
 	CodeBadMessage          OpCode = "BAD_MESSAGE"
 	CodeMailLapsed          OpCode = "MAIL_LAPSED"
 	CodeSendingOff          OpCode = "SENDING_OFF"
@@ -58,6 +59,7 @@ func init() {
 		CodeSending:             "This email is still being sent.",
 		CodeSendFailed:          "Fount Mail didn't send this email.",
 		CodeSendLimit:           "This worker has reached its sending limit for today. It can send again tomorrow.",
+		CodeInviteLimit:         "This worker has sent its most invites for today. Copy the invite link and send it yourself, or email it again tomorrow.",
 		CodeBadMessage:          "Fount couldn't build this email. Nothing was sent.",
 		CodeMailLapsed:          "This worker's Fount Mail has lapsed. Renew it, then send again.",
 		CodeSendingOff:          "Fount Mail isn't sending email yet. Nothing was sent.",
@@ -82,7 +84,10 @@ type approveArgs struct {
 	// Approval is the approving device's signed approval (approvalsig.go),
 	// which a device's approval must carry.
 	Approval string `json:"approval,omitempty"`
-	base     uint64
+	// EditingOK is the approver's choice to approve while another reviewer
+	// has unsaved edits to one of its files (DRAFT_BEING_EDITED).
+	EditingOK bool `json:"editingOk,omitempty"`
+	base      uint64
 }
 
 type discardArgs struct {
@@ -208,6 +213,9 @@ func (a approveArgs) applyDraft(c *Coordinator, t *Tree, th *threadRecord, devic
 	case th.peopleSince(a.base):
 		return nil, effects{}, refusal{code: CodeParticipantsChanged}
 	}
+	if cl := editingElsewhere(d, device, now); cl != nil && !a.EditingOK {
+		return nil, effects{}, beingEdited(cl)
+	}
 	mb, err := loadMailbox(t)
 	if errors.Is(err, ErrNoMailbox) {
 		return nil, effects{}, refusal{code: CodeNoMailbox}
@@ -239,6 +247,7 @@ func (a approveArgs) applyDraft(c *Coordinator, t *Tree, th *threadRecord, devic
 		}
 	}
 	var member *Member
+	var approved []ApprovedFile
 	if device != anyDevice {
 		if a.Approval == "" {
 			return nil, effects{}, refusal{code: CodeApprovalUnsigned}
@@ -253,7 +262,7 @@ func (a approveArgs) applyDraft(c *Coordinator, t *Tree, th *threadRecord, devic
 				return nil, effects{}, err
 			}
 		}
-		approved := []ApprovedFile{}
+		approved = []ApprovedFile{}
 		for _, p := range files {
 			approved = append(approved, ApprovedFile{Path: p, SHA256: hashes[p]})
 		}
@@ -273,10 +282,15 @@ func (a approveArgs) applyDraft(c *Coordinator, t *Tree, th *threadRecord, devic
 			return nil, effects{}, err
 		}
 		d.DraftRev++
-		d.Text, d.Files, d.Ask = text, files, nil
+		d.Text, d.Files, d.Ask, d.Asks = text, files, nil, nil
 		if err := c.buildDraft(t, th, mb, rs, e.ID, d, 1, now); err != nil {
 			return nil, effects{}, err
 		}
+	}
+	// The rebuild read the files from the tree again: what it sends must be
+	// what the device signed, or nothing is sent (the change is undone).
+	if p := unsigned(d, approved); device != anyDevice && p != "" {
+		return nil, effects{}, refusal{code: CodeDraftChanged, detail: map[string]string{"draftRev": fmt.Sprint(a.DraftRev), "path": p}}
 	}
 	ap := approval{By: c.approverName(th.WorkerID, device), Device: device, Via: viaApp, Token: a.Approval}
 	if member != nil {
@@ -349,20 +363,28 @@ func (a sendAgainArgs) applyDraft(c *Coordinator, t *Tree, th *threadRecord, dev
 			return nil, effects{}, err
 		}
 		d := e.Draft
+		was := sealedFiles(d)
 		if err := c.buildDraft(t, th, mb, rs, e.ID, d, r.Attempt+1, now); err != nil {
 			return nil, effects{}, err
+		}
+		// A new attempt is new bytes under a new Message-ID. It goes only if
+		// its text and every file are the ones approved; the approval stays
+		// the approver's, and the resend is recorded as whoever asked.
+		if p := unsigned(d, was); p != "" || sha256Hex([]byte(d.Text)) != r.Approval.SentTextHash {
+			return nil, effects{}, refusal{code: CodeFilesChanged, detail: map[string]string{"path": p}}
 		}
 		next, err := loadSend(t, d.SendID)
 		if err != nil {
 			return nil, effects{}, err
 		}
 		ap := *r.Approval
-		ap.Hash, ap.At = next.Hash, now
-		if by := c.approverName(th.WorkerID, device); by != ap.By {
-			ap.By, ap.Device, ap.Via = by, device, viaApp
-		}
+		ap.Hash = next.Hash
+		ap.Resent = &resend{By: c.approverName(th.WorkerID, device), Device: device, At: now, From: r.ID}
 		next.Approval = &ap
 		if err := c.startSending(t, th.WorkerID, next, now); err != nil {
+			return nil, effects{}, err
+		}
+		if err := writeSignoff(t, th, e, next, ap); err != nil {
 			return nil, effects{}, err
 		}
 		d.Approval, r = &ap, next
@@ -487,4 +509,27 @@ func (c *Coordinator) applyDefaultMode(device, workerID string, env workerOpEnve
 		return saveOpLog(t, workerOps, ops)
 	})
 	return result, err
+}
+
+// sealedFiles is the files a draft's bytes were built from, with their hashes.
+func sealedFiles(d *draftEntry) []ApprovedFile {
+	files := make([]ApprovedFile, 0, len(d.Files))
+	for _, p := range d.Files {
+		files = append(files, ApprovedFile{Path: p, SHA256: d.FileHashes[p]})
+	}
+	return files
+}
+
+// unsigned is the first file the draft's bytes now hold that isn't as
+// approved: a path or hash that differs, or a file added or dropped.
+func unsigned(d *draftEntry, approved []ApprovedFile) string {
+	for i, f := range approved {
+		if i >= len(d.Files) || d.Files[i] != f.Path || !strings.EqualFold(d.FileHashes[f.Path], f.SHA256) {
+			return f.Path
+		}
+	}
+	if len(d.Files) > len(approved) {
+		return d.Files[len(approved)]
+	}
+	return ""
 }

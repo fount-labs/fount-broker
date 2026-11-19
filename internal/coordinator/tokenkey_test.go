@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"slices"
@@ -175,10 +176,15 @@ func (r *teamInviteRig) settle(id string) *sendRecord {
 func TestAnInviteGoesOnTheCoordinatorRoute(t *testing.T) {
 	r := newTeamInviteRig(t)
 	secret := r.invite("m_ann", "ann@firm.com")
-	id, err := r.c.SendInvite(r.owner.caller("acme"), "acme", "i_m_ann", "m_ann", secret, "")
+	answer, err := r.c.SendInvite(context.Background(), r.owner.caller("acme"), "acme", "i_m_ann", "m_ann", secret, "")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The answer waits for the first attempt: the edge took it.
+	if answer.State != sendSent || answer.Code != "" {
+		t.Fatalf("the answer: %+v", answer)
+	}
+	id := answer.SendID
 	rec := r.settle(id)
 	if rec.Kind != sendKindInvite || rec.State != sendSent || len(rec.Delivery) != 1 || rec.Delivery[0].Address != "ann@firm.com" {
 		t.Fatalf("the invite's record: %+v", rec)
@@ -195,8 +201,8 @@ func TestAnInviteGoesOnTheCoordinatorRoute(t *testing.T) {
 		t.Fatalf("the invite:\n%s", raw)
 	}
 	// Asking again finds the record: nothing more is posted.
-	if again, err := r.c.SendInvite(r.owner.caller("acme"), "acme", "i_m_ann", "m_ann", secret, ""); err != nil || again != id {
-		t.Fatalf("again: %s %v", again, err)
+	if again, err := r.c.SendInvite(context.Background(), r.owner.caller("acme"), "acme", "i_m_ann", "m_ann", secret, ""); err != nil || again.SendID != id || again.State != sendSent {
+		t.Fatalf("again: %+v %v", again, err)
 	}
 	r.pass()
 	if r.send.count(r.send.posts, sent[0]) != 1 {
@@ -204,18 +210,21 @@ func TestAnInviteGoesOnTheCoordinatorRoute(t *testing.T) {
 	}
 }
 
-// Past the edge's invites for the day, the record fails with the send limit,
-// and the admin copies the link instead.
+// Past the edge's invites for the day, the record fails with INVITE_LIMIT,
+// which the answer carries, and the admin copies the link instead.
 func TestAnInvitePastTheLimitFails(t *testing.T) {
 	r := newTeamInviteRig(t)
 	secret := r.invite("m_bo", "bo@firm.com")
 	r.edge.coord.UseInvites(r.teamMB.MailboxID, 20)
-	id, err := r.c.SendInvite(r.owner.caller("acme"), "acme", "i_m_bo", "m_bo", secret, "")
+	sent, err := r.c.SendInvite(context.Background(), r.owner.caller("acme"), "acme", "i_m_bo", "m_bo", secret, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := r.settle(id)
-	if rec.State != sendFailed || rec.Error == nil || rec.Error.Code != CodeSendLimit {
+	if sent.State != sendFailed || sent.Code != CodeInviteLimit || sent.Message != opMessages[CodeInviteLimit] {
+		t.Fatalf("the answer: %+v", sent)
+	}
+	rec := r.settle(sent.SendID)
+	if rec.State != sendFailed || rec.Error == nil || rec.Error.Code != CodeInviteLimit {
 		t.Fatalf("past the limit: %+v", rec)
 	}
 	if len(r.send.sentTo("bo@firm.com", "")) != 0 {

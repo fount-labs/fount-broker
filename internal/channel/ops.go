@@ -24,6 +24,8 @@ import (
 //	GET  v1/workers/{id}/mail             PUT  v1/workers/{id}/mail
 //	GET  v1/teams/{team}/log[?since=N]    POST v1/teams/{team}/log
 //	POST v1/teams
+//	PUT  v1/workers/{id}/threads/{tid}/drafts/{draft}/files/{path...}?rev=N
+//	POST v1/teams/{team}/invites/{invite}/send
 //
 // The v2 grant and revoke routes stay, so Desktop hears they are retired
 // (410) rather than that the broker refused them.
@@ -50,12 +52,14 @@ func checkRequest(method, target string) (*url.URL, error) {
 		}
 	}
 	ok := false
-	listing, changes := false, false
+	listing, changes, draftRev := false, false, false
 	if len(seg) >= 2 && seg[0] == "v1" {
 		switch {
 		case seg[1] == "workers" && len(seg) == 2:
 			ok = method == http.MethodPost || method == http.MethodGet
 		case seg[1] == "teams" && len(seg) == 2:
+			ok = method == http.MethodPost
+		case seg[1] == "teams" && len(seg) == 6 && teamID.MatchString(seg[2]) && seg[3] == "invites" && teamID.MatchString(seg[4]) && seg[5] == "send":
 			ok = method == http.MethodPost
 		case seg[1] == "teams" && len(seg) == 4 && teamID.MatchString(seg[2]) && seg[3] == "log":
 			ok, changes = method == http.MethodGet || method == http.MethodPost, method == http.MethodGet
@@ -75,6 +79,8 @@ func checkRequest(method, target string) (*url.URL, error) {
 				ok, changes = method == http.MethodGet, true
 			case len(seg) == 6 && seg[3] == "threads" && threadID.MatchString(seg[4]) && seg[5] == "ops":
 				ok = method == http.MethodPost
+			case len(seg) > 8 && seg[3] == "threads" && threadID.MatchString(seg[4]) && seg[5] == "drafts" && entryID.MatchString(seg[6]) && seg[7] == "files":
+				ok, draftRev = method == http.MethodPut, true
 			case len(seg) == 4 && seg[3] == "files":
 				ok, listing = method == http.MethodGet, true
 			case len(seg) > 4 && seg[3] == "files":
@@ -84,7 +90,7 @@ func checkRequest(method, target string) (*url.URL, error) {
 			}
 		}
 	}
-	if !ok {
+	if !ok || draftRev && !hasQuery {
 		return nil, fmt.Errorf("%s %s", method, target)
 	}
 	u := &url.URL{Scheme: "http", Host: host, Path: "/" + path}
@@ -95,8 +101,9 @@ func checkRequest(method, target string) (*url.URL, error) {
 			return nil, fmt.Errorf("path %q: one query parameter at most", target)
 		case listing && len(q["prefix"]) == 1:
 		case changes && len(q["since"]) == 1 && revision.MatchString(q.Get("since")):
+		case draftRev && len(q["rev"]) == 1 && revision.MatchString(q.Get("rev")):
 		default:
-			return nil, fmt.Errorf("path %q: only a file listing takes a query, prefix, and a thread or team log, since", target)
+			return nil, fmt.Errorf("path %q: only a file listing takes a query, prefix; a thread or team log, since; and a draft file's save, rev", target)
 		}
 		u.RawQuery = q.Encode()
 	}
@@ -107,6 +114,7 @@ var (
 	workerID = regexp.MustCompile(`^w_[0-9a-f]{24}$`)
 	jobID    = regexp.MustCompile(`^j_[0-9a-f]{24}$`)
 	threadID = regexp.MustCompile(`^thr_[0-9a-f]{24}$`)
+	entryID  = regexp.MustCompile(`^ent_[0-9a-f]{24}$`)
 	revision = regexp.MustCompile(`^[0-9]{1,20}$`)
 	// teamID is coordinator.checkID's: a team's id is its account's or one
 	// the coordinator made.

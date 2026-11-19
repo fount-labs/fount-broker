@@ -89,6 +89,8 @@ var opRoles = map[string]Role{
 	"pairingConfirm":     RoleAdmin,
 	"routingSaved":       RoleAdmin,
 	"setThreadReplyMode": RoleAdmin,
+
+	"PUT /workers/{id}/threads/{tid}/drafts/{draft}/files/{path...}": RoleReviewer,
 }
 
 // opRole is the role an operation kind or route needs; ok is false for one

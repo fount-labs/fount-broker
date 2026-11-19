@@ -126,6 +126,7 @@ func (a *api) routes(mux router, prefix string) {
 	mux.HandleFunc("GET "+prefix+"/workers/{id}/threads", a.listThreads)
 	mux.HandleFunc("GET "+prefix+"/workers/{id}/threads/{tid}", a.getThread)
 	mux.HandleFunc("POST "+prefix+"/workers/{id}/threads/{tid}/ops", a.threadOp)
+	mux.HandleFunc("PUT "+prefix+"/workers/{id}/threads/{tid}/drafts/{draft}/files/{path...}", a.saveDraftFile)
 	mux.HandleFunc("POST "+prefix+"/workers/{id}/ops", a.workerOp)
 	mux.HandleFunc("GET "+prefix+"/workers/{id}/mail", a.getMail)
 	mux.HandleFunc("GET "+prefix+"/workers/{id}/export", a.exportWorker)

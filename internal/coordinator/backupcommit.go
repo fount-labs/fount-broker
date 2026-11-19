@@ -53,6 +53,12 @@ func (c *Coordinator) commitSecurity() error {
 			c.retire(err)
 			return fmt.Errorf("%w: %v", ErrStaleCoordinator, err)
 		}
+		// A swap whose answer was lost: the vault counted a change this
+		// coordinator sent, since only this generation's key moves the count
+		// within it.
+		if count.Count > d.counted && count.Count <= c.state.SecuritySeq {
+			d.counted = count.Count
+		}
 	}
 	prev := c.state.SecuritySeq
 	c.state.SecuritySeq++

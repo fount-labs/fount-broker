@@ -325,6 +325,8 @@ func TestCheckRequest(t *testing.T) {
 		"POST v1/workers/" + w + "/ops", "GET v1/workers/" + w + "/mail", "PUT v1/workers/" + w + "/mail",
 		"GET v1/teams/acct_acme/log", "GET v1/teams/acct_acme/log?since=3", "POST v1/teams/acct_acme/log",
 		"POST v1/teams",
+		"PUT v1/workers/" + w + "/threads/" + th + "/drafts/ent_0123456789abcdef01234567/files/threads/" + th[4:] + "/outputs/j/a b.docx?rev=2",
+		"POST v1/teams/acct_acme/invites/i_m_ann/send",
 	} {
 		method, target, _ := strings.Cut(ok, " ")
 		if _, err := CheckRequest(method, target); err != nil {
@@ -348,6 +350,13 @@ func TestCheckRequest(t *testing.T) {
 		"GET v1/teams", "PUT v1/teams", "POST v1/teams?since=1",
 		"POST v1/workers/" + w + "/mail", "GET v1/workers/" + w + "/mail?since=1", "PUT v1/workers/" + w + "/mail?since=1",
 		"GET v1/workers/" + w + "/mail/x", "PUT v1/workers/" + w + "/mail/x", "DELETE v1/workers/" + w + "/mail",
+		"PUT v1/workers/" + w + "/threads/" + th + "/drafts/ent_0123456789abcdef01234567/files/a.docx",
+		"PUT v1/workers/" + w + "/threads/" + th + "/drafts/ent_0123456789abcdef01234567/files/a.docx?rev=x",
+		"PUT v1/workers/" + w + "/threads/" + th + "/drafts/ent_0123456789abcdef01234567/files/a.docx?since=1",
+		"POST v1/workers/" + w + "/threads/" + th + "/drafts/ent_0123456789abcdef01234567/files/a.docx?rev=1",
+		"PUT v1/workers/" + w + "/threads/" + th + "/drafts/e_1/files/a.docx?rev=1",
+		"PUT v1/workers/" + w + "/threads/" + th + "/drafts/ent_0123456789abcdef01234567/files?rev=1",
+		"GET v1/teams/acct_acme/invites/i_m_ann/send", "POST v1/teams/acct_acme/invites/i.x/send",
 	} {
 		method, target, _ := strings.Cut(bad, " ")
 		if _, err := CheckRequest(method, target); err == nil {

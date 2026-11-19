@@ -19,3 +19,7 @@ a manual override.
 The link probe (`~/Desktop/code/link-probe`) checks both enclaves' part on live Tinfoil:
 the upgrade through the shim, the handshake, and fetching a peer's attested key from its
 public shim.
+
+Backups to S3 need a forwarder container and an open network in the coordinator's
+config, because Tinfoil's allowlist doesn't reach S3 reliably. The checklist is in
+[docs/backups.md](../docs/backups.md).
