@@ -1,12 +1,10 @@
 package mail
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 )
@@ -151,24 +149,12 @@ func (s *Service) RenewEntitlement(ctx context.Context, mailbox, entitlement str
 		return Renewal{}, fmt.Errorf("%w: no entitlement", ErrRequest)
 	}
 	body := []byte("{}")
-	req, err := http.NewRequestWithContext(ctx, "POST", s.c.edge.Base()+"entitlement", bytes.NewReader(body))
+	data, _, err := s.c.do(ctx, "POST", "/entitlement", "", body, maxJSON, func(h http.Header) {
+		signRequest(h, k, "POST", "/entitlement", body, s.c.now(), s.c.generation())
+		h.Set("Fount-Entitlement", entitlement)
+	})
 	if err != nil {
 		return Renewal{}, err
-	}
-	signRequest(req.Header, k, "POST", "/entitlement", body, s.c.now())
-	req.Header.Set("Fount-Entitlement", entitlement)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.c.edge.Do(ctx, req)
-	if err != nil {
-		return Renewal{}, err
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxJSON+1))
-	if err != nil || len(data) > maxJSON {
-		return Renewal{}, fmt.Errorf("%w: POST /entitlement: unreadable or over %d bytes", ErrEdge, maxJSON)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return Renewal{}, fmt.Errorf("%w: POST /entitlement answered %d: %s", ErrEdge, resp.StatusCode, edgeMessage(data))
 	}
 	var out struct {
 		EntitlementExp int64 `json:"entitlement_exp"`

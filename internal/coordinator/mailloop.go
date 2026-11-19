@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fount-labs/fount-broker/internal/mail"
@@ -44,6 +45,13 @@ type MailConfig struct {
 	// Entitlements is fount-infra's issuer of Cloud mailboxes' entitlements
 	// (decision 12). Nil renews nothing.
 	Entitlements Entitlements
+	// Notices emails owners about problems (decision 10): here, a lapsed
+	// payment (lapse.go). D's notices fill it. Nil tells no one.
+	Notices OwnerNotices
+	// Generations is the vault's coordinator generation (decision 18,
+	// mailgen.go). Nil names none, which an edge refuses for any mailbox
+	// another coordinator enrolled.
+	Generations mail.GenerationSource
 	// PollInterval is how often Changes is asked; SweepInterval how often
 	// every mailbox is listed. Defaults 5 s and 20 s, or 10 min with Changes.
 	PollInterval  time.Duration
@@ -120,6 +128,10 @@ type mailLoop struct {
 	// being queued (decision 9), newest last.
 	pickups []time.Duration
 	renewed map[string]Renewed
+	// enrolled is the mailboxes enrolled under this process's generation.
+	enrolled map[string]bool
+	// stale is set once a newer generation has spoken: the loop stops.
+	stale atomic.Bool
 }
 
 func newMailLoop(cfg MailConfig) *mailLoop {
@@ -141,6 +153,7 @@ func newMailLoop(cfg MailConfig) *mailLoop {
 	return &mailLoop{
 		cfg: cfg, service: cfg.Service, wake: make(chan struct{}, 1),
 		syncs: map[string]*sync.Mutex{}, restored: map[string]bool{}, kicked: map[string]bool{}, renewed: map[string]Renewed{},
+		enrolled: map[string]bool{},
 	}
 }
 
@@ -186,9 +199,12 @@ func (c *Coordinator) RunMail(ctx context.Context) {
 	if c.mail == nil {
 		return
 	}
+	if c.mail.cfg.Generations != nil && !c.startGeneration(ctx) {
+		return
+	}
 	tick := time.NewTicker(c.mail.cfg.PollInterval)
 	defer tick.Stop()
-	for {
+	for !c.mail.stale.Load() {
 		c.mailPass(ctx, time.Now())
 		select {
 		case <-ctx.Done():
@@ -217,6 +233,9 @@ func (c *Coordinator) mailWorkers() map[string]Worker {
 // mailboxes due for it.
 func (c *Coordinator) mailPass(ctx context.Context, now time.Time) {
 	m := c.mail
+	if m.stale.Load() {
+		return
+	}
 	workers := c.mailWorkers()
 	m.mu.Lock()
 	sweep := now.Sub(m.lastSweep) >= m.cfg.SweepInterval
@@ -242,6 +261,7 @@ func (c *Coordinator) mailPass(ctx context.Context, now time.Time) {
 		next, changed, reset, err := c.readChanges(ctx, cursor)
 		switch {
 		case err != nil:
+			c.fenced(ctx, "", err)
 			log.Printf("mail: the edge's changes feed failed: %v", err)
 		case reset:
 			sweep = true
@@ -258,13 +278,14 @@ func (c *Coordinator) mailPass(ctx context.Context, now time.Time) {
 	}
 	for _, mb := range slices.Sorted(maps.Keys(workers)) {
 		w := workers[mb]
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || m.stale.Load() {
 			return
 		}
 		if !sweep && !due[w.ID] {
 			continue
 		}
 		if err := c.syncMail(ctx, w, now); err != nil && !errors.Is(err, ErrNoWorker) {
+			c.fenced(ctx, w.Mailbox, err)
 			// The cursor has moved past its change: it's tried again next
 			// pass, and on every sweep.
 			log.Printf("worker %s: mail: %v", w.ID, err)
@@ -327,11 +348,17 @@ func (c *Coordinator) syncMail(ctx context.Context, w Worker, now time.Time) err
 	if err != nil {
 		return err
 	}
+	if err := c.enrollMail(ctx, w); err != nil {
+		return err
+	}
 	listing, err := m.service.List(ctx, w.Mailbox)
 	if err != nil {
 		return fmt.Errorf("listing: %w", err)
 	}
 	paused := pauseOf(listing.Paused)
+	if listing.Lapsed != nil && *listing.Lapsed || m.isLapsed(w.ID) {
+		paused = pauseLapsed
+	}
 	var fetched []*mail.Message
 	for _, l := range listing.Messages {
 		if acted[l.ID] {
@@ -387,6 +414,8 @@ const (
 	pauseRunning pause = iota
 	pausePaused
 	pauseUnknown
+	// pauseLapsed is a worker paused for a lapsed payment (lapse.go).
+	pauseLapsed
 )
 
 func pauseOf(edge *bool) pause {
@@ -850,6 +879,8 @@ func moveHeldFolder(t *Tree, threadID, folder string) error {
 // it does: autorun.rs plan's reasons, in its order.
 func (c *Coordinator) whyNotRun(s *MailSettings, l *mailLedger, th *threadRecord, sender string, msg *mail.Message, paused pause, now time.Time) string {
 	switch {
+	case paused == pauseLapsed:
+		return "the account's payment lapsed"
 	case !s.AutoRun:
 		return "automatic runs are off"
 	case time.UnixMilli(msg.ReceivedAt).Before(s.AutoRunSince):

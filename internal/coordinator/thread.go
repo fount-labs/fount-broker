@@ -125,6 +125,8 @@ type threadEntry struct {
 	// An event's code and arguments: fixed text, filled in when shown.
 	Code string            `json:"code,omitempty"`
 	Args map[string]string `json:"args,omitempty"`
+	// A live turn's Queued is why its job hasn't started yet.
+	Queued string `json:"queued,omitempty"`
 	// An ended turn's steps, from its turn summary (jobresult.go); its final
 	// text is Text.
 	Steps []workStep `json:"steps,omitempty"`
@@ -271,6 +273,9 @@ func (th *threadRecord) stopJob(id string, rev uint64) {
 type jobView struct {
 	State JobState
 	Error string
+	// Queued is why a queued job hasn't started, once the scheduler has
+	// tried it (queuedBusy, queuedWaiting).
+	Queued string
 }
 
 // followJobs brings the thread's jobs up to the queue's, one revision per
@@ -312,11 +317,27 @@ func (th *threadRecord) followJobs(jobs map[string]jobView, left func(jobID stri
 		if !ok {
 			cur = jobView{State: JobFailed, Error: "the job is gone"}
 		}
-		if cur.State == j.State {
-			continue
-		}
 		rev := th.Revision + 1
 		live := th.liveTurn(j.ID)
+		if cur.State == j.State {
+			// A queued job's turn shows why it waits, once it does.
+			if cur.State != JobQueued || cur.Queued == "" || live != nil && live.Queued == cur.Queued {
+				continue
+			}
+			if live == nil {
+				if _, err := th.push(rev, now, threadEntry{Kind: entryTurn, JobID: j.ID, State: turnLive, Queued: cur.Queued}); err != nil {
+					return changed, err
+				}
+			} else {
+				live.Queued, live.Rev = cur.Queued, rev
+			}
+			th.finish(rev, now)
+			changed = true
+			continue
+		}
+		if live != nil && live.Queued != "" {
+			live.Queued, live.Rev = "", rev
+		}
 		switch {
 		case cur.State == JobRunning && live == nil:
 			if _, err := th.push(rev, now, threadEntry{Kind: entryTurn, JobID: j.ID, State: turnLive}); err != nil {
@@ -387,6 +408,9 @@ func (c *Coordinator) follow(t *Tree, th *threadRecord) (bool, error) {
 	for _, j := range th.Jobs {
 		if held, ok := c.state.Jobs[j.ID]; ok {
 			jobs[j.ID] = jobView{State: held.State, Error: held.Error}
+			if held.State == JobQueued {
+				jobs[j.ID] = jobView{State: held.State, Queued: c.queued[j.ID]}
+			}
 		}
 	}
 	c.mu.Unlock()
@@ -426,7 +450,8 @@ type ThreadSummary struct {
 	Preview  *string      `json:"preview"`
 	// UpdatedAt is epoch milliseconds.
 	UpdatedAt int64 `json:"updatedAt"`
-	// Unread is always false: read state is per device and not kept yet.
+	// Unread says the caller's device hasn't read the thread at this
+	// revision (markRead, threadread.go).
 	Unread bool `json:"unread"`
 	// SessionID is always null: the session is the coordinator's, not on
 	// the client's device.
@@ -494,6 +519,9 @@ type turnView struct {
 	Text  string           `json:"text,omitempty"`
 	Files []attachmentView `json:"files,omitempty"`
 	Live  bool             `json:"live,omitempty"`
+	// Queued is why a live turn's job hasn't started: "busy", the runners
+	// are all in use, or "waiting", behind the account's own jobs.
+	Queued string `json:"queued,omitempty"`
 }
 
 type attachmentView struct {
@@ -570,7 +598,7 @@ func (th *threadRecord) display(since uint64) []DisplayEntry {
 			out = append(out, noteView{entryHead: head, Author: "You", Text: e.Text})
 		case entryTurn:
 			head.Kind = "agent-turn"
-			v := turnView{entryHead: head, JobID: e.JobID, Steps: e.Steps, Text: e.Text, Live: e.State == turnLive}
+			v := turnView{entryHead: head, JobID: e.JobID, Steps: e.Steps, Text: e.Text, Live: e.State == turnLive, Queued: e.Queued}
 			if v.Steps == nil {
 				v.Steps = []workStep{}
 			}

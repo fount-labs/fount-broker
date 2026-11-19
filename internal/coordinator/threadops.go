@@ -23,7 +23,8 @@ import (
 // channel's device, never a field of the body.
 //
 // Built: startThread (a worker operation), sendNote, cancelJob, and
-// acceptProposal and discardProposal, Cloud's own, the mail operations
+// acceptProposal and discardProposal, Cloud's own, markRead (threadread.go),
+// and the mail operations
 // (mailops.go): runHeldMail and addRequester on a thread, and the worker's
 // mail settings, and the questions (question.go). Every other
 // operation Desktop knows is ErrUnsupported, by name, so a client can tell
@@ -120,7 +121,6 @@ var unsupportedThreadOps = map[string]string{
 	"redoOnLatest":       "drafts from a job's final answer",
 	"sendAgain":          "sending mail from Cloud",
 	"setThreadReplyMode": "the email side of a thread",
-	"markRead":           "read state per device",
 }
 
 var unsupportedWorkerOps = map[string]string{
@@ -370,6 +370,9 @@ func (c *Coordinator) runEffects(device, workerID string, e effects) {
 // OpResult; an error is a request the API refuses (ErrInvalid,
 // ErrUnsupported) or a failure.
 func (c *Coordinator) applyThreadOp(device, workerID, threadID string, env opEnvelope) (OpResult, error) {
+	if env.Kind == "markRead" {
+		return c.applyMarkRead(device, workerID, threadID, env)
+	}
 	args, hash, err := parseThreadOp(env, threadID)
 	if err != nil {
 		return OpResult{}, err
@@ -426,6 +429,9 @@ func (c *Coordinator) applyThreadOp(device, workerID, threadID string, env opEnv
 		th.finish(rev, now)
 		result = OpResult{OK: true, Revision: rev, EntryIDs: ids}
 		ops[env.OpID] = loggedOp{ArgsHash: hash, Revision: rev, Result: result, At: now}
+		if err := markReadAt(t, th.ID, device, rev, now); err != nil {
+			return err
+		}
 		if err := saveThread(t, th); err != nil {
 			return err
 		}
@@ -574,6 +580,9 @@ func (c *Coordinator) applyWorkerOp(device, workerID string, env workerOpEnvelop
 		fx = e
 		result = OpResult{OK: true, Revision: th.Revision, EntryIDs: ids, ThreadID: th.ID}
 		ops[env.OpID] = loggedOp{ArgsHash: hash, Revision: th.Revision, Result: result, At: th.CreatedAt}
+		if err := markReadAt(t, th.ID, device, th.Revision, th.CreatedAt); err != nil {
+			return err
+		}
 		if err := saveThread(t, th); err != nil {
 			return err
 		}
@@ -627,7 +636,13 @@ func (c *Coordinator) threads(device, workerID string) ([]ThreadSummary, error) 
 			if _, err := c.follow(t, th); err != nil {
 				return err
 			}
-			out = append(out, th.summary())
+			reads, err := loadReads(t, id)
+			if err != nil {
+				return err
+			}
+			s := th.summary()
+			s.Unread = unread(reads, device, th)
+			out = append(out, s)
 		}
 		return nil
 	})

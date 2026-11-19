@@ -80,7 +80,10 @@ type Coordinator struct {
 	locks map[string]*sync.Mutex
 	// cancels stops each running job.
 	cancels map[string]context.CancelFunc
-	wake    chan struct{}
+	// queued is why each queued job didn't start in the last schedule pass
+	// (queuedBusy or queuedWaiting), which its turn shows.
+	queued map[string]string
+	wake   chan struct{}
 	// running counts jobs started and not yet ended, for Wait.
 	running sync.WaitGroup
 	// mail is the mail loop's, nil without Config.Mail.
@@ -110,7 +113,7 @@ func New(cfg Config) (*Coordinator, error) {
 	if cfg.Mail.Service != nil && cfg.Intake == nil {
 		return nil, errors.New("coordinator config: the mail loop needs an intake runner")
 	}
-	c := &Coordinator{cfg: cfg, state: state, busy: map[string]bool{}, accountJobs: map[string]int{}, locks: map[string]*sync.Mutex{}, cancels: map[string]context.CancelFunc{}, wake: make(chan struct{}, 1), mail: newMailLoop(cfg.Mail)}
+	c := &Coordinator{cfg: cfg, state: state, busy: map[string]bool{}, accountJobs: map[string]int{}, locks: map[string]*sync.Mutex{}, cancels: map[string]context.CancelFunc{}, queued: map[string]string{}, wake: make(chan struct{}, 1), mail: newMailLoop(cfg.Mail)}
 	if err := c.state.Save(cfg.StateDir); err != nil {
 		return nil, err
 	}
@@ -389,9 +392,11 @@ func (c *Coordinator) schedule(ctx context.Context) {
 	slices.SortFunc(queued, func(a, b *Job) int { return cmp.Compare(a.Seq, b.Seq) })
 	// noSlot is the accounts the pool had no slot for in this pass.
 	noSlot := map[string]bool{}
+	var noRunner []*Job
 	for {
 		i := c.next(queued, noSlot)
 		if i < 0 {
+			c.whyQueued(append(queued, noRunner...), noSlot)
 			return
 		}
 		j := queued[i]
@@ -400,6 +405,7 @@ func (c *Coordinator) schedule(ctx context.Context) {
 		runner, ok := c.cfg.Pool.Acquire(w.Account)
 		if !ok {
 			noSlot[w.Account] = true
+			noRunner = append(noRunner, j)
 			continue
 		}
 		spec := *j.Spec
@@ -414,6 +420,35 @@ func (c *Coordinator) schedule(ctx context.Context) {
 		c.cancels[j.ID] = stop
 		go c.execute(jobCtx, *j, *w, spec)
 	}
+}
+
+// Why a queued job hasn't started, as its agent-turn's queued shows it:
+// queuedBusy when the runner pool is at capacity, queuedWaiting when the job
+// waits on its own account (its cap, or its worker's running job).
+const (
+	queuedBusy    = "busy"
+	queuedWaiting = "waiting"
+)
+
+// whyQueued records why each job left queued didn't start, and has the
+// threads of those whose reason changed follow it. It holds c.mu.
+func (c *Coordinator) whyQueued(queued []*Job, noSlot map[string]bool) {
+	why := make(map[string]string, len(queued))
+	for _, j := range queued {
+		account := c.state.Workers[j.WorkerID].Account
+		why[j.ID] = queuedWaiting
+		if noSlot[account] {
+			why[j.ID] = queuedBusy
+		}
+		if c.queued[j.ID] != why[j.ID] && j.ThreadID != "" {
+			c.running.Add(1)
+			go func(workerID, threadID string) {
+				defer c.running.Done()
+				c.followJob(workerID, threadID)
+			}(j.WorkerID, j.ThreadID)
+		}
+	}
+	c.queued = why
 }
 
 // next is the index of the queued job to start next, or -1 for none. queued is

@@ -3,8 +3,8 @@ package mail
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,7 +12,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
+
+	"github.com/fount-labs/fount-broker/internal/mail/mailtest"
 )
 
 // vectors is testdata/edge-vectors.json (stored-message format 2) or
@@ -85,6 +86,10 @@ type fakeEdge struct {
 	srv      *httptest.Server
 	attested ed25519.PublicKey
 	attErr   error
+	// coord is the edge's coordinator side, whose authority signs
+	// generation certificates; it holds an enrolled mailbox to the fence.
+	coord     *mailtest.Coordination
+	authority ed25519.PrivateKey
 
 	mu      sync.Mutex
 	objects map[string][]byte
@@ -96,7 +101,8 @@ type fakeEdge struct {
 }
 
 func newFakeEdge(t *testing.T, v *vectors) *fakeEdge {
-	f := &fakeEdge{t: t, v: v, objects: map[string][]byte{}, nonces: map[string]bool{}}
+	apub, apriv, _ := ed25519.GenerateKey(nil)
+	f := &fakeEdge{t: t, v: v, objects: map[string][]byte{}, nonces: map[string]bool{}, coord: mailtest.NewCoordination(apub), authority: apriv}
 	for _, m := range v.Messages {
 		f.objects[m.EdgeID] = m.Object
 	}
@@ -120,25 +126,16 @@ func (f *fakeEdge) AttestedSigningKey(context.Context) (ed25519.PublicKey, error
 	return f.attested, f.attErr
 }
 
+// authorized checks a bodiless address-key call, for an override.
 func (f *fakeEdge) authorized(r *http.Request) bool {
-	ts, err := strconv.ParseInt(r.Header.Get("Fount-Timestamp"), 10, 64)
-	if err != nil || time.Since(time.Unix(ts, 0)).Abs() > 5*time.Minute {
-		return false
+	return f.coord.Address(r, nil, f.v.MailboxID, f.addressKey(f.v.MailboxID)) == nil
+}
+
+func (f *fakeEdge) addressKey(mailbox string) ed25519.PublicKey {
+	if mailbox != f.v.MailboxID {
+		return nil
 	}
-	nonce := r.Header.Get("Fount-Nonce")
-	if nonce == "" || len(nonce) > 128 || f.nonces[nonce] {
-		return false
-	}
-	sig, err := base64.StdEncoding.DecodeString(r.Header.Get("Fount-Signature"))
-	if err != nil || r.Header.Get("Fount-Key-Id") != f.v.MailboxID {
-		return false
-	}
-	pub := ed25519.NewKeyFromSeed(f.v.SigningKey).Public().(ed25519.PublicKey)
-	if !ed25519.Verify(pub, []byte(Canonical(r.Method, r.URL.Path, nil, ts, nonce)), sig) {
-		return false
-	}
-	f.nonces[nonce] = true
-	return true
+	return ed25519.NewKeyFromSeed(f.v.SigningKey).Public().(ed25519.PublicKey)
 }
 
 func (f *fakeEdge) serve(w http.ResponseWriter, r *http.Request) {
@@ -146,6 +143,14 @@ func (f *fakeEdge) serve(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, r.Method+" "+r.URL.RequestURI())
 	if f.override != nil && f.override(w, r) {
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		f.t.Errorf("fake edge: %v", err)
+		return
+	}
+	if f.coord.Serve(w, r, body, f.addressKey) {
 		return
 	}
 	if id, ok := strings.CutPrefix(r.URL.Path, "/boots/"); ok && r.Method == "GET" {
@@ -157,8 +162,8 @@ func (f *fakeEdge) serve(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(b))
 		return
 	}
-	if !f.authorized(r) {
-		http.Error(w, `{"error":"signature does not verify"}`, http.StatusUnauthorized)
+	if ref := f.coord.Address(r, body, f.v.MailboxID, f.addressKey(f.v.MailboxID)); ref != nil {
+		ref.Write(w)
 		return
 	}
 	switch {
@@ -207,7 +212,11 @@ func (f *fakeEdge) listing() string {
 			out = append(out, listed{m.EdgeID, len(o)})
 		}
 	}
-	b, _ := json.Marshal(map[string]any{"messages": out, "paused": f.paused})
+	body := map[string]any{"messages": out, "paused": f.paused, "lapsed": false}
+	if m := f.coord.Mailbox(f.v.MailboxID); m.Lapsed {
+		body["lapsed"], body["hold_until"] = true, m.HoldUntil
+	}
+	b, _ := json.Marshal(body)
 	return string(b)
 }
 

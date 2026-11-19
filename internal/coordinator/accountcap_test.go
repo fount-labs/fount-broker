@@ -83,8 +83,15 @@ func newCappedCoordinator(t *testing.T, runners, slots, accountJobs int) (*Coord
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	go c.Run(ctx)
-	t.Cleanup(cancel)
+	done := make(chan struct{})
+	go func() {
+		c.Run(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 	return c, g
 }
 
@@ -197,5 +204,34 @@ func TestTheNextSlotGoesToTheAccountWithFewestRunning(t *testing.T) {
 	c.busy["w_a2"] = true
 	if i := c.next(queued, map[string]bool{}); i != 1 {
 		t.Fatalf("picked %d, a job whose worker is busy", i)
+	}
+}
+
+// A job that can't start says why: busy when the runners are all in use,
+// waiting when its own account is at its cap.
+func TestAQueuedJobSaysWhyItWaits(t *testing.T) {
+	c, g := newCappedCoordinator(t, 2, 2, 1)
+	acme := enqueueOnWorkers(t, c, "acme", 2)
+	eventually(t, "one of acme's jobs runs", func() bool { r, _, _ := g.counts("acme"); return r == 1 })
+	why := func(id string) string {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.queued[id]
+	}
+	eventually(t, "acme's second job waits on its cap", func() bool { return why(acme[1]) == queuedWaiting })
+
+	bolt := enqueueOnWorkers(t, c, "bolt", 2)
+	eventually(t, "one of bolt's jobs runs", func() bool { r, _, _ := g.counts("bolt"); return r == 1 })
+	other := enqueueOnWorkers(t, c, "cove", 1)
+	eventually(t, "cove's job finds the runners busy", func() bool { return why(other[0]) == queuedBusy })
+	if why(bolt[1]) != queuedWaiting {
+		t.Errorf("bolt's second job: %q", why(bolt[1]))
+	}
+	// A runner serves one account at a time: when acme's job ends, its
+	// runner goes to the oldest job of an account with none running.
+	g.release("acme")
+	eventually(t, "a job takes acme's runner", func() bool { return why(acme[1]) == "" })
+	if why(other[0]) != queuedBusy {
+		t.Errorf("cove's job: %q", why(other[0]))
 	}
 }

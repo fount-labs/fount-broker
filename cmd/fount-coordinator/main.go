@@ -9,7 +9,7 @@
 //	  [--wrapping-key vault --vaults <host,host> --vault-repo <owner/repo> --keyset-commitment <hex>
 //	   --status-listen 0.0.0.0:8791]
 //	  [--client-listen 0.0.0.0:8792 --account-keys <base64 SPKI,...> [--client-attestation tinfoil]
-//	   [--cloud-credentials-only]] [--mail]
+//	   [--cloud-credentials-only]] [--mail [--mail-generation-authority <file>]]
 //	fount-coordinator health [http://127.0.0.1:8790/health]
 //
 // The runner command is started once per job with fount-runner's --workspace,
@@ -67,6 +67,9 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -133,6 +136,7 @@ func run() error {
 	clientAttest := flag.String("client-attestation", attestTinfoil, "with --client-listen: how the coordinator proves itself: tinfoil, or unattested in a dev build")
 	cloudOnly := flag.Bool("cloud-credentials-only", false, "with --client-listen: take only hour-long Cloud credentials, not device credentials")
 	mailLoop := flag.Bool("mail", false, "receive Cloud workers' mail from the mail edge: each worker with a mailbox gets its requests as thread turns")
+	mailAuthority := flag.String("mail-generation-authority", "", "with --mail and --wrapping-key dev: a file holding the Ed25519 seed a dev edge has as COORDINATOR_AUTHORITY_KEY, made on first run; the coordinator signs its own generation certificates with it, standing in for the vault")
 	audience := flag.String("client-audience", os.Getenv("FOUNT_CLIENT_AUDIENCE"), "with --client-listen: the coordinator's origin, https://<host>, which worker grants must name")
 	flag.Parse()
 	if *dir == "" || (flag.NArg() == 0) == (*runnerAddr == "") {
@@ -238,6 +242,10 @@ func run() error {
 	if *mailLoop && intake == nil {
 		return errors.New("--mail needs a runner that runs intake")
 	}
+	mailCfg, err := mailConfig(*mailLoop, *mailAuthority, keys.mode, *dir)
+	if err != nil {
+		return err
+	}
 	c, err := coordinator.New(coordinator.Config{
 		StateDir: filepath.Join(*dir, "state"),
 		WorkDir:  filepath.Join(*dir, "work"),
@@ -251,7 +259,7 @@ func run() error {
 		AccountJobs: *accountJobs,
 		JobConfig:   config,
 		Intake:      intake,
-		Mail:        mailConfig(*mailLoop),
+		Mail:        mailCfg,
 	})
 	if err != nil {
 		return err
@@ -398,12 +406,54 @@ func readJobConfig(value string) (json.RawMessage, error) {
 }
 
 // mailConfig is the mail loop's, against the attested mail edge. Until fount-
-// infra issues Cloud mailbox entitlements and the coordinator holds a
-// generation certificate for the edge's changes feed, it polls each mailbox
-// and doesn't renew.
-func mailConfig(on bool) coordinator.MailConfig {
+// infra issues Cloud mailbox entitlements it doesn't renew. Until the vault
+// issues generation certificates (decision 18), only a dev coordinator has a
+// generation, from --mail-generation-authority, and reads the edge's changes
+// feed; without one the loop names none, and polls each mailbox.
+func mailConfig(on bool, authority, keyMode, dir string) (coordinator.MailConfig, error) {
 	if !on {
-		return coordinator.MailConfig{}
+		if authority != "" {
+			return coordinator.MailConfig{}, errors.New("--mail-generation-authority needs --mail")
+		}
+		return coordinator.MailConfig{}, nil
 	}
-	return coordinator.MailConfig{Service: mail.New(route.NewMailEdge(), coordinator.NoLocalCheck{})}
+	cfg := coordinator.MailConfig{Service: mail.New(route.NewMailEdge(), coordinator.NoLocalCheck{})}
+	if authority == "" {
+		log.Printf("mail: no coordinator generation: the vault doesn't issue them yet, so the mail loop names none")
+		return cfg, nil
+	}
+	if keyMode != keyDev {
+		return cfg, errors.New("--mail-generation-authority is a dev edge's key, for --wrapping-key dev only")
+	}
+	seed, err := devSeed(authority)
+	if err != nil {
+		return cfg, fmt.Errorf("--mail-generation-authority: %w", err)
+	}
+	key := ed25519.NewKeyFromSeed(seed)
+	log.Printf("mail: dev generation certificates are signed by %s (the dev edge's COORDINATOR_AUTHORITY_KEY)", base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey)))
+	cfg.Generations = &mail.DevGenerations{Authority: key, Path: filepath.Join(dir, "state", "mail-generation")}
+	// With a generation the edge's changes feed says which mailboxes to read.
+	cfg.Changes = coordinator.EdgeChanges{Service: cfg.Service}
+	return cfg, nil
+}
+
+// devSeed reads a 32-byte seed from path, making one on first use.
+func devSeed(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		seed := make([]byte, ed25519.SeedSize)
+		if _, err := rand.Read(seed); err != nil {
+			return nil, err
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return nil, err
+		}
+		return seed, os.WriteFile(path, seed, 0o600)
+	case err != nil:
+		return nil, err
+	case len(data) != ed25519.SeedSize:
+		return nil, fmt.Errorf("%s is %d bytes, not a %d-byte seed", path, len(data), ed25519.SeedSize)
+	}
+	return data, nil
 }
