@@ -448,6 +448,11 @@ type draftView struct {
 	// may name; MessageID is theirs.
 	Hash      string `json:"hash"`
 	MessageID string `json:"messageId"`
+	// FileHashes are each file's SHA-256 by its path in the worker root,
+	// which a device's signed approval names (approvalsig.go); Claim is a
+	// claim in force (claim.go).
+	FileHashes map[string]string `json:"fileHashes,omitempty"`
+	Claim      *draftClaim       `json:"claim,omitempty"`
 }
 
 type approvalView struct {
@@ -456,6 +461,8 @@ type approvalView struct {
 	Via     string `json:"via"`
 	DraftID string `json:"draftId"`
 	Outcome string `json:"outcome"`
+	// Member is the approving team member's id, on a team worker.
+	Member string `json:"member,omitempty"`
 }
 
 type mailOutView struct {
@@ -473,6 +480,7 @@ func draftViews(head entryHead, e threadEntry) []DisplayEntry {
 	v := draftView{
 		entryHead: head, Content: d.Content, State: d.State, DraftRev: d.DraftRev, To: d.To, Subject: d.Subject,
 		Text: d.Text, JobID: e.JobID, QuestionID: d.QuestionID, Hash: d.Hash, MessageID: d.MessageID,
+		FileHashes: d.FileHashes, Claim: d.Claim,
 	}
 	var files []attachmentView
 	for _, p := range d.Files {
@@ -484,7 +492,7 @@ func draftViews(head entryHead, e threadEntry) []DisplayEntry {
 	case d.Approval != nil:
 		a := head
 		a.ID, a.Kind = e.ID+"-approval", "approval"
-		out = append(out, approvalView{entryHead: a, By: d.Approval.By, Via: d.Approval.Via, DraftID: e.ID, Outcome: "sent"})
+		out = append(out, approvalView{entryHead: a, By: d.Approval.By, Via: d.Approval.Via, DraftID: e.ID, Outcome: "sent", Member: d.Approval.Member})
 		m := head
 		m.ID, m.Kind = e.ID+"-sent", "mail-out"
 		out = append(out, mailOutView{entryHead: m, To: d.To, Text: d.Text, Files: files, SentID: d.SendID, Send: d.Send})

@@ -346,3 +346,33 @@ func TestAClaimLabelsTheDraftAndExpires(t *testing.T) {
 		t.Fatalf("approve under a claim: %+v", res)
 	}
 }
+
+// Desktop signs an approval from the draft as the thread shows it: the view
+// carries each file's hash by path, the claim in force and the approving
+// member.
+func TestTheDraftViewCarriesWhatAnApprovalSigns(t *testing.T) {
+	now := time.Now()
+	cl := &draftClaim{By: "maria@firm.com", Member: "m_reviewer", Device: "d1", At: now, ExpiresAt: now.Add(claimLifetime)}
+	d := &draftEntry{State: draftSent, DraftRev: 2, To: []string{"dana@example.com"}, Subject: "Re: Q3", Text: "Hi",
+		Files: []string{"out/a.pdf"}, FileHashes: map[string]string{"out/a.pdf": "aa"}, Claim: cl,
+		Approval: &approval{By: "maria@firm.com", Via: viaApp, Member: "m_reviewer"}}
+	raw, err := json.Marshal(draftViews(entryHead{ID: "e_1"}, threadEntry{ID: "e_1", Kind: entryDraft, Draft: d}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []map[string]any
+	json.Unmarshal(raw, &out)
+	if len(out) != 3 {
+		t.Fatalf("the views: %s", raw)
+	}
+	draft, ap := out[0], out[1]
+	if h, _ := draft["fileHashes"].(map[string]any); h["out/a.pdf"] != "aa" {
+		t.Errorf("no file hashes: %v", draft)
+	}
+	if c, _ := draft["claim"].(map[string]any); c["by"] != "maria@firm.com" || c["expiresAt"] == nil {
+		t.Errorf("no claim: %v", draft)
+	}
+	if ap["kind"] != "approval" || ap["member"] != "m_reviewer" {
+		t.Errorf("the approval: %v", ap)
+	}
+}
