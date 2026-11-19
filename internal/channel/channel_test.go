@@ -326,7 +326,11 @@ func TestCheckRequest(t *testing.T) {
 		"GET v1/teams/acct_acme/log", "GET v1/teams/acct_acme/log?since=3", "POST v1/teams/acct_acme/log",
 		"POST v1/teams",
 		"PUT v1/workers/" + w + "/threads/" + th + "/drafts/ent_0123456789abcdef01234567/files/threads/" + th[4:] + "/outputs/j/a b.docx?rev=2",
-		"POST v1/teams/acct_acme/invites/i_m_ann/send",
+		"POST v1/teams/acct_acme/invites/i_m_ann/send", "GET v1/teams",
+		"POST v1/teams/acct_acme/invites/inv_1/open", "POST v1/teams/acct_acme/invites/inv_1/accept",
+		"POST v1/teams/acct_acme/joins", "GET v1/teams/acct_acme/joins", "GET v1/teams/acct_acme/joins/jn_1",
+		"POST v1/teams/acct_acme/joins/jn_1/approve", "POST v1/teams/acct_acme/joins/jn_1/deny", "POST v1/teams/acct_acme/joins/jn_1/accept",
+		"POST v1/teams/acct_acme/passkey-join", "POST v1/teams/acct_acme/passkey-join/challenge",
 	} {
 		method, target, _ := strings.Cut(ok, " ")
 		if _, err := CheckRequest(method, target); err != nil {
@@ -347,7 +351,12 @@ func TestCheckRequest(t *testing.T) {
 		"GET v1/workers/" + w + "/ops", "GET v1/workers/" + w + "/threads/" + th + "?since=1&since=2",
 		"PUT v1/teams/acct_acme/log", "GET v1/teams/acct_acme", "GET v1/teams/acct.acme/log", "GET v1/teams/acct_acme/log/x",
 		"POST v1/teams/acct_acme/log?since=1", "GET v1/teams/acct_acme/log?prefix=a", "GET v1/teams/" + strings.Repeat("a", 65) + "/log",
-		"GET v1/teams", "PUT v1/teams", "POST v1/teams?since=1",
+		"PUT v1/teams", "POST v1/teams?since=1", "GET v1/teams?since=1",
+		"GET v1/teams/acct_acme/invites/inv_1/open", "POST v1/teams/acct_acme/invites/inv_1/delete", "POST v1/teams/acct_acme/invites/inv_1",
+		"PUT v1/teams/acct_acme/joins", "POST v1/teams/acct_acme/joins/jn_1", "GET v1/teams/acct_acme/joins/jn_1/approve",
+		"POST v1/teams/acct_acme/joins/jn.1/accept", "POST v1/teams/acct_acme/joins?since=1", "POST v1/teams/acct_acme/joins/jn_1/approve/x",
+		"GET v1/teams/acct_acme/passkey-join", "POST v1/teams/acct_acme/passkey-join/x", "GET v1/teams/acct_acme/passkey-join/challenge",
+		"POST v1/teams/acct_acme/recovery", "POST v1/teams/acct_acme/recovery/start", "POST v1/teams/acct_acme/x",
 		"POST v1/workers/" + w + "/mail", "GET v1/workers/" + w + "/mail?since=1", "PUT v1/workers/" + w + "/mail?since=1",
 		"GET v1/workers/" + w + "/mail/x", "PUT v1/workers/" + w + "/mail/x", "DELETE v1/workers/" + w + "/mail",
 		"PUT v1/workers/" + w + "/threads/" + th + "/drafts/ent_0123456789abcdef01234567/files/a.docx",
