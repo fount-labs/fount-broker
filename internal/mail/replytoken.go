@@ -1,7 +1,6 @@
 package mail
 
 import (
-	"crypto/ed25519"
 	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -16,11 +15,20 @@ import (
 // reply carries it back in In-Reply-To and References. Emails sent before that
 // carried it in a Reply-To of <local>+<token>@<domain>, so the recipient's +tag
 // is still read. The broker checks the token, so a reply joins a thread only if
-// it answers, or was addressed with, that thread's token.
+// it answers, or was addressed with, that thread's token. The edge never reads
+// it, so it holds no token key.
 //
-//	k     = HKDF-SHA256(ikm = the address's Ed25519 seed, salt = nil, info = replyTokenInfo), 32 bytes
+//	k     = Keys.TokenKey when set (a Cloud worker's, decision 25), else
+//	        HKDF-SHA256(ikm = the address's Ed25519 seed, salt = nil, info = replyTokenInfo), 32 bytes
 //	mac   = HMAC-SHA256(k, "reply" || handle)[:5]
 //	token = lowercase unpadded base32 of handle(5) || mac(5), 16 characters
+//
+// A Desktop worker's tokens come from its signing seed, which only its device
+// holds. A Cloud worker's address keys are wrapped to every admin device, so
+// its tokens come from TokenKey, which the coordinator derives from its own
+// wrapping key and never stores or hands out: a removed admin's copy of the
+// signing seed can't forge one, and rotating the signing key needs no old seed.
+// A key with TokenKey never falls back to the seed.
 //
 // The handle is the app's name for the thread. The app puts the token only in
 // the Message-IDs of the emails it sends.
@@ -46,12 +54,17 @@ const (
 	replyTokenMismatch  = "the reply token doesn't match this address"
 )
 
+// TokenKeySize is the length of Keys.TokenKey.
+const TokenKeySize = 32
+
 func replyKey(k *Keys) ([]byte, error) {
-	seed := k.Signing.Seed()
-	if len(k.ReplySeed) == ed25519.SeedSize {
-		seed = k.ReplySeed
+	if k.TokenKey != nil {
+		if len(k.TokenKey) != TokenKeySize {
+			return nil, ErrBadKeys
+		}
+		return k.TokenKey, nil
 	}
-	return hkdf.Key(sha256.New, seed, nil, replyTokenInfo, 32)
+	return hkdf.Key(sha256.New, k.Signing.Seed(), nil, replyTokenInfo, 32)
 }
 
 func replyMAC(key, handle []byte) []byte {

@@ -225,10 +225,14 @@ bytes. Vectors for every format here: `internal/coordinator/testdata/team-invite
   open invite with that id, the commit (constant time), before `exp`, the Cloud credential's `eml`
   (lower-case, present only when Clerk verified it) equals the member's email. The record's proof
   rechecks all but the credential when any client replays the log.
-- **Sending it.** `…/send` (admin) stages one notice per invite on the send journal from a team
-  worker's address. The edge today sends only to a mailbox's proven owners, so this is refused
-  until the edge allows a coordinator-signed invite to a non-owner; Desktop's main path is "Copy
-  invite link".
+- **Sending it.** `…/send` (admin) stages one send record per invite (kind `invite`) on the send
+  journal from a team worker's address. `/send` goes only to a mailbox's proven owners, so the
+  journal posts an invite on the edge's `POST /coordinator/invite` instead, signed by the
+  coordinator's generation key (edge DESIGN.md §8, "Team invites"): the worker enrolled, one
+  recipient, one text/plain part, at most 64 KiB, 20 per worker per day. The edge records it
+  under the worker like any send, so `/sent/query` finds it and a retry posts nothing twice. A
+  refusal fails the record: `invite_limit` (429) as `SEND_LIMIT`, `invite_refused` (400) as
+  `BAD_MESSAGE`. Desktop's "Copy invite link" stays the fallback.
 - **A second device.** `POST /v1/teams/{team}/joins {key, enc}` from the new device (its own
   key; its account must be a member's) gives `{join, nonce, member, expiresAt}`, kept 15 minutes
   in memory, 3 per member. The member's admitted devices list them (`GET …/joins`), both show
@@ -254,8 +258,20 @@ bytes. Vectors for every format here: `internal/coordinator/testdata/team-invite
   an expired one is hidden when the thread is read.
 - **Rotation.** The mail pass rotates every worker in `Team.Rotate`: a new seed is kept in the
   mailbox record first, then `POST /coordinator/signing-key` (the edge's 409 for its current key
-  is a retry landing), then it becomes the signing key, the old seed is kept as `replySeed` for
-  reply tokens, and the worker leaves `Rotate`.
+  is a retry landing), then it becomes the signing key, the old seed is dropped, and the worker
+  leaves `Rotate`. Nothing of the old key is kept, because reply tokens don't come from it.
+- **Reply tokens** (decision 25). A thread's token (`fm.<26>.<token>@<domain>` in each Message-ID,
+  internal/mail `replytoken.go`) is a MAC under a key only the coordinator holds:
+  `tokenKey = HKDF-SHA256(ikm = the wrapping key, salt = none, info =
+  "fount-coordinator/reply-token-key/v1" ‖ 0x00 ‖ mailbox id hex)`, 32 bytes, used as the HMAC key
+  in place of the one a Desktop worker derives from its signing seed. It's derived when needed and
+  never stored, so it's in no tree, backup, export or mail setup, and no device gets it. The
+  address signing seed, which every admin device can unwrap, mints no token that matches, so a
+  removed admin can't forge one; and a rotation leaves every thread's token as it was. The edge
+  never reads tokens and holds no key for them. Approval tokens were already the coordinator's
+  (`derivedPart` under the wrapping key). Dev threads from before this change carry tokens from the
+  signing seed: a reply to one no longer matches and starts a thread of its own (no production
+  worker has any).
 
 ## 3. Roles and the check on every operation
 

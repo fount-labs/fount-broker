@@ -235,8 +235,8 @@ func TestAReviewerCantRemove(t *testing.T) {
 }
 
 // Removing an admin marks the team's workers (members_test), and the mail
-// pass rotates each one's address key at the edge, then keeps the old seed
-// for reply tokens. A retry after a lost answer finishes with the same key.
+// pass rotates each one's address key at the edge and keeps nothing of the
+// old one. A retry after a lost answer finishes with the same key.
 func TestARotationReplacesTheAddressKeyAtTheEdge(t *testing.T) {
 	r := genRig(t, MailConfig{})
 	w, mb := r.worker()
@@ -271,7 +271,7 @@ func TestARotationReplacesTheAddressKeyAtTheEdge(t *testing.T) {
 	r.pass()
 	got := stored()
 	at := r.edge.coord.Mailbox(mb.MailboxID).SigningKey
-	if !rotated() || slices.Equal(got.SigningKey, first) || !slices.Equal(got.ReplySeed, first) || got.NextSigningKey != nil {
+	if !rotated() || slices.Equal(got.SigningKey, first) || got.NextSigningKey != nil {
 		t.Fatalf("after the rotation: %v %+v", rotated(), got)
 	}
 	if !at.Equal(ed25519.NewKeyFromSeed(got.SigningKey).Public()) {
@@ -302,7 +302,7 @@ func TestARotationReplacesTheAddressKeyAtTheEdge(t *testing.T) {
 	}
 	mark()
 	r.pass()
-	if got := stored(); !rotated() || !slices.Equal(got.SigningKey, next) || !slices.Equal(got.ReplySeed, first) {
+	if got := stored(); !rotated() || !slices.Equal(got.SigningKey, next) {
 		t.Fatalf("the retry: %v %+v", rotated(), got)
 	}
 }

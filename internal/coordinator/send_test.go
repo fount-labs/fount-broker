@@ -32,11 +32,17 @@ type fakeSendEdge struct {
 	inDoubt   map[string]bool
 	// doubtNext marks the next reply posted (fm.… with "Re: ") in doubt.
 	doubtNext bool
+	// strangers are addresses that aren't the worker's owners: /send to one
+	// is refused, as the edge's policy does, and only an invite reaches them.
+	strangers map[string]bool
+	// invites are the Message-IDs that came on POST /coordinator/invite.
+	invites map[string]bool
 }
 
 func newFakeSendEdge(t *testing.T) *fakeSendEdge {
 	return &fakeSendEdge{t: t, records: map[string]*SentRecord{},
-		delivered: map[string]int{}, posts: map[string]int{}, raw: map[string][]byte{}, inDoubt: map[string]bool{}}
+		delivered: map[string]int{}, posts: map[string]int{}, raw: map[string][]byte{}, inDoubt: map[string]bool{},
+		strangers: map[string]bool{}, invites: map[string]bool{}}
 }
 
 func (f *fakeSendEdge) serve(w http.ResponseWriter, r *http.Request, body []byte) {
@@ -48,38 +54,7 @@ func (f *fakeSendEdge) serve(w http.ResponseWriter, r *http.Request, body []byte
 			Message []byte `json:"message"`
 		}
 		json.Unmarshal(body, &req)
-		h, err := textproto.NewReader(bufio.NewReader(bytes.NewReader(req.Message))).ReadMIMEHeader()
-		if err != nil {
-			http.Error(w, `{"error":"bad message"}`, 400)
-			return
-		}
-		id, hash := h.Get("Message-Id"), sha256Hex(req.Message)
-		f.posts[id]++
-		if f.doubtNext && strings.HasPrefix(h.Get("Subject"), "Re: ") {
-			f.doubtNext, f.inDoubt[id] = false, true
-		}
-		if f.inDoubt[id] {
-			f.records[id] = &SentRecord{MessageID: id, State: sentInDoubt, SHA256: hash}
-			w.WriteHeader(409)
-			w.Write([]byte(`{"error":"an earlier send of this Message-ID may have been delivered","code":"send_in_doubt"}`))
-			return
-		}
-		if prev := f.records[id]; prev != nil {
-			if prev.SHA256 != hash {
-				http.Error(w, `{"error":"this Message-ID was already sent with different content"}`, 409)
-				return
-			}
-			json.NewEncoder(w).Encode(map[string]any{"results": prev.Results})
-			return
-		}
-		var results []RecipientResult
-		for _, to := range strings.Split(h.Get("To"), ",") {
-			results = append(results, RecipientResult{Recipient: strings.TrimSpace(to), Status: resultSent})
-		}
-		f.delivered[id]++
-		f.raw[id] = req.Message
-		f.records[id] = &SentRecord{MessageID: id, State: sentDone, SHA256: hash, Results: results}
-		json.NewEncoder(w).Encode(map[string]any{"results": results})
+		f.post(w, req.Message, false)
 	case "/sent/query":
 		var q struct {
 			IDs []string `json:"message_ids"`
@@ -97,6 +72,61 @@ func (f *fakeSendEdge) serve(w http.ResponseWriter, r *http.Request, body []byte
 	default:
 		http.Error(w, `{"error":"not found"}`, 404)
 	}
+}
+
+// invite is POST /coordinator/invite once the coordination took it.
+func (f *fakeSendEdge) invite(w http.ResponseWriter, message []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.post(w, message, true)
+}
+
+// post sends message, an invite or not. f.mu held.
+func (f *fakeSendEdge) post(w http.ResponseWriter, message []byte, invite bool) {
+	req := struct{ Message []byte }{message}
+	h, err := textproto.NewReader(bufio.NewReader(bytes.NewReader(req.Message))).ReadMIMEHeader()
+	if err != nil {
+		http.Error(w, `{"error":"bad message"}`, 400)
+		return
+	}
+	id, hash := h.Get("Message-Id"), sha256Hex(req.Message)
+	if !invite {
+		for _, to := range strings.Split(h.Get("To"), ",") {
+			if f.strangers[strings.TrimSpace(to)] {
+				http.Error(w, `{"error":"recipient is not an owner of this worker"}`, 403)
+				return
+			}
+		}
+	}
+	if invite {
+		f.invites[id] = true
+	}
+	f.posts[id]++
+	if f.doubtNext && strings.HasPrefix(h.Get("Subject"), "Re: ") {
+		f.doubtNext, f.inDoubt[id] = false, true
+	}
+	if f.inDoubt[id] {
+		f.records[id] = &SentRecord{MessageID: id, State: sentInDoubt, SHA256: hash}
+		w.WriteHeader(409)
+		w.Write([]byte(`{"error":"an earlier send of this Message-ID may have been delivered","code":"send_in_doubt"}`))
+		return
+	}
+	if prev := f.records[id]; prev != nil {
+		if prev.SHA256 != hash {
+			http.Error(w, `{"error":"this Message-ID was already sent with different content"}`, 409)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"results": prev.Results})
+		return
+	}
+	var results []RecipientResult
+	for _, to := range strings.Split(h.Get("To"), ",") {
+		results = append(results, RecipientResult{Recipient: strings.TrimSpace(to), Status: resultSent})
+	}
+	f.delivered[id]++
+	f.raw[id] = req.Message
+	f.records[id] = &SentRecord{MessageID: id, State: sentDone, SHA256: hash, Results: results}
+	json.NewEncoder(w).Encode(map[string]any{"results": results})
 }
 
 func (f *fakeSendEdge) count(m map[string]int, id string) int {
@@ -145,6 +175,7 @@ func sendRigOn(t *testing.T, r *mailRig, mode string) *sendRig {
 	se := newFakeSendEdge(t)
 	r.edge.mu.Lock()
 	r.edge.send = se
+	r.edge.coord.OnInvite = func(w http.ResponseWriter, _ string, message []byte) { se.invite(w, message) }
 	r.edge.mu.Unlock()
 	r.runner.events = eventsWith(summaryWith(t, func(p map[string]any) {
 		p["state"], p["text"], p["steps"] = "ready_for_review", agentAnswer, []any{}

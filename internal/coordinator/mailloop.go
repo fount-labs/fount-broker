@@ -467,7 +467,7 @@ func (c *Coordinator) prepareMail(w Worker) (map[string]bool, error) {
 			return fmt.Errorf("%w: the worker's mailbox isn't the volume's", ErrInvalid)
 		}
 		if !m.service.HasKeys(w.Mailbox) {
-			keys, err := mb.keys()
+			keys, err := c.mailKeys(mb)
 			if err != nil {
 				return err
 			}

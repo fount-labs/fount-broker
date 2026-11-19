@@ -43,6 +43,9 @@ const (
 	sendKindReply  = "reply"
 	sendKindNotice = "notice"
 	sendKindAck    = "ack"
+	// sendKindInvite is a team invite (teaminvite.go), posted on the edge's
+	// coordinator route rather than /send.
+	sendKindInvite = "invite"
 
 	// A record's states. sent, partly_sent, maybe_sent and failed are
 	// Desktop's SendState.
@@ -256,7 +259,7 @@ func (c *Coordinator) runSends(ctx context.Context, workerID string) error {
 		if err != nil {
 			return err
 		}
-		if keys, err = mb.keys(); err != nil {
+		if keys, err = c.mailKeys(mb); err != nil {
 			return err
 		}
 		for _, id := range ids {
@@ -320,7 +323,11 @@ func (c *Coordinator) attemptSend(ctx context.Context, sender MailSender, keys *
 	default:
 		return sendOutcome{retry: sendBackoff(r.Tries)}
 	}
-	results, err := sender.Send(ctx, keys, raw)
+	post := sender.Send
+	if r.Kind == sendKindInvite {
+		post = sender.SendInvite
+	}
+	results, err := post(ctx, keys, raw)
 	if err != nil {
 		return refusedSend(err, r)
 	}
@@ -419,6 +426,8 @@ func refusedSend(err error, r *sendRecord) sendOutcome {
 	case 503:
 		return sendOutcome{retry: sendBackoff(r.Tries)}
 	case 429:
+		// A worker's sending limit, or its invites for the day
+		// (invite_limit).
 		return final(CodeSendLimit)
 	case 403:
 		msg := strings.ToLower(se.Message)
@@ -479,7 +488,7 @@ func (c *Coordinator) recordOutcome(workerID, id string, out sendOutcome) error 
 			}
 		}
 		bounced := slices.ContainsFunc(r.Delivery, func(d delivered) bool { return d.Status == deliveryRefused })
-		if r.Kind != sendKindNotice && (bounced || r.State == sendMaybe || r.State == sendFailed) {
+		if r.Kind != sendKindNotice && r.Kind != sendKindInvite && (bounced || r.State == sendMaybe || r.State == sendFailed) {
 			return c.problemNotice(t, workerID, r.ThreadID, noticeBounced, r.ID, now)
 		}
 		return nil
@@ -576,7 +585,7 @@ func (c *Coordinator) Acknowledge(_ context.Context, req AckRequest) error {
 // buildOut builds r's bytes: its Message-ID from parts and the thread's reply
 // token, from the worker's address. It fills r.MessageID, r.To and r.Created.
 func (c *Coordinator) buildOut(t *Tree, th *threadRecord, mb *Mailbox, r *sendRecord, parts []string, subject, inReplyTo string, refs []string, text string, files []outFile, now time.Time) ([]byte, error) {
-	keys, err := mb.keys()
+	keys, err := c.mailKeys(mb)
 	if err != nil {
 		return nil, err
 	}
