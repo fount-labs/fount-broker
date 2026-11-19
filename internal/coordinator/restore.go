@@ -48,6 +48,12 @@ type RestoreOptions struct {
 	// Root is the backup to restore, a key under roots/; empty is the
 	// newest.
 	Root string
+	// DryRun checks the backup as a restore would, opening every worker's
+	// tree and reading every file from the bucket, and writes nothing: no
+	// volume, no store, no count. It doesn't ask Generations, which would
+	// move the vault's generation on and stop the coordinator running now,
+	// so StateDir, Store and Generations may be empty.
+	DryRun bool
 }
 
 // RestoreResult is what Restore put back.
@@ -59,7 +65,8 @@ type RestoreResult struct {
 	Workers     int       `json:"workers"`
 	Objects     int       `json:"objects"`
 	// StoppedJobs are the jobs failed instead of run again.
-	StoppedJobs int `json:"stoppedJobs"`
+	StoppedJobs int  `json:"stoppedJobs"`
+	DryRun      bool `json:"dryRun,omitempty"`
 }
 
 // RestoreMark is kept in state.json once a backup is restored onto it.
@@ -88,23 +95,31 @@ var (
 // Restore restores a backup; see the comment above.
 func Restore(ctx context.Context, o RestoreOptions) (RestoreResult, error) {
 	switch {
+	case o.DryRun && (o.Bucket == nil || o.Counter == nil):
+		return RestoreResult{}, errors.New("restore: a dry run needs the bucket and the vault's counter")
+	case o.DryRun:
+		o.Store = &dryStore{ctx: ctx, bucket: o.Bucket, manifests: map[string][]byte{}}
 	case o.Bucket == nil || o.Counter == nil || o.Generations == nil || o.Store == nil || o.StateDir == "":
 		return RestoreResult{}, errors.New("restore: the bucket, the vault's counter and generation, the volume and the store are required")
+	default:
+		if _, err := os.Stat(statePath(o.StateDir)); err == nil {
+			return RestoreResult{}, ErrRestoreOverVolume
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return RestoreResult{}, err
+		}
 	}
-	if _, err := os.Stat(statePath(o.StateDir)); err == nil {
-		return RestoreResult{}, ErrRestoreOverVolume
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return RestoreResult{}, err
-	}
-	g, err := o.Generations.Generation(ctx)
-	if err != nil {
-		return RestoreResult{}, fmt.Errorf("the vault's generation: %w", err)
+	var g mail.Generation
+	if !o.DryRun {
+		var err error
+		if g, err = o.Generations.Generation(ctx); err != nil {
+			return RestoreResult{}, fmt.Errorf("the vault's generation: %w", err)
+		}
 	}
 	count, err := o.Counter.Load(ctx)
 	if err != nil {
 		return RestoreResult{}, fmt.Errorf("the vault's counter: %w", err)
 	}
-	if count.Generation != g.Number {
+	if !o.DryRun && count.Generation != g.Number {
 		return RestoreResult{}, fmt.Errorf("%w: the vault is at generation %d and this coordinator has %d", ErrStaleCoordinator, count.Generation, g.Number)
 	}
 	roots, err := listRoots(ctx, o.Bucket)
@@ -139,7 +154,7 @@ func Restore(ctx context.Context, o RestoreOptions) (RestoreResult, error) {
 	if err != nil {
 		return RestoreResult{}, err
 	}
-	res := RestoreResult{Root: ref.key, TakenAt: root.taken, SecuritySeq: root.securitySeq, Generation: g.Number}
+	res := RestoreResult{Root: ref.key, TakenAt: root.taken, SecuritySeq: root.securitySeq, Generation: g.Number, DryRun: o.DryRun}
 
 	// The trees first and state.json last: a restore cut short leaves no
 	// state.json, and can be run again.
@@ -178,6 +193,11 @@ func Restore(ctx context.Context, o RestoreOptions) (RestoreResult, error) {
 		st.Jobs[jobID] = &Job{ID: jobID, WorkerID: owedBy[jobID], Seq: st.Seq, State: JobFailed, ThreadID: owed[jobID].ThreadID,
 			Error: restoredJobError, Queued: now, Ended: now}
 		res.StoppedJobs++
+	}
+	if o.DryRun {
+		log.Printf("restore dry run: %s, taken %s, opens whole: %d workers, %d objects; a restore would stop %d jobs",
+			ref.key, root.taken.UTC().Format(time.RFC3339), res.Workers, res.Objects, res.StoppedJobs)
+		return res, nil
 	}
 	st.Restored = &RestoreMark{At: now, Root: ref.key, TakenAt: root.taken.UTC()}
 	if err := os.MkdirAll(o.StateDir, 0o700); err != nil {
@@ -281,3 +301,34 @@ func (c *Coordinator) restoredPause(msg *mail.Message, p pause) pause {
 	}
 	return p
 }
+
+// dryStore is a dry run's store: it keeps each manifest a restore would
+// write, discards the objects, and reads them back from the bucket.
+type dryStore struct {
+	ctx       context.Context
+	bucket    BackupBucket
+	manifests map[string][]byte
+}
+
+func (d *dryStore) Put(workerID, objectID string, data []byte) error {
+	if objectID == manifestObject {
+		d.manifests[workerID] = data
+	}
+	return nil
+}
+
+func (d *dryStore) Get(workerID, objectID string) ([]byte, error) {
+	if objectID == manifestObject {
+		if m, ok := d.manifests[workerID]; ok {
+			return m, nil
+		}
+		return nil, ErrNotFound
+	}
+	data, err := d.bucket.Get(d.ctx, backupObjectPrefix+workerID+"/"+objectID)
+	if errors.Is(err, ErrNotFound) {
+		return nil, ErrNotFound
+	}
+	return data, err
+}
+
+func (*dryStore) Delete(string, string) error { return errors.New("a dry run writes nothing") }
