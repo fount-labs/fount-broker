@@ -616,22 +616,6 @@ func (c *Coordinator) followTeam(team string, w *Worker, next *teamState, dek DE
 	return &nw, nil
 }
 
-// commitSecurity makes a change to security state (a team's log) durable
-// before it is acknowledged (§4.2): today state.json on the volume, with the
-// coordinator's security sequence moved on. H adds, in this order after it:
-// the backup root that includes it, then the vault's counter, moved with a
-// compare-and-swap on the generation, so a restore older than the counter is
-// refused and a coordinator of an old generation can't append. Called with
-// c.mu held.
-func (c *Coordinator) commitSecurity() error {
-	c.state.SecuritySeq++
-	if err := c.state.Save(c.cfg.StateDir); err != nil {
-		c.state.SecuritySeq--
-		return err
-	}
-	return nil
-}
-
 // teamIDPrefix starts the id of a firm team, which the coordinator makes.
 // A solo account's team id is its account id.
 const teamIDPrefix = "tm"

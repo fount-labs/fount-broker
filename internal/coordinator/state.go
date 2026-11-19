@@ -30,6 +30,8 @@ type State struct {
 	// first list hasn't been appended yet, each with the account it was made
 	// for: one at a time per account.
 	TeamMints map[string]string `json:"teamMints,omitempty"`
+	// Restored is set on a volume a backup was restored onto (restore.go).
+	Restored *RestoreMark `json:"restored,omitempty"`
 }
 
 type Worker struct {

@@ -63,6 +63,9 @@ func (c *Coordinator) stopMail(err error) {
 	if c.mail.stale.CompareAndSwap(false, true) {
 		log.Printf("mail: STOPPED: %v. Another coordinator generation owns Cloud mail; this one reads and sends none", err)
 	}
+	if errors.Is(err, mail.ErrStaleGeneration) {
+		c.retire(err)
+	}
 }
 
 // enrollMail enrolls w's mailbox under the generation, once per process.

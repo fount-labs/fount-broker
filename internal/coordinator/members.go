@@ -38,6 +38,15 @@ var opRoles = map[string]Role{
 	"POST /teams":                          roleCaller,
 	"GET /teams/{team}/log":                RoleReviewer,
 	"POST /teams/{team}/log":               RoleAdmin,
+	// Taking a worker's threads, mail and files away (backupexport.go).
+	"GET /workers/{id}/export": RoleAdmin,
+	// Passkey recovery (recovery.go): the recovering device isn't a member
+	// yet, so each route checks its caller and the record its proof.
+	"GET /recovery/teams":                      roleCaller,
+	"GET /teams/{team}/recovery":               roleCaller,
+	"POST /teams/{team}/recovery":              roleCaller,
+	"POST /teams/{team}/recovery/{seq}/cancel": roleCaller,
+	"POST /teams/{team}/recovery/{seq}/done":   roleCaller,
 
 	// A thread's work: any member who reaches the worker.
 	"startThread":     RoleReviewer,
