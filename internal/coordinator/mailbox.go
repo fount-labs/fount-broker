@@ -43,8 +43,9 @@ const (
 var ErrNoMailbox = errors.New("the worker has no mailbox")
 
 // Mailbox is an address and the keys the coordinator reads and signs its mail
-// with. Until creating in Cloud (A) hands them over, the dev and test API puts
-// them (PUT /v0/workers/{id}/mail).
+// with. An admin device hands them over sealed when it makes the worker
+// (mailsetup.go); the dev and test API puts them in the clear
+// (PUT /v0/workers/{id}/mail).
 type Mailbox struct {
 	Address   string `json:"address"`
 	MailboxID string `json:"mailboxId"`
@@ -230,8 +231,8 @@ func loadMailSettings(t *Tree) (*MailSettings, error) {
 }
 
 // SetMailbox gives a worker its address and keys, and starts its mail loop.
-// requesters, if any, are its first requesters. It is the dev and test API's,
-// until A hands workers over with their keys.
+// requesters, if any, are its first requesters. It is the dev and test API's;
+// clients use SetUpMail.
 func (c *Coordinator) SetMailbox(workerID string, mb Mailbox, requesters []Requester) error {
 	if err := mb.check(); err != nil {
 		return err
@@ -266,6 +267,13 @@ func (c *Coordinator) SetMailbox(workerID string, mb Mailbox, requesters []Reque
 	if err != nil {
 		return err
 	}
+	return c.mailboxReady(workerID, mb, keys)
+}
+
+// mailboxReady records a worker's mailbox id on the volume and starts its
+// mail loop, once its mailbox is committed to its tree.
+func (c *Coordinator) mailboxReady(workerID string, mb Mailbox, keys *mail.Keys) error {
+	var err error
 	c.mu.Lock()
 	if w := c.state.Workers[workerID]; w != nil && w.Mailbox != mb.MailboxID {
 		w.Mailbox = mb.MailboxID

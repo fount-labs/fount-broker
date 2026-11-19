@@ -35,6 +35,7 @@ var opRoles = map[string]Role{
 	"POST /workers/{id}/threads/{tid}/ops": RoleReviewer,
 	"POST /workers/{id}/ops":               RoleReviewer,
 	"GET /workers/{id}/mail":               RoleReviewer,
+	"PUT /workers/{id}/mail":               RoleAdmin,
 	"POST /teams":                          roleCaller,
 	"GET /teams/{team}/log":                RoleReviewer,
 	"POST /teams/{team}/log":               RoleAdmin,
