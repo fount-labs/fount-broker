@@ -83,11 +83,21 @@ func (c *Coordinator) rotateWorker(ctx context.Context, workerID string) error {
 	if mailbox == "" {
 		return ErrNoMailbox
 	}
-	err := c.rotateKey(workerID, (*Mailbox).signingSlot, newSigningSeed, func(next []byte) error {
-		return c.mail.service.RotateSigningKey(ctx, mailbox, ed25519.NewKeyFromSeed(next))
-	})
+	// A decryption key kept as next means an earlier pass rotated the
+	// signing key and the edge didn't take the decryption key: retry that
+	// alone, so an edge without the route doesn't get a new signing key
+	// every pass.
+	mb, err := c.workerMailbox(workerID)
 	if err != nil {
 		return err
+	}
+	if len(mb.NextDecryptionKey) == 0 {
+		err := c.rotateKey(workerID, (*Mailbox).signingSlot, newSigningSeed, func(next []byte) error {
+			return c.mail.service.RotateSigningKey(ctx, mailbox, ed25519.NewKeyFromSeed(next))
+		})
+		if err != nil {
+			return err
+		}
 	}
 	return c.rotateKey(workerID, (*Mailbox).decryptionSlot, newDecryptionKey, func(next []byte) error {
 		k, err := ecdh.X25519().NewPrivateKey(next)
@@ -197,18 +207,24 @@ func (c *Coordinator) rotateKey(workerID string, slot func(*Mailbox) keySlot, fr
 	return nil
 }
 
-// workerMailKeys are a worker's mail keys as its tree holds them now.
-func (c *Coordinator) workerMailKeys(workerID string) (*mail.Keys, error) {
-	var keys *mail.Keys
+// workerMailbox is a worker's mailbox as its tree holds it now.
+func (c *Coordinator) workerMailbox(workerID string) (*Mailbox, error) {
+	var mb *Mailbox
 	err := c.view(workerID, anyDevice, func(t *Tree) error {
-		mb, err := loadMailbox(t)
-		if err != nil {
-			return err
-		}
-		keys, err = c.mailKeys(mb)
+		var err error
+		mb, err = loadMailbox(t)
 		return err
 	})
-	return keys, err
+	return mb, err
+}
+
+// workerMailKeys are a worker's mail keys as its tree holds them now.
+func (c *Coordinator) workerMailKeys(workerID string) (*mail.Keys, error) {
+	mb, err := c.workerMailbox(workerID)
+	if err != nil {
+		return nil, err
+	}
+	return c.mailKeys(mb)
 }
 
 // rotated takes workerID off team's marks.

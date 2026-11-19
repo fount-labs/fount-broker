@@ -42,6 +42,9 @@ type Coordination struct {
 	calls []string
 	// invites counts each mailbox's invites taken, against InvitesPerDay.
 	invites map[string]int
+	// noDecryptionRoute answers POST /coordinator/decryption-key 404, as an
+	// edge from before it.
+	noDecryptionRoute bool
 
 	// OnInvite sends an invite the fake took (POST /coordinator/invite):
 	// the fake edge's send path, which answers it and keeps its sent
@@ -281,6 +284,10 @@ func (c *Coordination) Serve(w http.ResponseWriter, r *http.Request, body []byte
 		case "POST /coordinator/signing-key":
 			c.rotate(w, body, addressKey)
 		case "POST /coordinator/decryption-key":
+			if c.noDecryptionRoute {
+				refuse(http.StatusNotFound, "", "not found").Write(w)
+				return true
+			}
 			c.rotateDecryption(w, body)
 		case "POST /coordinator/invite":
 			mailbox, message, ref := c.invite(body)
@@ -372,6 +379,14 @@ func (c *Coordination) rotate(w http.ResponseWriter, body []byte, addressKey fun
 	c.touch(m)
 	sum := sha256.Sum256(key)
 	json.NewEncoder(w).Encode(map[string]string{"mailbox_id": req.MailboxID, "signing_key_sha256": hex.EncodeToString(sum[:])})
+}
+
+// WithoutDecryptionRoute makes the fake an edge from before POST
+// /coordinator/decryption-key, or not.
+func (c *Coordination) WithoutDecryptionRoute(without bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.noDecryptionRoute = without
 }
 
 // rotateDecryption is POST /coordinator/decryption-key: a new X25519 key,

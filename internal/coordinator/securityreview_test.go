@@ -237,3 +237,33 @@ func TestARotationReplacesTheDecryptionKeyToo(t *testing.T) {
 		}
 	}
 }
+
+// M1: an edge without the decryption-key route fails the rotation; the
+// signing key isn't rotated again every pass while it does.
+func TestARotationAgainstAnOlderEdgeRotatesTheSigningKeyOnce(t *testing.T) {
+	r := genRig(t, MailConfig{})
+	w, mb := r.worker()
+	r.edge.deliver(mb, email{from: "dana@example.com", to: testWorkerAddr})
+	r.pass()
+	r.edge.coord.WithoutDecryptionRoute(true)
+	r.c.mu.Lock()
+	r.c.state.Teams["t_rot"] = &Team{ID: "t_rot", Rotate: []string{w.ID}}
+	r.c.mu.Unlock()
+	r.pass()
+	once := r.edge.coord.Mailbox(mb.MailboxID).SigningKey
+	if once == nil {
+		t.Fatal("the signing key wasn't rotated")
+	}
+	r.pass()
+	if !r.edge.coord.Mailbox(mb.MailboxID).SigningKey.Equal(once) {
+		t.Fatal("the signing key was rotated again")
+	}
+	r.edge.coord.WithoutDecryptionRoute(false)
+	r.pass()
+	r.c.mu.Lock()
+	left := len(r.c.state.Teams["t_rot"].Rotate)
+	r.c.mu.Unlock()
+	if left != 0 || !r.edge.coord.Mailbox(mb.MailboxID).SigningKey.Equal(once) || r.edge.coord.Mailbox(mb.MailboxID).DecryptionKey == nil {
+		t.Fatalf("after the edge took it: %d left", left)
+	}
+}
