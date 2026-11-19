@@ -24,6 +24,11 @@ type Keys struct {
 	MailboxID  []byte
 	Signing    ed25519.PrivateKey
 	Decryption *ecdh.PrivateKey
+	// ReplySeed, when set, is the seed reply tokens are keyed from instead
+	// of Signing's: the address's first signing seed, kept when the signing
+	// key rotates (POST /coordinator/signing-key), so threads' tokens still
+	// match.
+	ReplySeed []byte
 }
 
 // keysCredential is the body of the mail_keys credential. Each entry is a

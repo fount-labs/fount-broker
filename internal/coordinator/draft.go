@@ -55,10 +55,12 @@ type draftEntry struct {
 	// approver's edit if they made one.
 	AgentText string `json:"agentText"`
 	Text      string `json:"text"`
-	// Files are the files the email carries, by path in the worker root.
-	Files      []string `json:"files,omitempty"`
-	InReplyTo  string   `json:"inReplyTo,omitempty"`
-	References []string `json:"references,omitempty"`
+	// Files are the files the email carries, by path in the worker root,
+	// and FileHashes each one's SHA-256, hex, which a signed approval names.
+	Files      []string          `json:"files,omitempty"`
+	FileHashes map[string]string `json:"fileHashes,omitempty"`
+	InReplyTo  string            `json:"inReplyTo,omitempty"`
+	References []string          `json:"references,omitempty"`
 	// SendID is the journal record of the current bytes; MessageID and Hash
 	// are its. Binding is the hash an email approval is bound to: the
 	// recipients, the files and the bytes.
@@ -71,6 +73,8 @@ type draftEntry struct {
 	Discarded *decidedBy `json:"discarded,omitempty"`
 	// Ask is the approval email the owner was sent for this draft_rev.
 	Ask *approvalAsk `json:"ask,omitempty"`
+	// Claim is who said they're reviewing it, until when (claim.go).
+	Claim *draftClaim `json:"claim,omitempty"`
 	// Send mirrors the journal record once it is sending.
 	Send *sendView `json:"send,omitempty"`
 }
@@ -311,6 +315,13 @@ func (c *Coordinator) buildDraft(t *Tree, th *threadRecord, mb *Mailbox, rs *rep
 		}
 		files = append(files, outFile{Name: path.Base(p), Data: data})
 		names = append(names, path.Base(p))
+	}
+	d.FileHashes = nil
+	if len(files) > 0 {
+		d.FileHashes = map[string]string{}
+		for i, p := range d.Files {
+			d.FileHashes[p] = sha256Hex(files[i].Data)
+		}
 	}
 	parts := []string{sendKindReply, draftID, fmt.Sprint(d.DraftRev), fmt.Sprint(attempt)}
 	r := &sendRecord{

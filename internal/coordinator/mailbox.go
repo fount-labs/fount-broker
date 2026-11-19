@@ -51,6 +51,12 @@ type Mailbox struct {
 	// SigningKey is the address's Ed25519 seed; DecryptionKey its X25519 key.
 	SigningKey    []byte `json:"signingKey"`
 	DecryptionKey []byte `json:"decryptionKey"`
+	// NextSigningKey is a rotation's new seed, kept before the edge is
+	// asked so a lost answer is retried with the same key (rotate.go).
+	// ReplySeed is the first signing seed, which reply tokens stay keyed
+	// from once the signing key has rotated.
+	NextSigningKey []byte `json:"nextSigningKey,omitempty"`
+	ReplySeed      []byte `json:"replySeed,omitempty"`
 }
 
 func (m Mailbox) keys() (*mail.Keys, error) {
@@ -65,7 +71,7 @@ func (m Mailbox) keys() (*mail.Keys, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: decryptionKey must be a 32-byte X25519 key", ErrInvalid)
 	}
-	return &mail.Keys{MailboxID: id, Signing: ed25519.NewKeyFromSeed(m.SigningKey), Decryption: dec}, nil
+	return &mail.Keys{MailboxID: id, Signing: ed25519.NewKeyFromSeed(m.SigningKey), Decryption: dec, ReplySeed: m.ReplySeed}, nil
 }
 
 func (m Mailbox) check() error {

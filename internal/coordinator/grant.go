@@ -60,6 +60,9 @@ type Caller struct {
 	Account   string
 	Device    string
 	DeviceKey ed25519.PublicKey
+	// Email is the account's verified email, from the Cloud credential's
+	// eml claim, or empty. An invite is accepted only for it.
+	Email string
 }
 
 // Device is one device that may act for a worker: its Ed25519 key, its X25519

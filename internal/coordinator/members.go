@@ -38,6 +38,18 @@ var opRoles = map[string]Role{
 	"POST /teams":                          roleCaller,
 	"GET /teams/{team}/log":                RoleReviewer,
 	"POST /teams/{team}/log":               RoleAdmin,
+	// Authorized by their proof: an invite's secret and verified email, or
+	// the device's own request to join as its account's member.
+	"GET /teams": roleCaller,
+	"POST /teams/{team}/invites/{invite}/open":   roleCaller,
+	"POST /teams/{team}/invites/{invite}/accept": roleCaller,
+	"POST /teams/{team}/invites/{invite}/send":   RoleAdmin,
+	"POST /teams/{team}/joins":                   roleCaller,
+	"GET /teams/{team}/joins":                    RoleReviewer,
+	"GET /teams/{team}/joins/{join}":             roleCaller,
+	"POST /teams/{team}/joins/{join}/approve":    RoleReviewer,
+	"POST /teams/{team}/joins/{join}/deny":       RoleReviewer,
+	"POST /teams/{team}/joins/{join}/accept":     roleCaller,
 
 	// A thread's work: any member who reaches the worker.
 	"startThread":     RoleReviewer,
@@ -55,6 +67,8 @@ var opRoles = map[string]Role{
 	"forwardQuestion": RoleReviewer,
 	"runHeldMail":     RoleReviewer,
 	"markRead":        RoleReviewer,
+	"claimDraft":      RoleReviewer,
+	"releaseClaim":    RoleReviewer,
 
 	// What leaves by email and to whom: the worker's settings.
 	"addRequester":       RoleAdmin,
@@ -129,6 +143,7 @@ type Member struct {
 type teamState struct {
 	seq      uint64
 	head     string
+	name     string
 	members  []*Member
 	byID     map[string]*Member
 	byDevice map[string]*Member

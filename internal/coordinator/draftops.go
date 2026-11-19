@@ -43,6 +43,7 @@ const (
 	CodeWorkerPaused        OpCode = "WORKER_PAUSED"
 	CodeAttachmentsTooLarge OpCode = "ATTACHMENTS_TOO_LARGE"
 	CodeAttachmentMissing   OpCode = "ATTACHMENT_MISSING"
+	CodeApprovalUnsigned    OpCode = "APPROVAL_UNSIGNED"
 )
 
 func init() {
@@ -63,6 +64,7 @@ func init() {
 		CodeWorkerPaused:        "This worker is paused. Resume it with your passkey first.",
 		CodeAttachmentsTooLarge: "The attached files are too large for one email. Untick some and send again.",
 		CodeAttachmentMissing:   "An attached file is gone from the workspace. Untick it and send again.",
+		CodeApprovalUnsigned:    "Fount couldn't check this device's signature on the approval. Nothing was sent. Open the draft again and approve it.",
 	})
 }
 
@@ -77,7 +79,10 @@ type approveArgs struct {
 	Changes     *[]string `json:"changes,omitempty"`
 	Attachments *[]string `json:"attachments,omitempty"`
 	Hash        string    `json:"hash,omitempty"`
-	base        uint64
+	// Approval is the approving device's signed approval (approvalsig.go),
+	// which a device's approval must carry.
+	Approval string `json:"approval,omitempty"`
+	base     uint64
 }
 
 type discardArgs struct {
@@ -140,7 +145,7 @@ func parseDraftThreadOp(env opEnvelope) (any, bool, error) {
 		}
 		return a, true, nil
 	}
-	return nil, false, nil
+	return parseClaimOp(env)
 }
 
 // pendingDraftEntry is the draft id names, if it is still pending.
@@ -233,6 +238,31 @@ func (a approveArgs) applyDraft(c *Coordinator, t *Tree, th *threadRecord, devic
 			}
 		}
 	}
+	var member *Member
+	if device != anyDevice {
+		if a.Approval == "" {
+			return nil, effects{}, refusal{code: CodeApprovalUnsigned}
+		}
+		key, err := c.deviceKey(th.WorkerID, device)
+		if err != nil {
+			return nil, effects{}, err
+		}
+		hashes := d.FileHashes
+		if hashes == nil {
+			if hashes, err = fileHashes(t, files); err != nil {
+				return nil, effects{}, err
+			}
+		}
+		approved := []ApprovedFile{}
+		for _, p := range files {
+			approved = append(approved, ApprovedFile{Path: p, SHA256: hashes[p]})
+		}
+		want := approvedAs{worker: th.WorkerID, thread: th.ID, draft: e.ID, draftRev: a.DraftRev, to: d.To, subject: d.Subject, text: sha256Hex([]byte(text)), files: approved}
+		if err := verifyApproval(a.Approval, key, device, c.cfg.Audience, want, now); err != nil {
+			return nil, effects{}, refusal{code: CodeApprovalUnsigned, detail: map[string]string{"reason": err.Error()}}
+		}
+		member = c.memberOf(th.WorkerID, device)
+	}
 	if text != d.Text || !slices.Equal(files, d.Files) {
 		// The approver's edit is the next draft_rev, with its own bytes.
 		rs, err := loadReplySettings(t)
@@ -248,7 +278,10 @@ func (a approveArgs) applyDraft(c *Coordinator, t *Tree, th *threadRecord, devic
 			return nil, effects{}, err
 		}
 	}
-	ap := approval{By: c.approverName(th.WorkerID, device), Device: device, Via: viaApp}
+	ap := approval{By: c.approverName(th.WorkerID, device), Device: device, Via: viaApp, Token: a.Approval}
+	if member != nil {
+		ap.Member = member.ID
+	}
 	if err := c.approve(t, th, e, ap, rev, now); err != nil {
 		return nil, effects{}, err
 	}

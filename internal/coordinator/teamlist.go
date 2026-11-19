@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // A team's membership list (docs/membership-list.md §2.2) is signed Ed25519 by
@@ -46,6 +48,7 @@ const (
 	MaxTeamWorkers   = 64
 
 	maxEmail        = 254
+	maxTeamName     = 120
 	maxPasskeyCred  = 1023
 	p256PublicSize  = 65
 	inviteCommitLen = sha256.Size
@@ -70,6 +73,8 @@ type TeamList struct {
 	// Aud is the coordinator it is for (Config.Audience).
 	Aud  string `json:"aud"`
 	Team string `json:"team"`
+	// Name is the team's name as its admins set it, shown on its workers.
+	Name string `json:"name,omitempty"`
 	// Seq is the log entry it is, and Prev the hash of the one before, empty
 	// for the first.
 	Seq  uint64 `json:"seq"`
@@ -325,6 +330,9 @@ func (l TeamList) checkShape(aud string) error {
 	if err := checkID("team", l.Team); err != nil {
 		return err
 	}
+	if !teamNameOK(l.Name) {
+		return fmt.Errorf("its name is over %d characters, has controls or isn't trimmed", maxTeamName)
+	}
 	switch {
 	case l.Seq == 0:
 		return errors.New("its seq is 0")
@@ -506,6 +514,13 @@ func isEmail(s string) bool {
 	local, domain, ok := strings.Cut(s, "@")
 	return ok && local != "" && domain != "" && !strings.Contains(domain, "@") && len(s) <= maxEmail &&
 		s == strings.ToLower(s) && !strings.ContainsFunc(s, func(r rune) bool { return r <= ' ' || r == 0x7f })
+}
+
+// teamNameOK says a team's name is at most maxTeamName characters, with no
+// controls and no spaces at either end.
+func teamNameOK(name string) bool {
+	return utf8.ValidString(name) && utf8.RuneCountInString(name) <= maxTeamName && strings.TrimSpace(name) == name &&
+		!strings.ContainsFunc(name, func(r rune) bool { return unicode.IsControl(r) })
 }
 
 // sameDevice says whether two admissions of one device are the same keys.

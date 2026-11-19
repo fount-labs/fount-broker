@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"go/ast"
@@ -819,7 +820,10 @@ func TestTheLogIsReadByMembersFromAPoint(t *testing.T) {
 // invited account, for the next entry, binds the member's account.
 func TestAnInviteRecordAdmitsOnceAndBindsTheAccount(t *testing.T) {
 	f := newTeamFixture(t)
-	invite := &ListInvite{ID: "i_ann", Commit: b64.EncodeToString(make([]byte, 32)), Exp: time.Now().Add(time.Hour).Unix()}
+	secret := make([]byte, InviteSecretSize)
+	rand.Read(secret)
+	commit, _ := InviteCommit("acme", "m_zed", "i_ann", secret)
+	invite := &ListInvite{ID: "i_ann", Commit: commit, Exp: time.Now().Add(time.Hour).Unix()}
 	f.tt.members["m_zed"] = ListMember{ID: "m_zed", Email: "ann@firm.com", Role: RoleReviewer, Workers: []string{allWorkers}, Invite: invite}
 	if err := f.tt.push(f.owner, "acme", nil); err != nil {
 		t.Fatal(err)
@@ -827,9 +831,15 @@ func TestAnInviteRecordAdmitsOnceAndBindsTheAccount(t *testing.T) {
 	ann, eve := newTestDevice(t), newTestDevice(t)
 	ok := func(*teamState, *Member) error { return nil }
 	seq, _ := f.tt.head()
-	rec := func(d testDevice, account string, since uint64) TeamRecord {
-		return TeamRecord{Kind: RecordInvite, Member: "m_zed", Account: account, Device: d.include(t, "acme", account, since)}
+	proofOf := func(secret []byte, email string) json.RawMessage {
+		p, _ := json.Marshal(InviteProof{Invite: "i_ann", Secret: b64.EncodeToString(secret), Email: email})
+		return p
 	}
+	good := proofOf(secret, "ann@firm.com")
+	rec := func(d testDevice, account string, since uint64) TeamRecord {
+		return TeamRecord{Kind: RecordInvite, Member: "m_zed", Account: account, Device: d.include(t, "acme", account, since), Proof: good}
+	}
+	withProof := func(r TeamRecord, p json.RawMessage) TeamRecord { r.Proof = p; return r }
 	for _, tc := range []struct {
 		name   string
 		caller Caller
@@ -838,6 +848,9 @@ func TestAnInviteRecordAdmitsOnceAndBindsTheAccount(t *testing.T) {
 	}{
 		{"no proof checked", ann.caller("ann"), rec(ann, "ann", seq+1), nil},
 		{"a proof that fails", ann.caller("ann"), rec(ann, "ann", seq+1), func(*teamState, *Member) error { return ErrListRefused }},
+		{"no proof in the record", ann.caller("ann"), withProof(rec(ann, "ann", seq+1), nil), ok},
+		{"another secret in the record", ann.caller("ann"), withProof(rec(ann, "ann", seq+1), proofOf(make([]byte, 32), "ann@firm.com")), ok},
+		{"another email in the record", ann.caller("ann"), withProof(rec(ann, "ann", seq+1), proofOf(secret, "eve@firm.com")), ok},
 		{"another device's inclusion", eve.caller("ann"), rec(ann, "ann", seq+1), ok},
 		{"an inclusion for another entry", ann.caller("ann"), rec(ann, "ann", seq), ok},
 		{"for another account than the caller", ann.caller("eve"), rec(ann, "ann", seq+1), ok},
@@ -847,14 +860,14 @@ func TestAnInviteRecordAdmitsOnceAndBindsTheAccount(t *testing.T) {
 		{"no kind", ann.caller("ann"), TeamRecord{Kind: "admin", Member: "m_zed", Account: "ann"}, ok},
 		{"no member", ann.caller("ann"), TeamRecord{Kind: RecordInvite, Member: "m_nobody", Account: "ann", Device: ann.include(t, "acme", "ann", seq+1)}, ok},
 	} {
-		if err := f.c.appendRecord(tc.caller, "acme", tc.rec, tc.proof); err == nil {
+		if _, err := f.c.appendRecord(tc.caller, "acme", tc.rec, tc.proof); err == nil {
 			t.Errorf("%s: appended", tc.name)
 		}
 	}
 	if s, _ := f.tt.head(); s != seq {
 		t.Fatalf("the log moved to %d", s)
 	}
-	if err := f.c.appendRecord(ann.caller("ann"), "acme", rec(ann, "ann", seq+1), ok); err != nil {
+	if _, err := f.c.appendRecord(ann.caller("ann"), "acme", rec(ann, "ann", seq+1), ok); err != nil {
 		t.Fatal(err)
 	}
 	if _, role, err := f.c.access(ann.caller("ann"), f.w1.ID, RoleReviewer); err != nil || role != RoleReviewer {
@@ -864,7 +877,7 @@ func TestAnInviteRecordAdmitsOnceAndBindsTheAccount(t *testing.T) {
 		t.Error("ann has no wrap")
 	}
 	// The invite is taken: not again, by anyone.
-	if err := f.c.appendRecord(eve.caller("ann"), "acme", rec(eve, "ann", seq+2), ok); err == nil {
+	if _, err := f.c.appendRecord(eve.caller("ann"), "acme", rec(eve, "ann", seq+2), ok); err == nil {
 		t.Error("the invite taken twice")
 	}
 	// The next list keeps ann on the inclusion her record admitted her on,

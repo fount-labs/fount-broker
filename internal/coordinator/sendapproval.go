@@ -246,6 +246,9 @@ func (c *Coordinator) approve(t *Tree, th *threadRecord, e *threadEntry, a appro
 	if err := c.startSending(t, th.WorkerID, r, now); err != nil {
 		return err
 	}
+	if err := writeSignoff(t, th, e, r, a); err != nil {
+		return err
+	}
 	d.State, d.Approval, d.Send, e.Rev = draftSent, &a, r.view(), rev
 	return nil
 }

@@ -3,6 +3,7 @@ package mail
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -461,6 +462,55 @@ func (s *Service) Changes(ctx context.Context, cursor string, limit int) (Change
 		}
 	}
 	return page, nil
+}
+
+// SigningKeyLabel prefixes what a new address signing key signs to prove it
+// is held (edge internal/deviceapi SigningKeyProof).
+const SigningKeyLabel = "fount-mail-edge/v1/signing-key\x00"
+
+// RotateSigningKey replaces an enrolled worker's address signing key at the
+// edge with next's (decision 25, POST /coordinator/signing-key): next signs
+// the proof, the current generation's key the call. From the edge's next
+// request on, the old key gets 401. The edge answers 409 for the current key
+// again, which a retry after a lost answer meets: AlreadyCurrent reports it.
+func (s *Service) RotateSigningKey(ctx context.Context, mailbox string, next ed25519.PrivateKey) error {
+	if !validHex(mailbox, 32) || len(next) != ed25519.PrivateKeySize {
+		return fmt.Errorf("%w: a mailbox is 64 lowercase hex characters and a key Ed25519", ErrRequest)
+	}
+	id, _ := hex.DecodeString(mailbox)
+	pub := next.Public().(ed25519.PublicKey)
+	proof := ed25519.Sign(next, append(append([]byte(SigningKeyLabel), id...), pub...))
+	body, err := json.Marshal(map[string]string{
+		"mailbox_id":  mailbox,
+		"signing_key": base64.StdEncoding.EncodeToString(pub),
+		"proof":       base64.StdEncoding.EncodeToString(proof),
+	})
+	if err != nil {
+		return err
+	}
+	data, err := s.coordinatorCall(ctx, "/coordinator/signing-key", body, maxJSON)
+	if err != nil {
+		return err
+	}
+	var out struct {
+		MailboxID string `json:"mailbox_id"`
+		KeySHA256 string `json:"signing_key_sha256"`
+	}
+	if err := strictJSON(data, &out); err != nil {
+		return err
+	}
+	sum := sha256.Sum256(pub)
+	if out.MailboxID != mailbox || out.KeySHA256 != hex.EncodeToString(sum[:]) {
+		return fmt.Errorf("%w: POST /coordinator/signing-key answered %s", ErrEdge, out.MailboxID)
+	}
+	return nil
+}
+
+// AlreadyCurrent says err is the edge refusing a rotation to the key it
+// already has: a retry whose first answer was lost.
+func AlreadyCurrent(err error) bool {
+	var e *EdgeError
+	return errors.As(err, &e) && e.Status == http.StatusConflict && e.Code == "" && strings.Contains(e.Message, "already the mailbox's signing key")
 }
 
 // LapseState is POST /coordinator/lapse's answer.

@@ -21,6 +21,9 @@ var accountNoticeText = map[string][2]string{
 	"hold_ending": {"%s's held mail will start bouncing", "%s's workers are paused, and their held mail starts bouncing%s. Renew in Fount to keep it."},
 	"bouncing":    {"%s's mail is bouncing", "%s's workers are paused, and mail sent to them now bounces. Renew in Fount to resume them."},
 	"resumed":     {"%s is running again", "%s's payment went through, so its workers are running again."},
+	// An admission (teaminvite.go): someone took an invite, or a member
+	// added a device.
+	noticeMemberJoined: {"A new device joined %s", "Someone joined %s in Fount, by an invite or as a member's new device. If you didn't expect it, an admin can remove them in Fount, under Members.%s"},
 }
 
 // ownerNotices is the mail loop's OwnerNotices (lapse.go) on NotifyOwner.

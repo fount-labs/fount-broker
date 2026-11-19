@@ -95,6 +95,9 @@ type Peer struct {
 	// DeviceKey is the device's Ed25519 public key, whose id is Device. The
 	// coordinator only has it.
 	DeviceKey ed25519.PublicKey
+	// Email is the account's verified email from a Cloud credential
+	// (DeviceClaims.VerifiedEmail), or empty. Only invites read it.
+	Email string
 	// Expires is when the credential or the session grant runs out; the
 	// channel closes then.
 	Expires time.Time
@@ -176,5 +179,5 @@ func verifyHello(h hello, exporter []byte, keys []*rsa.PublicKey, cloudOnly bool
 	if !ed25519.Verify(sessionKey, bindingMessage(exporter), h.Binding) {
 		return Peer{}, errors.New("the binding isn't the session key's, for this session")
 	}
-	return Peer{Account: cred.Acct, Device: cred.Dev, DeviceKey: device, Expires: time.Unix(min(cred.Exp, *cred.Pe, grant.Exp), 0)}, nil
+	return Peer{Account: cred.Acct, Device: cred.Dev, DeviceKey: device, Email: cred.VerifiedEmail(), Expires: time.Unix(min(cred.Exp, *cred.Pe, grant.Exp), 0)}, nil
 }

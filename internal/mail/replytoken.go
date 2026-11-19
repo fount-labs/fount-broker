@@ -1,6 +1,7 @@
 package mail
 
 import (
+	"crypto/ed25519"
 	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -46,7 +47,11 @@ const (
 )
 
 func replyKey(k *Keys) ([]byte, error) {
-	return hkdf.Key(sha256.New, k.Signing.Seed(), nil, replyTokenInfo, 32)
+	seed := k.Signing.Seed()
+	if len(k.ReplySeed) == ed25519.SeedSize {
+		seed = k.ReplySeed
+	}
+	return hkdf.Key(sha256.New, seed, nil, replyTokenInfo, 32)
 }
 
 func replyMAC(key, handle []byte) []byte {

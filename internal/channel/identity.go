@@ -50,6 +50,25 @@ type DeviceClaims struct {
 	Pe     *int64  `json:"pe"`
 	Iat    int64   `json:"iat"`
 	Exp    int64   `json:"exp"`
+	// Eml is the account's email address as the identity provider verified
+	// it, lower-cased; absent when it isn't verified. Only a Cloud
+	// credential's counts (VerifiedEmail): fount-infra signs it after
+	// checking live, and an invite is accepted only for it.
+	Eml string `json:"eml,omitempty"`
+}
+
+// VerifiedEmail is the credential's verified email, or empty: a Cloud
+// credential's eml, when it is a lower-case address. A device credential's
+// is never read, since it lasts a week and the address may have changed.
+func (c DeviceClaims) VerifiedEmail() string {
+	if c.Typ != CloudCredentialType || c.Eml == "" || len(c.Eml) > 254 || c.Eml != strings.ToLower(c.Eml) {
+		return ""
+	}
+	local, domain, ok := strings.Cut(c.Eml, "@")
+	if !ok || local == "" || domain == "" || strings.Contains(domain, "@") || strings.ContainsFunc(c.Eml, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+		return ""
+	}
+	return c.Eml
 }
 
 // cloudTiers are the plans that include Cloud: every paid one (pricing.md).

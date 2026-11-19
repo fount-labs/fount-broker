@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 // Handler is the coordinator's dev API. It has no client authentication, so it
@@ -49,6 +50,9 @@ func (c *Coordinator) Handler() http.Handler {
 //	GET  /v1/workers                      the workers the caller reaches
 //	GET  /v1/teams/{team}/log?since=N     the team's membership log after entry N, for any member
 //	POST /v1/teams/{team}/log             {"v":3,"list","deks"}: a list an admin device signed (teamlog.go)
+//	GET  /v1/teams                        the teams the caller's account is a member of
+//	POST /v1/teams/{team}/invites/{invite}/open|accept|send  an invite (teaminvite.go)
+//	POST /v1/teams/{team}/joins, GET …/joins[/{join}], POST …/{join}/approve|deny|accept  a second device (teamjoin.go)
 //	POST /v1/workers/{id}/grant, /revoke  the retired v2 grants: 410
 //
 // A caller without an account or device panics: it would be no one's API,
@@ -76,6 +80,16 @@ func (a *api) accountRoutes(mux router) {
 	mux.HandleFunc("POST /v1/teams", a.mintTeam)
 	mux.HandleFunc("GET /v1/teams/{team}/log", a.teamLog)
 	mux.HandleFunc("POST /v1/teams/{team}/log", a.appendTeamList)
+	mux.HandleFunc("GET /v1/teams", a.myTeams)
+	mux.HandleFunc("POST /v1/teams/{team}/invites/{invite}/open", a.openInvite)
+	mux.HandleFunc("POST /v1/teams/{team}/invites/{invite}/accept", a.acceptInvite)
+	mux.HandleFunc("POST /v1/teams/{team}/invites/{invite}/send", a.sendInvite)
+	mux.HandleFunc("POST /v1/teams/{team}/joins", a.startJoin)
+	mux.HandleFunc("GET /v1/teams/{team}/joins", a.pendingJoins)
+	mux.HandleFunc("GET /v1/teams/{team}/joins/{join}", a.joinStatus)
+	mux.HandleFunc("POST /v1/teams/{team}/joins/{join}/approve", a.approveJoin)
+	mux.HandleFunc("POST /v1/teams/{team}/joins/{join}/deny", a.denyJoin)
+	mux.HandleFunc("POST /v1/teams/{team}/joins/{join}/accept", a.acceptJoin)
 	a.routes(mux, "/v1")
 }
 
@@ -395,6 +409,7 @@ func (a *api) getThread(rw http.ResponseWriter, r *http.Request) {
 		fail(rw, statusOf(err), err)
 		return
 	}
+	hideExpiredClaims(th, time.Now())
 	if since != nil {
 		reply(rw, http.StatusOK, th.changes(*since))
 		return
