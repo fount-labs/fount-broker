@@ -47,28 +47,28 @@ const (
 
 func init() {
 	maps.Copy(opMessages, map[OpCode]string{
-		CodeDraftChanged:        "This draft changed since you looked. Check the new version.",
+		CodeDraftChanged:        "The agent updated this draft. Check the new version.",
 		CodeNewMailSince:        "A new email arrived on this thread. Read it, then send again.",
 		CodeParticipantsChanged: "Who's on this thread changed. Check the recipients and send again.",
 		CodeAlreadySent:         "This was already sent.",
 		CodeAlreadyDiscarded:    "This draft was already discarded.",
 		CodeModeAbove:           "A thread can't be on a higher reply mode than the people on it.",
-		CodeMaybeSent:           "Fount Mail lost track of this email, so it may have been sent. Check with the recipients before sending it again.",
+		CodeMaybeSent:           "Fount lost Fount Mail's answer, so this may have been sent. Check with the recipients before sending again.",
 		CodeSending:             "This email is still being sent.",
-		CodeSendFailed:          "Fount Mail didn't send this email to everyone.",
+		CodeSendFailed:          "Fount Mail didn't send this email.",
 		CodeSendLimit:           "This worker has reached its sending limit for today. It can send again tomorrow.",
 		CodeBadMessage:          "Fount couldn't build this email. Nothing was sent.",
 		CodeMailLapsed:          "This worker's Fount Mail has lapsed. Renew it, then send again.",
 		CodeSendingOff:          "Fount Mail isn't sending email yet. Nothing was sent.",
 		CodeWorkerPaused:        "This worker is paused. Resume it with your passkey first.",
 		CodeAttachmentsTooLarge: "The attached files are too large for one email. Untick some and send again.",
-		CodeAttachmentMissing:   "An attached file is gone. Untick it and send again.",
+		CodeAttachmentMissing:   "An attached file is gone from the workspace. Untick it and send again.",
 	})
 }
 
 // maybeDuplicate is what a maybe_sent email's sendAgain says until the user
 // accepts it (Desktop's MAYBE_DUPLICATE).
-const maybeDuplicate = "This email may already have arrived. Sending it again, under a new Message-ID, could deliver it twice, so check with the recipients first."
+const maybeDuplicate = "This email may already have arrived. Sending it again could deliver it twice, so check with the recipients first."
 
 type approveArgs struct {
 	DraftID     string    `json:"draftId"`
