@@ -169,6 +169,9 @@ type teamState struct {
 	// higher count, so a copied authenticator shows. A passkey that keeps no
 	// count, as synced ones, carries 0 throughout.
 	passkeyCounts map[string]uint32
+	// passkeyJoined are the devices a passkey-join record admitted since the
+	// last list (teamsigner.go).
+	passkeyJoined map[string]bool
 }
 
 // device is a device the state admits, and its member.

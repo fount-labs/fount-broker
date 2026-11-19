@@ -100,7 +100,7 @@ func (c *Coordinator) teamState(id string) (*teamState, error) {
 // last list and the records after it. The log holds only entries that were
 // checked when they were appended, so a failure here is a damaged volume.
 func reduceTeam(team, aud string, log []TeamEntry) (*teamState, error) {
-	st := &teamState{usedInvites: map[string]bool{}, passkeyCounts: map[string]uint32{}, byID: map[string]*Member{}, byDevice: map[string]*Member{}, workers: map[string]string{}}
+	st := &teamState{usedInvites: map[string]bool{}, passkeyCounts: map[string]uint32{}, passkeyJoined: map[string]bool{}, byID: map[string]*Member{}, byDevice: map[string]*Member{}, workers: map[string]string{}}
 	head := ""
 	for i, e := range log {
 		if e.Seq != uint64(i+1) {
@@ -151,6 +151,7 @@ func reduceTeam(team, aud string, log []TeamEntry) (*teamState, error) {
 // applyList makes a list the state; what it leaves out is gone.
 func (s *teamState) applyList(l TeamList, aud string) error {
 	s.members, s.byID, s.byDevice, s.workers = nil, map[string]*Member{}, map[string]*Member{}, map[string]string{}
+	s.passkeyJoined = map[string]bool{}
 	s.name, s.lastList = l.Name, l.Seq
 	for _, w := range l.Workers {
 		s.workers[w.ID] = w.DEK
@@ -212,6 +213,9 @@ func (s *teamState) applyRecord(r TeamRecord, team, aud string) error {
 	m.Devices = append(m.Devices, d)
 	slices.SortFunc(m.Devices, func(a, b TeamDevice) int { return cmpString(a.ID, b.ID) })
 	s.byDevice[d.ID] = m
+	if r.Kind == RecordPasskeyJoin {
+		s.passkeyJoined[d.ID] = true
+	}
 	return nil
 }
 
