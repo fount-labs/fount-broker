@@ -9,10 +9,11 @@ import (
 )
 
 // A received email on a thread is one entry, kind "mail": the edge's id for
-// it, who the edge's check says sent it, and what was decided. Its text isn't
-// here: the coordinator parses no email, and the intake runner (C) makes the
-// message's text for the thread. Mail that may not run by itself waits on its
-// thread, held, for runHeldMail or addRequester (mailops.go).
+// it, who the edge's check says sent it, what was decided, and its folder in
+// the thread, where intake (C) put message.eml, message.md and its
+// attachments. The coordinator parses no email. Mail that may not run by
+// itself waits on its thread, held, for runHeldMail or addRequester
+// (mailops.go).
 type mailEntry struct {
 	EdgeID     string `json:"edgeId"`
 	ReceivedAt int64  `json:"receivedAt"`
@@ -28,8 +29,15 @@ type mailEntry struct {
 	// Held is "held" while it waits for someone, then "run" or "added".
 	// Empty for mail that ran by itself or needs nothing.
 	Held string `json:"held,omitempty"`
-	// Intake is "pending" from when it was run until its intake is queued,
-	// then "queued" (intake.go). JobID is that job's.
+	// Folder is the email's folder in the thread, a MessageFolder.
+	Folder string `json:"folder"`
+	// Instruction is the turn's instruction intake made, kept for running
+	// held mail later. Unread says intake couldn't read the email, and the
+	// folder has only message.eml.
+	Instruction string `json:"instruction,omitempty"`
+	Unread      bool   `json:"unread,omitempty"`
+	// Intake is "pending" from when it was run until its job is queued, then
+	// "queued" (mailintake.go). JobID is that job's.
 	Intake string `json:"intake,omitempty"`
 	JobID  string `json:"jobId,omitempty"`
 }

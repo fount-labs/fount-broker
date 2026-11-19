@@ -45,6 +45,8 @@ type Config struct {
 	Key     WrappingKey
 	Pool    *Pool
 	Runner  Runner
+	// Intake runs intake on received mail (intake.go). Nil refuses it.
+	Intake IntakeRunner
 	// Credentials are a job's credentials, by the broker's names: in the pool,
 	// minted for that one job (package jobcred). Nil gives jobs none.
 	Credentials func(account, workerID, jobID string) (map[string]string, error)
@@ -107,6 +109,9 @@ func New(cfg Config) (*Coordinator, error) {
 	}
 	if len(cfg.JobConfig) > 0 && (cfg.JobConfig[0] != '{' || len(cfg.JobConfig) > maxConfigBytes || !json.Valid(cfg.JobConfig)) {
 		return nil, fmt.Errorf("coordinator config: JobConfig must be a JSON object of at most %d bytes", maxConfigBytes)
+	}
+	if cfg.Mail.Service != nil && cfg.Intake == nil {
+		return nil, errors.New("coordinator config: the mail loop needs an intake runner")
 	}
 	c := &Coordinator{cfg: cfg, state: state, busy: map[string]bool{}, accountJobs: map[string]int{}, locks: map[string]*sync.Mutex{}, cancels: map[string]context.CancelFunc{}, wake: make(chan struct{}, 1), mail: newMailLoop(cfg.Mail)}
 	if err := c.state.Save(cfg.StateDir); err != nil {

@@ -21,9 +21,9 @@ import (
 //	record/mail/mailbox.json   the address and its keys
 //	record/mail/settings.json  requesters, automatic runs, the acknowledgement, a pairing
 //	record/mail/ledger.json    what was acted on (mailledger.go)
-//	record/mail/pending.json   what the coordinator still owes a message once acted on (intake.go)
+//	record/mail/pending.json   what the coordinator still owes a message once acted on (mailintake.go)
 //	record/mail/handles.json   each reply-token handle's thread
-//	mail/<edge id>.eml         each message kept, opaque
+//	root/threads/<thread>/<YYYY-MM-DD-edge id>/   each message's folder, as intake wrote it
 //
 // The volume holds only the mailbox id (Worker.Mailbox), so the poller knows
 // which workers have mail without opening their trees.
@@ -34,12 +34,7 @@ const (
 	mailLedgerPath   = prefixMailRecord + "ledger.json"
 	mailPendingPath  = prefixMailRecord + "pending.json"
 	mailHandlesPath  = prefixMailRecord + "handles.json"
-	// prefixMail holds each message as received. No job is given it: a
-	// message reaches a job's workspace only when it is run (intake.go).
-	prefixMail = "mail/"
 )
-
-func storedMailPath(edgeID string) string { return prefixMail + edgeID + ".eml" }
 
 // ErrNoMailbox is a worker with no address yet.
 var ErrNoMailbox = errors.New("the worker has no mailbox")

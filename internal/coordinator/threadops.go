@@ -344,7 +344,7 @@ type effects struct {
 	jobID  string
 	spec   JobSpec
 	// mail is set when the operation left its worker's mail owing something
-	// (intake.go), for the mail loop to do now.
+	// (mailintake.go), for the mail loop to do now.
 	mail bool
 }
 

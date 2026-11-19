@@ -222,6 +222,44 @@ func (r *mailRunner) Run(_ context.Context, _, _ string, job JobDirs) (RunResult
 	return RunResult{}, nil
 }
 
+// fakeIntake stands in for fount-runner --mode intake: it writes a jobspec
+// whose instruction is fixed, as intake makes from the worker's instructions,
+// unless told to fail or to find the email automatic.
+type fakeIntake struct {
+	mu        sync.Mutex
+	down      bool // an error: intake didn't run
+	refuse    bool // exit 1: intake couldn't read it
+	automatic string
+	calls     map[string]int // by account
+	runs      int
+}
+
+const intakeInstruction = "Do what the email asks."
+
+func (f *fakeIntake) RunIntake(_ context.Context, account, dir string) (RunResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runs++
+	f.calls[account]++
+	switch {
+	case f.down:
+		return RunResult{}, errors.New("no runner free")
+	case f.refuse:
+		return RunResult{ExitCode: 1}, nil
+	}
+	spec, _ := json.Marshal(IntakeSpec{Version: 1, Instruction: intakeInstruction, Automatic: f.automatic})
+	if err := os.MkdirAll(filepath.Join(dir, "out"), dirMode); err != nil {
+		return RunResult{}, err
+	}
+	return RunResult{}, os.WriteFile(filepath.Join(dir, "out", "jobspec.json"), spec, 0o600)
+}
+
+func (f *fakeIntake) set(fn func(f *fakeIntake)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fn(f)
+}
+
 // crashStore fails the next manifest write once armed: the tree change it
 // belonged to never commits, as if the coordinator stopped before it.
 type crashStore struct {
@@ -260,6 +298,7 @@ type mailRig struct {
 	key    WrappingKey
 	store  *crashStore
 	runner *mailRunner
+	intake *fakeIntake
 	cfg    MailConfig
 	c      *Coordinator
 	cancel context.CancelFunc
@@ -269,7 +308,7 @@ func newMailRig(t *testing.T, cfg MailConfig) *mailRig {
 	t.Helper()
 	key, _ := NewWrappingKey()
 	dir := t.TempDir()
-	r := &mailRig{t: t, edge: newFakeMailEdge(t), dir: dir, key: key, store: &crashStore{Store: DirStore{Root: filepath.Join(dir, "objects")}}, runner: &mailRunner{}, cfg: cfg}
+	r := &mailRig{t: t, edge: newFakeMailEdge(t), dir: dir, key: key, store: &crashStore{Store: DirStore{Root: filepath.Join(dir, "objects")}}, runner: &mailRunner{}, intake: &fakeIntake{calls: map[string]int{}}, cfg: cfg}
 	r.start()
 	return r
 }
@@ -286,7 +325,7 @@ func (r *mailRig) start() {
 	cfg.Service = mail.New(r.edge, NoLocalCheck{})
 	c, err := New(Config{
 		StateDir: filepath.Join(r.dir, "state"), WorkDir: filepath.Join(r.dir, "work"),
-		Store: r.store, Key: r.key, Pool: NewPool(1, 2, nil), Runner: r.runner, Audience: testAudience,
+		Store: r.store, Key: r.key, Pool: NewPool(1, 2, nil), Runner: r.runner, Intake: r.intake, Audience: testAudience,
 		JobConfig: json.RawMessage(`{"model":"m"}`), Mail: cfg,
 	})
 	if err != nil {
@@ -454,10 +493,14 @@ func TestARequestersEmailBecomesATurn(t *testing.T) {
 		t.Fatalf("job: %+v", j)
 	}
 	th = r.waitStatus(w.ID, th.ID, StatusIdle)
-	if !strings.Contains(r.runner.prompts[0], "threads/"+th.ID+"/mail/"+id+"/message.eml") || strings.Contains(r.runner.prompts[0], "Please file") {
-		t.Fatalf("the job's instruction points at the email and doesn't quote it: %q", r.runner.prompts[0])
+	folder := time.Now().UTC().Format("2006-01-02") + "-" + id
+	if m := mailEntries(th)[0]; m.Folder != folder || m.Instruction != intakeInstruction {
+		t.Fatalf("%+v", m)
 	}
-	raw, err := r.c.ReadFile(w.ID, prefixRoot+"threads/"+th.ID+"/mail/"+id+"/message.eml")
+	if p := r.runner.prompts[0]; !strings.HasPrefix(p, intakeInstruction) || !strings.Contains(p, "threads/"+th.ID+"/"+folder) || strings.Contains(p, "Please file") {
+		t.Fatalf("the job's instruction is intake's, and doesn't quote the email: %q", p)
+	}
+	raw, err := r.c.ReadFile(w.ID, prefixRoot+"threads/"+th.ID+"/"+folder+"/message.eml")
 	if err != nil || !strings.Contains(string(raw), "Please file Q3.") {
 		t.Fatalf("the email in the thread's folder: %q %v", raw, err)
 	}
@@ -648,47 +691,42 @@ func TestACrashBeforeTheCommitActsOnTheMessageOnce(t *testing.T) {
 	}
 }
 
-// failingIntake fails until it's told not to.
-type failingIntake struct {
-	mu    sync.Mutex
-	fail  bool
-	calls map[string]int
-	next  Intake
-}
-
-func (f *failingIntake) Queue(ctx context.Context, req IntakeRequest) error {
-	f.mu.Lock()
-	f.calls[req.EdgeID]++
-	fail := f.fail
-	f.mu.Unlock()
-	if fail {
-		return errors.New("the intake runner is down")
-	}
-	return f.next.Queue(ctx, req)
-}
-
-// A crash after the commit and before the turn is queued leaves the intake
-// owed, and a restart queues it once.
+// A crash after the commit and before the job is queued leaves the job owed,
+// and a restart queues it once, without running intake again.
 func TestACrashAfterTheCommitQueuesTheTurnOnce(t *testing.T) {
-	in := &failingIntake{fail: true, calls: map[string]int{}}
-	r := newMailRig(t, MailConfig{Intake: in})
-	in.next = directIntake{r.c}
+	r := newMailRig(t, MailConfig{})
 	w, mb := r.worker()
 	id := r.edge.deliver(mb, email{from: "dana@example.com", to: testWorkerAddr})
-	r.pass()
+	// The pass up to the commit, and no further.
+	msgs, err := r.c.mail.service.List(context.Background(), mb.MailboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.c.prepareMail(w)
+	msg, err := r.c.mail.service.Get(context.Background(), mb.MailboxID, msgs.Messages[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := r.c.intakeMail(context.Background(), w.ID, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.actOnMail(w.ID, msg, in, pauseRunning, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	th := onlyThread(t, r.threads(w.ID))
-	if m := mailEntries(th)[0]; m.Intake != intakePending || th.Status != StatusWorking {
-		t.Fatalf("an owed intake: %s %+v", th.Status, m)
+	if m := mailEntries(th)[0]; m.Intake != intakePending || th.Status != StatusWorking || len(th.Jobs) != 0 {
+		t.Fatalf("an owed job: %s %+v", th.Status, m)
 	}
 	if _, err := r.c.Job(mailJobID(id)); !errors.Is(err, ErrNoJob) {
-		t.Fatalf("a job before intake: %v", err)
+		t.Fatalf("a job before the crash: %v", err)
 	}
 
-	in.mu.Lock()
-	in.fail = false
-	in.mu.Unlock()
 	r.start()
-	in.next = directIntake{r.c}
+	// A read of the thread before the sync doesn't fail the owed job.
+	if th, _ := r.c.thread(anyDevice, w.ID, th.ID); th.Status != StatusWorking {
+		t.Fatalf("%+v", th)
+	}
 	r.pass()
 	r.pass()
 	waitJob(t, r.c, mailJobID(id))
@@ -696,22 +734,54 @@ func TestACrashAfterTheCommitQueuesTheTurnOnce(t *testing.T) {
 	if m := mailEntries(th)[0]; m.Intake != intakeQueued || len(th.Jobs) != 1 {
 		t.Fatalf("%+v %+v", m, th.Jobs)
 	}
-	if in.calls[id] != 2 {
-		t.Fatalf("intake asked %d times, want the failed try and one more", in.calls[id])
+	if r.intake.runs != 1 || len(r.runner.prompts) != 1 {
+		t.Fatalf("intake ran %d times, jobs %d", r.intake.runs, len(r.runner.prompts))
 	}
 	var pending []pendingMail
 	r.c.view(w.ID, anyDevice, func(t *Tree) (err error) { pending, err = loadPending(t); return err })
 	if len(pending) != 0 {
 		t.Fatalf("still owed: %+v", pending)
 	}
+}
 
-	// Queueing twice, as after a crash between queueing and settling, is
-	// one job.
-	if err := (directIntake{r.c}).Queue(context.Background(), IntakeRequest{WorkerID: w.ID, ThreadID: th.ID, EdgeID: id, Stored: storedMailPath(id), JobID: mailJobID(id)}); err != nil {
-		t.Fatal(err)
+// Intake that can't run leaves the message, and the ones after it, for the
+// next pass; an email intake can't read is held, unread.
+func TestIntakeFailures(t *testing.T) {
+	r := newMailRig(t, MailConfig{})
+	w, mb := r.worker()
+	r.intake.set(func(f *fakeIntake) { f.down = true })
+	first := r.edge.deliver(mb, email{from: "dana@example.com", to: testWorkerAddr})
+	second := r.edge.deliver(mb, email{from: "dana@example.com", to: testWorkerAddr})
+	r.pass()
+	if l := r.ledger(w.ID); len(l.Acted) != 0 || r.intake.runs != 1 {
+		t.Fatalf("acted on %d with intake down, after %d tries", len(l.Acted), r.intake.runs)
 	}
-	if len(r.runner.prompts) != 1 {
-		t.Fatalf("%d jobs ran", len(r.runner.prompts))
+	r.intake.set(func(f *fakeIntake) { f.down, f.refuse = false, true })
+	r.pass()
+	l := r.ledger(w.ID)
+	if l.Acted[first].Outcome != outcomeHeld || l.Acted[second].Outcome != outcomeHeld || l.Acted[first].Reason != "Fount couldn't read this email" {
+		t.Fatalf("%+v", l.Acted)
+	}
+	th, _ := r.c.thread(anyDevice, w.ID, l.Acted[first].Thread)
+	m := mailEntries(th)[0]
+	if !m.Unread || m.Instruction != "" {
+		t.Fatalf("%+v", m)
+	}
+	if _, err := r.c.ReadFile(w.ID, prefixRoot+"threads/"+th.ID+"/"+m.Folder+"/message.eml"); err != nil {
+		t.Fatalf("the unread email is kept in its folder: %v", err)
+	}
+	// Run once, it runs with a fixed instruction.
+	if res := r.threadOp(w.ID, th.ID, "op_r", "runHeldMail", heldMailArgs{MailID: th.Entries[0].ID}); !res.OK {
+		t.Fatalf("%+v", res)
+	}
+	r.pass()
+	waitJob(t, r.c, mailJobID(first))
+
+	r.intake.set(func(f *fakeIntake) { f.refuse, f.automatic = false, "auto-submitted" })
+	auto := r.edge.deliver(mb, email{from: "dana@example.com", to: testWorkerAddr})
+	r.pass()
+	if a := r.ledger(w.ID).Acted[auto]; a.Outcome != outcomeIgnored || !strings.Contains(a.Reason, "auto-submitted") {
+		t.Fatalf("an automatic email: %+v", a)
 	}
 }
 
@@ -774,25 +844,39 @@ func TestTheAcknowledgementIsOffByDefault(t *testing.T) {
 
 type fakeChanges struct {
 	mu      sync.Mutex
-	changed []string
+	pages   []ChangesPage
 	asked   []string
+	version int
 }
 
-func (f *fakeChanges) Since(_ context.Context, cursor string, _ []string) (MailboxChanges, error) {
+func (f *fakeChanges) Changes(_ context.Context, cursor string, limit int) (ChangesPage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.asked = append(f.asked, cursor)
-	out := MailboxChanges{Cursor: "c" + string(rune('0'+len(f.asked))), Changed: f.changed}
-	f.changed = nil
-	return out, nil
+	if limit != changesLimit {
+		return ChangesPage{}, errors.New("limit")
+	}
+	if len(f.pages) == 0 {
+		return ChangesPage{Cursor: cursor, Reset: cursor == ""}, nil
+	}
+	p := f.pages[0]
+	f.pages = f.pages[1:]
+	return p, nil
 }
 
-func TestTheChangesListingPicksTheMailboxes(t *testing.T) {
+func (f *fakeChanges) add(pages ...ChangesPage) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pages = append(f.pages, pages...)
+}
+
+func TestTheChangesFeedPicksTheMailboxes(t *testing.T) {
 	ch := &fakeChanges{}
 	r := newMailRig(t, MailConfig{Changes: ch, SweepInterval: time.Hour})
 	w1, mb1 := r.worker()
 	_, mb2 := r.worker()
 	now := time.Now()
+	ch.add(ChangesPage{Cursor: "e.1", Reset: true})
 	r.c.mailPass(context.Background(), now) // the first pass sweeps
 	l1, l2 := r.edge.listCalls(mb1.MailboxID), r.edge.listCalls(mb2.MailboxID)
 	if l1 != 1 || l2 != 1 {
@@ -803,9 +887,10 @@ func TestTheChangesListingPicksTheMailboxes(t *testing.T) {
 		t.Fatal("a pass with no changes listed a mailbox")
 	}
 	id := r.edge.deliver(mb1, email{from: "dana@example.com", to: testWorkerAddr})
-	ch.mu.Lock()
-	ch.changed = []string{mb1.MailboxID}
-	ch.mu.Unlock()
+	ch.add(
+		ChangesPage{Cursor: "e.2", More: true, Changes: []MailboxChange{{MailboxID: "someone else's"}}},
+		ChangesPage{Cursor: "e.3", Changes: []MailboxChange{{MailboxID: mb1.MailboxID, Changed: 3, Sequence: 1}}},
+	)
 	r.c.mailPass(context.Background(), now.Add(2*time.Second))
 	if r.edge.listCalls(mb1.MailboxID) != 2 || r.edge.listCalls(mb2.MailboxID) != 1 {
 		t.Fatal("the changed mailbox alone is listed")
@@ -814,8 +899,20 @@ func TestTheChangesListingPicksTheMailboxes(t *testing.T) {
 		t.Fatal("the changed mailbox's mail wasn't acted on")
 	}
 	waitJob(t, r.c, mailJobID(id))
-	if ch.asked[0] != "" || ch.asked[1] != "c1" {
-		t.Fatalf("cursors: %q", ch.asked)
+	if want := []string{"", "e.1", "e.1", "e.2"}; !reflect.DeepEqual(ch.asked, want) {
+		t.Fatalf("cursors: %q, want %q", ch.asked, want)
+	}
+
+	// The cursor outlives a restart; a reset sweeps.
+	r.start()
+	ch.add(ChangesPage{Cursor: "f.1", Reset: true})
+	r.c.mailPass(context.Background(), now.Add(3*time.Second))
+	if got := ch.asked[len(ch.asked)-1]; got != "e.3" {
+		t.Fatalf("after a restart the feed is asked from %q", got)
+	}
+	r.c.mailPass(context.Background(), now.Add(4*time.Second))
+	if r.edge.listCalls(mb2.MailboxID) != 2 || ch.asked[len(ch.asked)-1] != "f.1" {
+		t.Fatalf("listed %d, asked %q", r.edge.listCalls(mb2.MailboxID), ch.asked)
 	}
 }
 

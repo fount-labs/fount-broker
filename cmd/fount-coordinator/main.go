@@ -232,6 +232,12 @@ func run() error {
 		}
 		return err
 	}
+	// Intake runs on a local runner command; a runner enclave's intake is
+	// lane C's.
+	intake, _ := runner.(coordinator.IntakeRunner)
+	if *mailLoop && intake == nil {
+		return errors.New("--mail needs a runner command, which runs intake")
+	}
 	c, err := coordinator.New(coordinator.Config{
 		StateDir: filepath.Join(*dir, "state"),
 		WorkDir:  filepath.Join(*dir, "work"),
@@ -244,6 +250,7 @@ func run() error {
 		Audience:    *audience,
 		AccountJobs: *accountJobs,
 		JobConfig:   config,
+		Intake:      intake,
 		Mail:        mailConfig(*mailLoop),
 	})
 	if err != nil {
@@ -391,8 +398,9 @@ func readJobConfig(value string) (json.RawMessage, error) {
 }
 
 // mailConfig is the mail loop's, against the attested mail edge. Until fount-
-// infra issues Cloud mailbox entitlements and the edge lists changes in one
-// call, it polls each mailbox and doesn't renew.
+// infra issues Cloud mailbox entitlements and the coordinator holds a
+// generation certificate for the edge's changes feed, it polls each mailbox
+// and doesn't renew.
 func mailConfig(on bool) coordinator.MailConfig {
 	if !on {
 		return coordinator.MailConfig{}

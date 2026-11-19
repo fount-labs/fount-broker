@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"maps"
@@ -134,8 +135,15 @@ func (c *Coordinator) runHeldMail(t *Tree, th *threadRecord, device string, a he
 		return effects{}, refusal{code: CodeThreadCap}
 	}
 	m := e.Mail
+	if instruction == "" {
+		instruction = cmp.Or(m.Instruction, "Handle the email in this thread as your instructions say.")
+	}
+	spec, err := IntakeSpec{Instruction: instruction}.JobSpec(th.ID, th.SessionID, m.Folder, c.cfg.JobConfig)
+	if err != nil {
+		return effects{}, err
+	}
 	m.Held, m.Intake, m.JobID, e.Rev = heldRun, intakePending, mailJobID(m.EdgeID), rev
-	err = owe(t, pendingMail{Kind: pendingIntake, ThreadID: th.ID, EdgeID: m.EdgeID, JobID: m.JobID, Instruction: instruction})
+	err = owe(t, pendingMail{Kind: pendingJob, ThreadID: th.ID, EdgeID: m.EdgeID, JobID: m.JobID, Spec: &spec})
 	return effects{mail: true}, err
 }
 
