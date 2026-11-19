@@ -23,7 +23,7 @@ Builds on `launch-plan.md` decisions 5, 17, 18, 24–27 and sections T and H,
 |---|---|---|
 | 1 | One authority per **team**: its membership log. Signed lists and admission records, one sequence, hash-chained. | 2 |
 | 2 | A **list** names the team's members (by account, or by email while invited), each one's role, the devices admitted so far, the team's workers, and which workers each reviewer reaches. Only a device of a member who is admin in the state before it can sign the next one. | 2.2 |
-| 3 | Each worker belongs to one team and **inherits its admins**. A solo account is a team of one, whose id is the account's. | 2.2 |
+| 3 | Each worker belongs to one team and **inherits its admins**. A solo account is a team of one, whose id is the account's. A firm team's id is a random one the coordinator makes for the account that signs its first list, never an identity provider's organisation id. | 2.2 |
 | 4 | An **admission record** lets a device in without an admin online: an invite redeemed, a same-member device join, a passkey recovery. Each carries proof a client can check against the list. | 2.3 |
 | 5 | Two roles: **admin** and **reviewer**. Every operation has a required role in one table; an operation missing from it is refused. | 3 |
 | 6 | The caller is checked on **every request** against the current state: account, device, role and, for a reviewer, the worker. Nothing is cached in the channel. | 3.2 |
@@ -85,7 +85,7 @@ TeamListContext = "fount-team-members-v3\n"
 {
   "v": 3, "typ": "fount-team-members",
   "aud": "<coordinator audience>",
-  "team": "<team id>",                  // a solo account's team id is its account id
+  "team": "<team id>",                  // a solo account's id, or one POST /teams made
   "seq": 7, "prev": "<hash of entry 6>",
   "dev": "<signing device id>",
   "iat": 1795000000,
@@ -118,7 +118,8 @@ What the coordinator checks before it appends a list. Every check is a refusal, 
    read two lists from one signature. `v`, `typ` and `aud` are this coordinator's; `team` is the
    path's; `iat` is within `MaxGrantAge` and `grantSkew`. Members sorted and unique by `id`;
    accounts, emails and devices unique across the list; at least one admin; an admin has no
-   `workers`, a reviewer has `["*"]` or sorted, unique ids of the list's workers; a member with no
+   `workers`, a reviewer has `["*"]` (every team worker, including ones added later; `"*"` only
+   alone) or sorted, unique ids of the list's workers; a member with no
    account has an email and an invite, and no devices. Bounded: `MaxMembers`,
    `MaxMemberDevices`, `MaxTeamWorkers`.
 2. **Order.** `seq == head.seq + 1` and `prev == hash(head)`; otherwise `ErrTeamStale`, which
@@ -128,8 +129,8 @@ What the coordinator checks before it appends a list. Every check is a refusal, 
    In the **state before this list**, that device is admitted under an admin member whose account
    is the channel's. A reviewer's device, a removed member's, or another member's is
    `ErrNotAdmin`. For the first list (`seq` 1) there is no state: the team must be the channel's
-   own account (a team of one), and the signer must be listed in it under an admin member of that
-   account.
+   own account (a team of one) or a firm team's id the coordinator made for that account, and the
+   signer must be listed in it under an admin member of that account.
 4. **Devices.** Each inclusion is signed by the key it names, for this coordinator and team, with
    the member's account. A device the state already admits keeps its inclusion's `seq` and keys,
    under the same member; any other must be included for this list's `seq`. So a removed device's
@@ -144,6 +145,14 @@ one of their devices, an open invite, a reviewer's worker, a worker. A removed d
 at once and its next request fails (§3.2); a removed worker is deleted, as a revoke did (refused
 while it runs a job). Because the list must be signed over the exact head, an admin can only
 remove what they saw.
+
+**A firm team's id.** `POST /teams` (account API, no role: it names no team yet) answers
+`{"team": "tm_<24 hex>"}`, a random id the coordinator makes and keeps in `state.json`
+(`State.TeamMints`) for the caller's account until a first list for it is appended. Asking again
+before then returns the same id, so an account holds one at a time. The device signs the first
+list, and its inclusions, for that id. Nobody can claim another account's mint or an organisation
+id: neither is the signer's account nor minted for it. fount-infra maps a Clerk organisation to
+the team id for billing alone. A team worker's `Account` is its team id, solo or firm.
 
 ### 2.3 Records
 
@@ -212,17 +221,18 @@ The table is one map in code, `opRoles`, keyed by route pattern or operation kin
 
 | Operation | Role |
 |---|---|
-| `GET /workers`, `GET /workers/{id}`, files, threads, `GET /jobs/{id}`, `GET /teams/{team}/log` | reviewer |
+| `GET /workers`, `GET /workers/{id}`, files, threads, `GET /workers/{id}/mail`, `GET /jobs/{id}`, `GET /teams/{team}/log` | reviewer |
 | `POST /workers/{id}/threads/{tid}/ops`, `POST /workers/{id}/ops` (each kind is checked again below) | reviewer |
 | `startThread`, `sendNote`, `cancelJob`, `acceptProposal`, `discardProposal` | reviewer |
 | `approveDraft`, `discardDraft`, `sendAgain`, `keepFileAsCopy`, `redoOnLatest` | reviewer |
 | `answerQuestion`, `dismissQuestion`, `forwardQuestion`, `runHeldMail`, `markRead` | reviewer |
 | `POST /teams/{team}/log` (a list) | admin, checked by the list's signer rule |
-| `addRequester`, `removeRequester`, `setRequesterMode`, `setDefaultMode`, `setAutoRun`, `pairingConfirm`, `setThreadReplyMode` | admin |
+| `addRequester`, `removeRequester`, `setRequesterMode`, `setDefaultMode`, `setAutoRun`, `setAcknowledge`, `pairingStart`, `pairingConfirm`, `routingSaved`, `setThreadReplyMode` | admin |
 | `PUT /workers/{id}/root/{path}`, `POST /workers/{id}/jobs` (a raw JobSpec) | admin |
 
 `POST /workers` (a new worker, before a list adds it to the team) needs no role: it makes a
-placeholder only its device sees. Records are posted by the device being admitted, which isn't a
+placeholder only its device sees. Nor does `POST /teams` (a firm team's id, §2.2), which only
+reserves an id for the caller's account. Records are posted by the device being admitted, which isn't a
 member yet; their routes are authorized by their proof.
 
 ### 3.2 Where the check runs
@@ -340,6 +350,8 @@ wiped when this ships. Desktop moves to the team log in the same release.
 - For invites, the Cloud credential needs one more claim: the account's **verified email**
   (`eml`, present only when Clerk verified it). The coordinator compares it with the invite's. This
   is T's fount-infra work.
+- They never name a team. A firm team's id is the coordinator's (§2.2); fount-infra keeps which
+  Clerk organisation it bills, and the coordinator never reads an organisation id.
 - They never make an admin. A Clerk organisation role, if the credential carries one, may be shown
   or used by Desktop to suggest a change; an admin's device still signs it.
 - They can't add a member, change a role, admit a device or remove one: every one of those is an
@@ -369,7 +381,7 @@ The review in `launch-plan.md` T and `teams.md` §11 should take each of these.
 | 13 | Parser differential between Desktop (serde) and the coordinator (Go) on a signed list | Strict decoding with unknown fields and duplicate keys refused on both sides; the stored bytes are what is hashed; shared test vectors (`testdata/team-vectors.json`). |
 | 14 | A list that leaves no admin | Refused. |
 | 15 | One device under two members, one account as two members, or a worker in two teams | Refused. |
-| 16 | Someone claims a team id first | The first list of a team must be for the signer's own account id. Firm teams' ids are open (below). |
+| 16 | Someone claims a team id first | The first list of a team must be for the signer's own account id, or a firm id the coordinator minted at random for that account. An organisation's id, or another account's mint, is refused. |
 | 17 | A compromised coordinator enclave | Out of scope: it holds the DEKs. The chain still lets a client see a list no admin signed and a rollback; it doesn't stop a forged invite record, since the coordinator sees invite secrets. |
 | 18 | A list or log used to exhaust memory | `MaxMembers`, `MaxMemberDevices`, `MaxTeamWorkers`, a body cap on the route, one open invite per member. |
 
@@ -393,14 +405,6 @@ under the same order and durability rules as a list.
 
 ## Choices to confirm
 
-1. **Losing an admin's device rotates too.** Rotation is on removing or demoting an admin, and also
+1. **Losing an admin's device rotates too** (confirmed, as built). Rotation is on removing or demoting an admin, and also
    on removing one of an admin's devices, since that device held the address keys' wraps. A lost
    laptop then costs one rotation of every team worker's signing key.
-2. **A firm team's id.** The first list of a team must be for the signer's own account, so a solo
-   team's id is its account id and nobody can claim another's. A Clerk organisation's team needs a
-   rule: either a random id the coordinator makes at the first list (fount-infra maps it to the
-   organisation for billing), or the organisation id with the credential naming the account's
-   organisation (membership only, never a role). The first can't be squatted; the second is
-   simpler for billing. Not built until T's accounts work.
-3. **Reviewer assignments** are `["*"]` (every team worker, including later ones) or an explicit
-   list. A worker added later reaches an explicit-list reviewer only when an admin adds it.
