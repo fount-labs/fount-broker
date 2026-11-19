@@ -518,8 +518,8 @@ func TestOperationsThatArentHereOrArentRight(t *testing.T) {
 			t.Errorf("%s %s: %v, want %v", tc.env.Kind, tc.env.Args, err, tc.want)
 		}
 	}
-	if _, err := c.applyWorkerOp(anyDevice, w.ID, workerOpEnvelope{OpID: "op_1", Kind: "setAutoRun", Args: json.RawMessage(`{}`)}); !errors.Is(err, ErrUnsupported) {
-		t.Errorf("setAutoRun: %v", err)
+	if _, err := c.applyWorkerOp(anyDevice, w.ID, workerOpEnvelope{OpID: "op_1", Kind: "setDefaultMode", Args: json.RawMessage(`{}`)}); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("setDefaultMode: %v", err)
 	}
 	if _, err := c.applyWorkerOp(anyDevice, "w_nope", workerOpEnvelope{OpID: "op_1", Kind: "startThread", Args: noteJSON("hi")}); !errors.Is(err, ErrNoWorker) {
 		t.Errorf("no worker: %v", err)
@@ -588,7 +588,7 @@ func TestThreadsThroughTheAPI(t *testing.T) {
 		{"GET", "/v0/workers/w_nope/threads", "", 404},
 		{"POST", base + "/threads/" + tid + "/ops", `{"opId":"op_4","threadId":"` + tid + `","baseRevision":2,"kind":"approveDraft","args":{}}`, 501},
 		{"POST", base + "/threads/" + tid + "/ops", `{"opId":"op_4","threadId":"` + tid + `","baseRevision":2,"kind":"sendNote","args":{"text":"x"},"extra":1}`, 400},
-		{"POST", base + "/ops", `{"opId":"op_4","kind":"setAutoRun","args":{}}`, 501},
+		{"POST", base + "/ops", `{"opId":"op_4","kind":"setDefaultMode","args":{}}`, 501},
 		{"POST", "/v0/workers/w_nope/ops", `{"opId":"op_4","kind":"startThread","args":{"text":"x"}}`, 404},
 	} {
 		if code, out := do(t, srv, tc.method, tc.path, tc.body); code != tc.want {

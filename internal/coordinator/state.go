@@ -39,6 +39,10 @@ type Worker struct {
 	Devices       []Device `json:"devices,omitempty"`
 	GrantSeq      uint64   `json:"grantSeq,omitempty"`
 	DEKCommitment string   `json:"dekCommitment,omitempty"`
+	// Mailbox is the worker's mailbox id at the edge, once it has an
+	// address, so the mail loop knows to read it (mailbox.go). Its keys are
+	// in the worker's tree.
+	Mailbox string `json:"mailbox,omitempty"`
 }
 
 type JobState string
