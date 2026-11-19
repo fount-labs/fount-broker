@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,9 +30,10 @@ import (
 // Fount repo; IntakeSpec is its Spec.
 
 // An IntakeRunner runs fount-runner --mode intake for account on dir, a folder
-// writeIntakeInput prepared. The runner leaves its output in dir/out.
+// writeIntakeInput prepared, on the pool's runner runnerID, as a Runner runs a
+// job. The runner leaves its output in dir/out.
 type IntakeRunner interface {
-	RunIntake(ctx context.Context, account, dir string) (RunResult, error)
+	RunIntake(ctx context.Context, runnerID, account, dir string) (RunResult, error)
 }
 
 // IntakeRequest is what intake needs beside the email.
@@ -94,6 +96,10 @@ const (
 	maxIntakeTotalBytes = 256 << 20
 	intakeOut           = "out"
 	intakeSpecFile      = "jobspec.json"
+	// intakeTimeout bounds one intake, slot held, well under an agent job's:
+	// it parses one email and runs no model. Ending it closes a runner
+	// enclave's connection, which kills the sandbox.
+	intakeTimeout = 5 * time.Minute
 )
 
 var (
@@ -280,8 +286,10 @@ func ReadIntake(out, edgeID string) (IntakeSpec, map[string][]byte, error) {
 	return spec, files, nil
 }
 
-// Intake runs intake on one email for a worker. The worker's standing
-// instructions come from its instructions.md. Nothing is written to the
+// Intake runs intake on one email for a worker, on a runner slot taken for the
+// worker's account as a job's is: errRunnersBusy when there is none, and the
+// email waits. The worker's standing instructions come from its
+// instructions.md. Nothing is written to the
 // worker's tree: the mail loop puts Files in the thread it picks, with
 // MessageFolder, and queues r.Spec.JobSpec.
 func (c *Coordinator) Intake(ctx context.Context, workerID string, m *Mail, req IntakeRequest) (IntakeResult, error) {
@@ -314,7 +322,18 @@ func (c *Coordinator) Intake(ctx context.Context, workerID string, m *Mail, req 
 	if err := writeIntakeInput(dir, m, req, instructions); err != nil {
 		return IntakeResult{}, err
 	}
-	run, err := c.cfg.Intake.RunIntake(ctx, w.Account, dir)
+	runner, err := c.acquireIntake(workerID, w.Account)
+	if err != nil {
+		return IntakeResult{}, err
+	}
+	defer func() {
+		if err := c.releaseRunner(runner); err != nil {
+			log.Printf("intake for worker %s: %v", workerID, err)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(ctx, intakeTimeout)
+	defer cancel()
+	run, err := c.cfg.Intake.RunIntake(ctx, runner, w.Account, dir)
 	r := IntakeResult{Events: run.Events, Stderr: run.Stderr}
 	switch {
 	case err != nil:
@@ -347,7 +366,7 @@ func (s IntakeSpec) JobSpec(threadID, sessionID, folder string, config json.RawM
 }
 
 // RunIntake runs the command with --mode intake --workspace dir.
-func (l LocalRunner) RunIntake(ctx context.Context, _, dir string) (RunResult, error) {
+func (l LocalRunner) RunIntake(ctx context.Context, _, _, dir string) (RunResult, error) {
 	if len(l.Command) == 0 {
 		return RunResult{}, errors.New("no runner command")
 	}

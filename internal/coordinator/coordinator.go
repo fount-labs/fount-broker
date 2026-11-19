@@ -528,7 +528,7 @@ func (c *Coordinator) execute(ctx context.Context, job Job, w Worker, spec JobSp
 		// and never quotes the job.
 		log.Printf("job %s on worker %s: %v", job.ID, w.ID, err)
 	}
-	if rerr := c.cfg.Pool.Release(job.Runner); rerr != nil {
+	if rerr := c.releaseRunner(job.Runner); rerr != nil {
 		log.Printf("job %s: %v", job.ID, rerr)
 	}
 	c.mu.Lock()
