@@ -41,7 +41,8 @@ func TinfoilCheck(repo string) (wire.HolderCheck, error) {
 }
 
 // Tinfoil is a Source in a Tinfoil enclave: its attested `transfer` key, its
-// attestation socket, and vaults that must run releases of repo.
+// attestation socket, and vaults that must run releases of repo. Set
+// Authority and Boot on it for a generation.
 func Tinfoil(vaults []string, repo, commitment string) (*Source, error) {
 	transfer, err := wire.LoadTransferKey(wire.TransferKeyPath)
 	if err != nil {

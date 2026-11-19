@@ -94,3 +94,8 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 )
+
+// fleet/V-counter: the Cloud vault's generation and counter (fount-mail-vault
+// fleet/V-counter). Before merging, push that branch and point the require
+// above at its pseudo-version instead.
+replace github.com/fount-labs/fount-mail-vault/wire => ../vault-V/wire
