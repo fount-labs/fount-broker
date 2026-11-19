@@ -32,10 +32,13 @@ const (
 	RecordPasskeyJoin = "passkey-join"
 )
 
+// A member's passkey vouching for their own team (passkeyvouch.go) admits no
+// device.
+
 // recordAdmits are the record kinds that admit a device: all of them.
 var recordAdmits = map[string]bool{RecordInvite: true, RecordJoin: true, RecordPasskeyJoin: true}
 
-var recordKinds = map[string]bool{RecordInvite: true, RecordJoin: true, RecordPasskeyJoin: true}
+var recordKinds = map[string]bool{RecordInvite: true, RecordJoin: true, RecordPasskeyJoin: true, RecordPasskeyVouch: true}
 
 var (
 	// ErrTeamStale is an entry that isn't the head's next: a replay, a list
@@ -100,7 +103,7 @@ func (c *Coordinator) teamState(id string) (*teamState, error) {
 // last list and the records after it. The log holds only entries that were
 // checked when they were appended, so a failure here is a damaged volume.
 func reduceTeam(team, aud string, log []TeamEntry) (*teamState, error) {
-	st := &teamState{usedInvites: map[string]bool{}, passkeyCounts: map[string]uint32{}, passkeyJoined: map[string]bool{}, byID: map[string]*Member{}, byDevice: map[string]*Member{}, workers: map[string]string{}}
+	st := &teamState{usedInvites: map[string]bool{}, passkeyCounts: map[string]uint32{}, passkeyJoined: map[string]bool{}, vouched: map[string]bool{}, byID: map[string]*Member{}, byDevice: map[string]*Member{}, workers: map[string]string{}}
 	head := ""
 	for i, e := range log {
 		if e.Seq != uint64(i+1) {
@@ -141,6 +144,9 @@ func reduceTeam(team, aud string, log []TeamEntry) (*teamState, error) {
 		}
 		if hash != e.Hash {
 			return nil, fmt.Errorf("entry %d's hash is wrong", e.Seq)
+		}
+		if e.Seq == 1 {
+			st.start = hash
 		}
 		head = hash
 	}
@@ -195,6 +201,15 @@ func (s *teamState) applyRecord(r TeamRecord, team, aud string) error {
 		if count != 0 {
 			s.passkeyCounts[m.Rec.Pub] = count
 		}
+	case RecordPasskeyVouch:
+		count, err := checkPasskeyVouchProof(s, aud, team, r, m)
+		if err != nil {
+			return err
+		}
+		if count != 0 {
+			s.passkeyCounts[m.Rec.Pub] = count
+		}
+		s.vouched[m.Rec.Pub] = true
 	}
 	if r.Kind == RecordInvite {
 		s.usedInvites[m.Invite.ID] = true
@@ -724,8 +739,30 @@ func (c *Coordinator) teamLogView(team string, since uint64) TeamLogView {
 
 const maxTeamBody = 512 << 10
 
+// mayReadLog refuses a caller who may not read team's log: a device the
+// team admits, or a device of the account whose own team it is, which reads
+// it before it joins to see the member's passkey vouched for it
+// (passkeyvouch.go). Called with c.mu held.
+func (c *Coordinator) mayReadLog(caller Caller, team string) error {
+	_, _, err := c.requireMember(caller, team)
+	if err == nil || team != caller.Account {
+		return err
+	}
+	st, serr := c.teamState(team)
+	if serr != nil {
+		return ErrNoTeam
+	}
+	for _, m := range st.members {
+		if m.Account == caller.Account {
+			return nil
+		}
+	}
+	return ErrNoTeam
+}
+
 // teamLog is GET /v1/teams/{team}/log?since=N: the entries after N, for any
-// member of the team.
+// device the team admits, and for the account's own team any device of the
+// account.
 func (a *api) teamLog(rw http.ResponseWriter, r *http.Request) {
 	var since uint64
 	if q := r.URL.Query(); q.Has("since") {
@@ -738,7 +775,7 @@ func (a *api) teamLog(rw http.ResponseWriter, r *http.Request) {
 	}
 	team := r.PathValue("team")
 	a.c.mu.Lock()
-	_, _, err := a.c.requireMember(*a.caller, team)
+	err := a.c.mayReadLog(*a.caller, team)
 	var v TeamLogView
 	if err == nil {
 		v = a.c.teamLogView(team, since)

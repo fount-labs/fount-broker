@@ -276,9 +276,13 @@ func checkPasskeyJoinProof(st *teamState, aud, team string, r TeamRecord, m *Mem
 	if err := verifyAssertion(pub, passkeyAssertion{AuthenticatorData: auth, ClientDataJSON: client, Signature: sig}, challenge, PasskeyRPID, PasskeyOrigins); err != nil {
 		return 0, err
 	}
-	// The sign count after the flags: 0 throughout from a passkey that keeps
-	// none, as synced ones do; once one counts, it must rise, or the passkey
-	// was copied.
+	return checkSignCount(st, m, auth)
+}
+
+// checkSignCount is the sign count after the flags of an assertion by m's
+// listed passkey: 0 throughout from a passkey that keeps none, as synced ones
+// do; once one counts, it must rise, or the passkey was copied.
+func checkSignCount(st *teamState, m *Member, auth []byte) (uint32, error) {
 	count, prior := binary.BigEndian.Uint32(auth[33:37]), st.passkeyCounts[m.Rec.Pub]
 	if (count != 0 || prior != 0) && count <= prior {
 		return 0, errors.New("the passkey's sign count didn't rise: it may have been copied")

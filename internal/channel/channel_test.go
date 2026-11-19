@@ -331,6 +331,7 @@ func TestCheckRequest(t *testing.T) {
 		"POST v1/teams/acct_acme/joins", "GET v1/teams/acct_acme/joins", "GET v1/teams/acct_acme/joins/jn_1",
 		"POST v1/teams/acct_acme/joins/jn_1/approve", "POST v1/teams/acct_acme/joins/jn_1/deny", "POST v1/teams/acct_acme/joins/jn_1/accept",
 		"POST v1/teams/acct_acme/passkey-join", "POST v1/teams/acct_acme/passkey-join/challenge",
+		"POST v1/teams/acct_acme/passkey-vouch",
 	} {
 		method, target, _ := strings.Cut(ok, " ")
 		if _, err := CheckRequest(method, target); err != nil {
@@ -356,6 +357,7 @@ func TestCheckRequest(t *testing.T) {
 		"PUT v1/teams/acct_acme/joins", "POST v1/teams/acct_acme/joins/jn_1", "GET v1/teams/acct_acme/joins/jn_1/approve",
 		"POST v1/teams/acct_acme/joins/jn.1/accept", "POST v1/teams/acct_acme/joins?since=1", "POST v1/teams/acct_acme/joins/jn_1/approve/x",
 		"GET v1/teams/acct_acme/passkey-join", "POST v1/teams/acct_acme/passkey-join/x", "GET v1/teams/acct_acme/passkey-join/challenge",
+		"GET v1/teams/acct_acme/passkey-vouch", "POST v1/teams/acct_acme/passkey-vouch/x",
 		"POST v1/teams/acct_acme/recovery", "POST v1/teams/acct_acme/recovery/start", "POST v1/teams/acct_acme/x",
 		"POST v1/workers/" + w + "/mail", "GET v1/workers/" + w + "/mail?since=1", "PUT v1/workers/" + w + "/mail?since=1",
 		"GET v1/workers/" + w + "/mail/x", "PUT v1/workers/" + w + "/mail/x", "DELETE v1/workers/" + w + "/mail",

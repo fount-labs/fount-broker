@@ -46,6 +46,7 @@ var opRoles = map[string]Role{
 	// proof.
 	"POST /teams/{team}/passkey-join/challenge": roleCaller,
 	"POST /teams/{team}/passkey-join":           roleCaller,
+	"POST /teams/{team}/passkey-vouch":          roleCaller,
 	// Authorized by their proof: an invite's secret and verified email, or
 	// the device's own request to join as its account's member.
 	"GET /teams": roleCaller,
@@ -172,6 +173,11 @@ type teamState struct {
 	// passkeyJoined are the devices a passkey-join record admitted since the
 	// last list (teamsigner.go).
 	passkeyJoined map[string]bool
+	// start is the hash of the team's first entry, which a passkey-vouch
+	// signs (passkeyvouch.go).
+	start string
+	// vouched are the passkeys (by public key) that vouched for the team.
+	vouched map[string]bool
 }
 
 // device is a device the state admits, and its member.
