@@ -126,27 +126,24 @@ func TestDesktopReachesItsAccountOverTheChannel(t *testing.T) {
 	}
 	dek, _ := coordinator.NewDEK()
 	enc, _ := ecdh.X25519().GenerateKey(rand.Reader)
-	devID := channel.DeviceID(device.Public().(ed25519.PublicKey))
-	inclusion, err := coordinator.SignInclusion(device, enc.PublicKey().Bytes(), coordinator.InclusionClaims{Aud: audience, Acct: "acct_acme", Worker: w.ID, DEK: coordinator.DEKCommitment(w.ID, dek), Seq: 1})
+	inclusion, err := coordinator.SignTeamInclusion(device, enc.PublicKey().Bytes(), coordinator.TeamInclusion{Aud: audience, Team: "acct_acme", Acct: "acct_acme", Seq: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	wrap, err := coordinator.SealWrap(enc.PublicKey().Bytes(), "acct_acme", w.ID, devID, dek)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wraps := map[string][]byte{devID: wrap}
-	digest, _ := coordinator.WrapsDigest([]string{devID}, wraps)
-	grant, err := coordinator.SignGrant(device, coordinator.GrantClaims{
-		Op: coordinator.OpGrant, Aud: audience, Acct: "acct_acme", Worker: w.ID, Seq: 1, DEK: coordinator.DEKCommitment(w.ID, dek),
-		Devices: []string{base64.RawURLEncoding.EncodeToString(device.Public().(ed25519.PublicKey))}, Wraps: digest, Iat: time.Now().Unix(),
+	list, err := coordinator.SignTeamList(device, coordinator.TeamList{
+		Aud: audience, Team: "acct_acme", Seq: 1, Iat: time.Now().Unix(),
+		Members: []coordinator.ListMember{{ID: "m_owner", Account: "acct_acme", Role: coordinator.RoleAdmin, Devices: []string{inclusion}}},
+		Workers: []coordinator.ListWorker{{ID: w.ID, DEK: coordinator.DEKCommitment(w.ID, dek)}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	grantBody, _ := json.Marshal(map[string]any{"v": coordinator.GrantBodyVersion, "dek": dek[:], "grant": grant, "inclusions": []string{inclusion}, "wraps": wraps})
-	if code, body := do(acme, "POST", "v1/workers/"+w.ID+"/grant", string(grantBody)); code != http.StatusOK || !strings.Contains(body, `"granted":true`) {
-		t.Fatalf("grant: %d %s", code, body)
+	listBody, _ := json.Marshal(map[string]any{"v": coordinator.TeamListVersion, "list": list, "deks": map[string][]byte{w.ID: dek[:]}})
+	if code, body := do(acme, "POST", "v1/teams/acct_acme/log", string(listBody)); code != http.StatusOK || !strings.Contains(body, `"seq":1`) {
+		t.Fatalf("the team's first list: %d %s", code, body)
+	}
+	if code, body := do(acme, "GET", "v1/teams/acct_acme/log?since=0", ""); code != http.StatusOK || !strings.Contains(body, list) {
+		t.Fatalf("the team's log: %d %s", code, body)
 	}
 	if code, body := do(acme, "PUT", "v1/workers/"+w.ID+"/root/instructions.md", "be brief"); code != http.StatusNoContent {
 		t.Fatalf("put: %d %s", code, body)
@@ -175,16 +172,14 @@ func TestDesktopReachesItsAccountOverTheChannel(t *testing.T) {
 			t.Errorf("an unnamed device's %s: %d %s", target, code, body)
 		}
 	}
-	// Moving a worker back, before it was ever granted.
-	_, body = do(acme, "POST", "v1/workers", `{}`)
-	var back struct{ ID string }
-	json.Unmarshal([]byte(body), &back)
-	revoke, _ := coordinator.SignGrant(device, coordinator.GrantClaims{Op: coordinator.OpRevoke, Aud: audience, Acct: "acct_acme", Worker: back.ID, Seq: 1, Iat: time.Now().Unix()})
-	if code, body := do(acme, "POST", "v1/workers/"+back.ID+"/revoke", `{"v":1,"grant":"`+revoke+`"}`); code != http.StatusNoContent {
-		t.Fatalf("revoke: %d %s", code, body)
+	// The v2 grant routes are gone; a worker leaves a team by a list without it.
+	for _, op := range []string{"grant", "revoke"} {
+		if code, body := do(acme, "POST", "v1/workers/"+w.ID+"/"+op, `{"v":2}`); code != http.StatusGone {
+			t.Errorf("%s: %d %s", op, code, body)
+		}
 	}
-	if code, _ := do(acme, "GET", "v1/workers/"+back.ID, ""); code != http.StatusNotFound {
-		t.Errorf("a revoked worker: %d", code)
+	if code, body := do(other, "GET", "v1/teams/acct_acme/log", ""); code != http.StatusNotFound {
+		t.Errorf("another account's team log: %d %s", code, body)
 	}
 	if code, body := do(other, "GET", "v1/workers", ""); code != 200 || !strings.Contains(body, `"workers":[]`) {
 		t.Errorf("another account's workers: %d %s", code, body)
