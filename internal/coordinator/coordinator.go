@@ -88,6 +88,8 @@ type Coordinator struct {
 	running sync.WaitGroup
 	// mail is the mail loop's, nil without Config.Mail.
 	mail *mailLoop
+	// sender is the send journal's way to the edge, nil when sending is off.
+	sender MailSender
 }
 
 func New(cfg Config) (*Coordinator, error) {
@@ -113,10 +115,20 @@ func New(cfg Config) (*Coordinator, error) {
 	if cfg.Mail.Service != nil && cfg.Intake == nil {
 		return nil, errors.New("coordinator config: the mail loop needs an intake runner")
 	}
-	c := &Coordinator{cfg: cfg, state: state, busy: map[string]bool{}, accountJobs: map[string]int{}, locks: map[string]*sync.Mutex{}, cancels: map[string]context.CancelFunc{}, queued: map[string]string{}, wake: make(chan struct{}, 1), mail: newMailLoop(cfg.Mail)}
-	if c.cfg.Mail.Ack == nil && c.cfg.Mail.Send != nil {
-		c.cfg.Mail.Ack = c
+	if cfg.Mail.Send && cfg.Mail.Service == nil {
+		return nil, errors.New("coordinator config: sending mail needs the mail loop's Service")
 	}
+	c := &Coordinator{cfg: cfg, state: state, busy: map[string]bool{}, accountJobs: map[string]int{}, locks: map[string]*sync.Mutex{}, cancels: map[string]context.CancelFunc{}, queued: map[string]string{}, wake: make(chan struct{}, 1)}
+	if cfg.Mail.Send {
+		c.sender = serviceSender{service: cfg.Mail.Service}
+		if c.cfg.Mail.Ack == nil {
+			c.cfg.Mail.Ack = c
+		}
+		if c.cfg.Mail.Notices == nil {
+			c.cfg.Mail.Notices = ownerNotices{c}
+		}
+	}
+	c.mail = newMailLoop(c.cfg.Mail)
 	if err := c.state.Save(cfg.StateDir); err != nil {
 		return nil, err
 	}

@@ -49,6 +49,8 @@ type fakeMailEdge struct {
 	coord     *mailtest.Coordination
 	authority ed25519.PrivateKey
 	keys      map[string]ed25519.PublicKey
+	// send serves POST /send and /sent/query, when a test sends.
+	send *fakeSendEdge
 }
 
 func newFakeMailEdge(t *testing.T) *fakeMailEdge {
@@ -100,6 +102,8 @@ func (f *fakeMailEdge) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case f.send != nil && r.Method == "POST" && (r.URL.Path == "/send" || r.URL.Path == "/sent/query"):
+		f.send.serve(w, r, body)
 	case r.Method == "GET" && r.URL.Path == "/mail":
 		f.lists[mb]++
 		type listed struct {

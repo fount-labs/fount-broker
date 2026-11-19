@@ -40,17 +40,19 @@ type MailConfig struct {
 	// Changes is the edge's batched listing (M). Nil lists each mailbox
 	// every SweepInterval.
 	Changes MailChanges
-	// Ack sends the fixed acknowledgement (decision 8). Nil with Send set is
+	// Ack sends the fixed acknowledgement (decision 8). Nil with Send on is
 	// the coordinator's own, on the send journal; nil without sends none.
 	Ack Acknowledger
-	// Send is the edge's sending side (sendclient.go), which the send
-	// journal posts through. Nil sends nothing: approved mail waits.
-	Send MailSender
+	// Send turns sending on: the send journal posts through Service
+	// (sendclient.go), naming its generation as every call does. Off,
+	// nothing is sent: approved mail waits.
+	Send bool
 	// Entitlements is fount-infra's issuer of Cloud mailboxes' entitlements
 	// (decision 12). Nil renews nothing.
 	Entitlements Entitlements
 	// Notices emails owners about problems (decision 10): here, a lapsed
-	// payment (lapse.go). D's notices fill it. Nil tells no one.
+	// payment (lapse.go). Nil with Send on is the coordinator's own
+	// (NotifyOwner); nil without tells no one.
 	Notices OwnerNotices
 	// Generations is the vault's coordinator generation (decision 18,
 	// mailgen.go). Nil names none, which an edge refuses for any mailbox

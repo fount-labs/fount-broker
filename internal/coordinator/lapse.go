@@ -37,9 +37,9 @@ import (
 var ErrAccountLapsed = errors.New("the account's payment lapsed")
 
 // OwnerNotices emails a worker's owner about a problem (decision 10):
-// content-free, linked with fount://. D's notices implement it. Notify must
-// be idempotent by Key: every worker of an account calls it with the same
-// Key for the same account-wide step, and a retry repeats a Key.
+// content-free, linked with fount://. ownerNotices (sendowner.go) is it.
+// Notify must be idempotent by Key: every worker of an account calls it with
+// the same Key for the same account-wide step, and a retry repeats a Key.
 type OwnerNotices interface {
 	Notify(ctx context.Context, n OwnerNotice) error
 }

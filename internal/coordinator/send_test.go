@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -16,19 +15,16 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/fount-labs/fount-broker/internal/mail"
 )
 
-// fakeSendEdge is the edge's POST /send and POST /sent/query, with the
+// fakeSendEdge is the edge's POST /send and POST /sent/query, served by
+// fakeMailEdge after its signature check and generation fence, with the
 // edge's dedupe: a repeat of the same bytes under one Message-ID answers the
 // first send's results and delivers nothing, other bytes are 409, and an ID
 // marked in doubt answers send_in_doubt and is never delivered.
 type fakeSendEdge struct {
-	t  *testing.T
-	mu sync.Mutex
-	// keys are the mailboxes' signing keys, by hex id, to check signatures.
-	keys      map[string]ed25519.PublicKey
+	t         *testing.T
+	mu        sync.Mutex
 	records   map[string]*SentRecord
 	delivered map[string]int // Message-ID -> deliveries
 	posts     map[string]int // Message-ID -> POST /send calls
@@ -39,39 +35,19 @@ type fakeSendEdge struct {
 }
 
 func newFakeSendEdge(t *testing.T) *fakeSendEdge {
-	return &fakeSendEdge{t: t, keys: map[string]ed25519.PublicKey{}, records: map[string]*SentRecord{},
+	return &fakeSendEdge{t: t, records: map[string]*SentRecord{},
 		delivered: map[string]int{}, posts: map[string]int{}, raw: map[string][]byte{}, inDoubt: map[string]bool{}}
 }
 
-func (f *fakeSendEdge) Base() string { return "http://edge.test/" }
-func (f *fakeSendEdge) AttestedSigningKey(context.Context) (ed25519.PublicKey, error) {
-	return nil, nil
-}
-
-func (f *fakeSendEdge) Do(_ context.Context, req *http.Request) (*http.Response, error) {
-	rec := httptest.NewRecorder()
-	f.serve(rec, req)
-	return rec.Result(), nil
-}
-
-func (f *fakeSendEdge) serve(w http.ResponseWriter, r *http.Request) {
+func (f *fakeSendEdge) serve(w http.ResponseWriter, r *http.Request, body []byte) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	body := new(bytes.Buffer)
-	body.ReadFrom(r.Body)
-	ts, _ := strconv.ParseInt(r.Header.Get(mail.HeaderTimestamp), 10, 64)
-	sig, _ := base64.StdEncoding.DecodeString(r.Header.Get(mail.HeaderSignature))
-	pub := f.keys[r.Header.Get(mail.HeaderKeyID)]
-	if pub == nil || !ed25519.Verify(pub, []byte(mail.Canonical(r.Method, r.URL.Path, body.Bytes(), ts, r.Header.Get(mail.HeaderNonce))), sig) {
-		http.Error(w, `{"error":"bad signature"}`, 401)
-		return
-	}
 	switch r.URL.Path {
 	case "/send":
 		var req struct {
 			Message []byte `json:"message"`
 		}
-		json.Unmarshal(body.Bytes(), &req)
+		json.Unmarshal(body, &req)
 		h, err := textproto.NewReader(bufio.NewReader(bytes.NewReader(req.Message))).ReadMIMEHeader()
 		if err != nil {
 			http.Error(w, `{"error":"bad message"}`, 400)
@@ -108,7 +84,7 @@ func (f *fakeSendEdge) serve(w http.ResponseWriter, r *http.Request) {
 		var q struct {
 			IDs []string `json:"message_ids"`
 		}
-		json.Unmarshal(body.Bytes(), &q)
+		json.Unmarshal(body, &q)
 		out := []SentRecord{}
 		for _, id := range q.IDs {
 			if rec := f.records[id]; rec != nil {
@@ -157,18 +133,24 @@ type sendRig struct {
 
 func newSendRig(t *testing.T, mode string) *sendRig {
 	t.Helper()
+	return sendRigOn(t, newMailRig(t, MailConfig{Send: true}), mode)
+}
+
+// sendRigOn makes r, whose coordinator sends, a send rig.
+func sendRigOn(t *testing.T, r *mailRig, mode string) *sendRig {
+	t.Helper()
 	old := sendBackoff
 	sendBackoff = func(int) time.Duration { return 0 }
 	t.Cleanup(func() { sendBackoff = old })
 	se := newFakeSendEdge(t)
-	r := newMailRig(t, MailConfig{Send: NewEdgeSender(se)})
+	r.edge.mu.Lock()
+	r.edge.send = se
+	r.edge.mu.Unlock()
 	r.runner.events = eventsWith(summaryWith(t, func(p map[string]any) {
 		p["state"], p["text"], p["steps"] = "ready_for_review", agentAnswer, []any{}
 		delete(p, "question")
 	}))
 	w, mb := r.worker()
-	keys, _ := mb.keys()
-	se.keys[mb.MailboxID] = keys.Signing.Public().(ed25519.PublicKey)
 	if res := r.workerOp(w.ID, "op_mode", "setDefaultMode", defaultModeArgs{Mode: mode, Owner: "dana@example.com", Firm: "Acme"}); !res.OK {
 		t.Fatalf("setDefaultMode: %+v", res)
 	}
@@ -533,12 +515,17 @@ func TestSetThreadReplyModeOnlyLowers(t *testing.T) {
 func TestAnAccountNoticeGoesOncePerKey(t *testing.T) {
 	r := newSendRig(t, modeNotify)
 	ctx := context.Background()
+	// The mail loop's notices (lapse.go) are NotifyOwner's.
+	notices := r.c.mail.cfg.Notices
+	if notices == nil {
+		t.Fatal("a sending coordinator has no owner notices")
+	}
 	for range 2 {
-		if err := r.c.NotifyOwner(ctx, "acct/lapsed/1", "lapsed", r.w.Account, r.w.ID, time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+		if err := notices.Notify(ctx, OwnerNotice{Key: "acct/lapsed/1", Kind: NoticeLapsed, Account: r.w.Account, WorkerID: r.w.ID, Until: time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := r.c.NotifyOwner(ctx, "acct/lapsed/1", "lapsed", r.w.Account, "w_other", time.Time{}); err != nil {
+	if err := notices.Notify(ctx, OwnerNotice{Key: "acct/lapsed/1", Kind: NoticeLapsed, Account: r.w.Account, WorkerID: "w_other"}); err != nil {
 		t.Fatal(err)
 	}
 	r.pass()
@@ -574,5 +561,53 @@ func TestAForwardedQuestionIsADraft(t *testing.T) {
 	d := r.draft(th.ID, draftID)
 	if d.Content != draftContentQuestion || d.Text != "Which quarter?" || d.QuestionID == "" || d.Hash == "" {
 		t.Fatalf("draft %+v", d)
+	}
+}
+
+// Sends go through the mail loop's Service: under a generation they name it,
+// and the edge's fence lets them through.
+func TestASendNamesTheGeneration(t *testing.T) {
+	r := sendRigOn(t, genRig(t, MailConfig{Send: true}), modeNotify)
+	th, e := r.drafted()
+	if res := r.approve(th, e, "op_ok", 1); !res.OK {
+		t.Fatalf("approve: %+v", res)
+	}
+	r.pass()
+	if !r.edge.coord.Mailbox(r.mb.MailboxID).Enrolled {
+		t.Fatal("the mailbox wasn't enrolled")
+	}
+	d := r.draft(th.ID, e.ID)
+	if n := r.send.count(r.send.delivered, d.MessageID); n != 1 || d.Send.State != sendSent {
+		t.Fatalf("delivered %d times, send %+v", n, d.Send)
+	}
+	for _, c := range r.edge.coord.Calls() {
+		if strings.HasPrefix(c, "fenced") {
+			t.Errorf("the fence refused %s", c)
+		}
+	}
+}
+
+// A coordinator that names no generation can't send for a mailbox another
+// one enrolled: the fence holds the send's query, and nothing is posted.
+func TestAnEnrolledMailboxRefusesASendWithoutTheGeneration(t *testing.T) {
+	r := newSendRig(t, modeNotify)
+	th, e := r.drafted()
+	pub, _, _ := ed25519.GenerateKey(nil)
+	r.edge.coord.Advance(3, pub)
+	if err := r.edge.coord.Enroll(r.mb.MailboxID); err != nil {
+		t.Fatal(err)
+	}
+	if res := r.approve(th, e, "op_ok", 1); !res.OK {
+		t.Fatalf("approve: %+v", res)
+	}
+	if err := r.c.runSends(context.Background(), r.w.ID); err != nil {
+		t.Fatal(err)
+	}
+	d := r.draft(th.ID, e.ID)
+	if n := r.send.count(r.send.posts, d.MessageID); n != 0 || d.Send.State != sendSending {
+		t.Fatalf("posted %d times, send %+v", n, d.Send)
+	}
+	if !slices.Contains(r.edge.coord.Calls(), "fenced POST /sent/query: generation_required") {
+		t.Fatalf("calls %v", r.edge.coord.Calls())
 	}
 }

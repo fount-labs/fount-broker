@@ -232,7 +232,7 @@ type sendOutcome struct {
 // the mail pass, under the worker's mail lock, so one worker's sends run one
 // at a time.
 func (c *Coordinator) runSends(ctx context.Context, workerID string) error {
-	sender := c.cfg.Mail.Send
+	sender := c.sender
 	if sender == nil {
 		return nil
 	}
@@ -296,7 +296,7 @@ func (c *Coordinator) attemptSend(ctx context.Context, sender MailSender, keys *
 	}
 	q, err := sender.QuerySent(ctx, keys, r.MessageID)
 	if err != nil {
-		return sendOutcome{retry: retryAfter(err, r.Tries)}
+		return sendOutcome{retry: sendBackoff(r.Tries)}
 	}
 	switch q.State {
 	case sentDone:
@@ -408,12 +408,12 @@ func refusedSend(err error, r *sendRecord) sendOutcome {
 		if se.Code == "send_in_doubt" {
 			return maybeSent(r)
 		}
-		// A send of it in progress (with Retry-After), or the ID taken by
+		// A send of it in progress, or the ID taken by
 		// other bytes. The next try's query tells them apart: a hash that
 		// isn't ours is maybe_sent, and the ID is never posted again.
-		return sendOutcome{retry: max(se.RetryAfter, sendBackoff(r.Tries)), posted: true}
+		return sendOutcome{retry: sendBackoff(r.Tries), posted: true}
 	case 503:
-		return sendOutcome{retry: max(se.RetryAfter, sendBackoff(r.Tries))}
+		return sendOutcome{retry: sendBackoff(r.Tries)}
 	case 429:
 		return final(CodeSendLimit)
 	case 403:
@@ -436,13 +436,6 @@ func refusedSend(err error, r *sendRecord) sendOutcome {
 		return sendOutcome{retry: sendBackoff(r.Tries), posted: true}
 	}
 	return final(CodeSendFailed)
-}
-
-func retryAfter(err error, tries int) time.Duration {
-	if se := asSendError(err); se != nil && se.RetryAfter > 0 {
-		return se.RetryAfter
-	}
-	return sendBackoff(tries)
 }
 
 // recordOutcome writes what an attempt found, if the record is still the

@@ -417,8 +417,7 @@ func mailConfig(on bool, authority, keyMode, dir string) (coordinator.MailConfig
 		}
 		return coordinator.MailConfig{}, nil
 	}
-	edge := route.NewMailEdge()
-	cfg := coordinator.MailConfig{Service: mail.New(edge, coordinator.NoLocalCheck{}), Send: coordinator.NewEdgeSender(edge)}
+	cfg := coordinator.MailConfig{Service: mail.New(route.NewMailEdge(), coordinator.NoLocalCheck{}), Send: true}
 	if authority == "" {
 		log.Printf("mail: no coordinator generation: the vault doesn't issue them yet, so the mail loop names none")
 		return cfg, nil

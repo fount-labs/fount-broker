@@ -23,15 +23,21 @@ var accountNoticeText = map[string][2]string{
 	"resumed":     {"%s is running again", "%s's payment went through, so its workers are running again."},
 }
 
-// NotifyOwner is OwnerNotices.Notify, field for field: an adapter
-// `func (a ownerNotices) Notify(ctx, n) error { return a.c.NotifyOwner(ctx,
-// n.Key, string(n.Kind), n.Account, n.WorkerID, n.Until) }` plugs it in.
+// ownerNotices is the mail loop's OwnerNotices (lapse.go) on NotifyOwner.
+type ownerNotices struct{ c *Coordinator }
+
+func (a ownerNotices) Notify(ctx context.Context, n OwnerNotice) error {
+	return a.c.NotifyOwner(ctx, n.Key, string(n.Kind), n.Account, n.WorkerID, n.Until)
+}
+
+// NotifyOwner sends account's notice of kind once per key, from the
+// account's lead worker to its owner.
 func (c *Coordinator) NotifyOwner(ctx context.Context, key, kind, account, workerID string, until time.Time) error {
 	words, ok := accountNoticeText[kind]
 	if !ok {
 		return fmt.Errorf("%w: no notice %q", ErrInvalid, kind)
 	}
-	if c.cfg.Mail.Send == nil {
+	if c.sender == nil {
 		return nil
 	}
 	lead, err := c.noticeLead(account)
