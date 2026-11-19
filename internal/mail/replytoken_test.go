@@ -230,3 +230,44 @@ func TestGetReadsReplyTokenFromHeaders(t *testing.T) {
 		})
 	}
 }
+
+// A key with a TokenKey mints and checks under it alone: the signing seed
+// neither mints a token that passes nor checks one, and the signing key can
+// change without changing a token.
+func TestReplyTokensUnderTheTokenKey(t *testing.T) {
+	seed := replyVectorKeys(seq32(0))
+	k := replyVectorKeys(seq32(0))
+	k.TokenKey = seq32(100)
+	tok, err := MintReplyToken(k, replyVectorHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok == replyVectorToken {
+		t.Fatal("the token key mints the seed's token")
+	}
+	if got := CheckReplyToken(k, "w+"+tok+"@fountbox.com"); got == nil || got.Handle != replyVectorHandle {
+		t.Fatalf("own token: %+v", got)
+	}
+	// A device holding the signing seed (a removed admin's copy).
+	if got := CheckReplyToken(k, "w+"+replyVectorToken+"@fountbox.com"); got == nil || got.Error != replyTokenMismatch {
+		t.Fatalf("a seed's token: %+v", got)
+	}
+	if got := CheckReplyToken(seed, "w+"+tok+"@fountbox.com"); got == nil || got.Error != replyTokenMismatch {
+		t.Fatalf("the seed checks the token key's token: %+v", got)
+	}
+	// The signing key rotates; the token doesn't.
+	rotated := replyVectorKeys(seq32(7))
+	rotated.TokenKey = k.TokenKey
+	if again, _ := MintReplyToken(rotated, replyVectorHandle); again != tok {
+		t.Fatal("rotating the signing key changed the token")
+	}
+	// A token key of the wrong size is refused, never a fallback to the seed.
+	bad := replyVectorKeys(seq32(0))
+	bad.TokenKey = make([]byte, 16)
+	if _, err := MintReplyToken(bad, replyVectorHandle); err == nil {
+		t.Fatal("a short token key minted")
+	}
+	if got := CheckReplyToken(bad, "w+"+replyVectorToken+"@fountbox.com"); got == nil || got.Handle != "" {
+		t.Fatalf("a short token key fell back to the seed: %+v", got)
+	}
+}

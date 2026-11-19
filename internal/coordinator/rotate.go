@@ -23,9 +23,10 @@ import (
 //  2. POST /coordinator/signing-key with the new key's proof, signed by the
 //     coordinator's generation key (mail.Service.RotateSigningKey); the
 //     edge's 409 for the key it already has is the earlier attempt landing;
-//  3. the new seed becomes the signing key, the old one is kept as the reply
-//     seed (reply tokens are keyed from it, and threads keep theirs), and the
-//     Service is given the new keys;
+//  3. the new seed becomes the signing key and the old one is dropped, and
+//     the Service is given the new keys. Reply tokens aren't keyed from any
+//     signing seed (Coordinator.mailKeys), so threads keep theirs and nothing
+//     of the old key is kept;
 //  4. the worker leaves Team.Rotate.
 //
 // The decryption key isn't rotated: mail already delivered was sealed to it,
@@ -109,11 +110,8 @@ func (c *Coordinator) rotateWorker(ctx context.Context, workerID string) error {
 		if mb == nil || !slices.Equal(mb.NextSigningKey, next) {
 			return fmt.Errorf("%w: the worker's mailbox changed while its key rotated", ErrInvalid)
 		}
-		if mb.ReplySeed == nil {
-			mb.ReplySeed = mb.SigningKey
-		}
 		mb.SigningKey, mb.NextSigningKey = next, nil
-		if keys, err = mb.keys(); err != nil {
+		if keys, err = c.mailKeys(mb); err != nil {
 			return err
 		}
 		return writeJSON(t, mailboxPath, mb)

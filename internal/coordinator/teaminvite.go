@@ -212,9 +212,11 @@ func inviteMailText(firm, email string, role Role, code string, exp time.Time) s
 // address. It goes through the send journal once per invite. It returns the
 // send record's id.
 //
-// The edge sends only to an address the worker's owners proved they read
-// (fount-mail-edge internal/send/policy.go), so until it takes invites, this
-// is refused for anyone who isn't, and the admin copies the link instead.
+// /send goes only to an address the worker's owners proved they read, so an
+// invite is posted on the edge's coordinator route instead (POST
+// /coordinator/invite, signed by the generation key): one plain-text message
+// to one address, at most 20 a day per worker. A refusal fails the record
+// with the edge's code, and the admin copies the link instead.
 func (c *Coordinator) SendInvite(caller Caller, team, invite, member string, secret []byte, workerID string) (string, error) {
 	if c.sender == nil {
 		return "", fmt.Errorf("%w: this coordinator doesn't send mail", ErrUnsupported)
@@ -274,7 +276,7 @@ func (c *Coordinator) SendInvite(caller Caller, team, invite, member string, sec
 		firm := rs.firm(mb)
 		text := inviteMailText(firm, m.Email, m.Role, code, time.Unix(m.Invite.Exp, 0)) + "\n" + footer(firm, false) + "\n"
 		part := c.derivedPart(messageIDInfo, from, sendKindNotice, "invite", team, invite)
-		r := &sendRecord{ID: id, Kind: sendKindNotice, Attempt: 1, State: sendSending, To: []string{m.Email},
+		r := &sendRecord{ID: id, Kind: sendKindInvite, Attempt: 1, State: sendSending, To: []string{m.Email},
 			MessageID: messageID(part, strings.ToLower(part[:16]), domainOf(mb.Address))}
 		raw, err := c.buildOut(t, nil, mb, r, []string{sendKindNotice, "invite", team, invite}, "Join "+firm+" in Fount", "", nil, text, nil, time.Now().UTC())
 		if err != nil {

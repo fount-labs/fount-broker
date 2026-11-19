@@ -772,7 +772,7 @@ func TestAReplyTokenPicksTheThread(t *testing.T) {
 	r.pass()
 	th := onlyThread(t, r.threads(w.ID))
 	waitJob(t, r.c, mailJobID(first))
-	keys, _ := mb.keys()
+	keys, _ := r.c.mailKeys(&mb)
 	token, err := mail.MintReplyToken(keys, th.Handle)
 	if err != nil {
 		t.Fatal(err)
@@ -807,7 +807,7 @@ func TestAnEmailedAnswerResumesTheWaitingJob(t *testing.T) {
 	r.pass()
 	waitJob(t, r.c, mailJobID(first))
 	th := r.waitStatus(w.ID, onlyThread(t, r.threads(w.ID)).ID, StatusWaiting)
-	keys, _ := mb.keys()
+	keys, _ := r.c.mailKeys(&mb)
 	token, err := mail.MintReplyToken(keys, th.Handle)
 	if err != nil {
 		t.Fatal(err)

@@ -56,6 +56,8 @@ var edgeCodes = map[string]error{
 	"generation_conflict": ErrGenerationConflict,
 	"not_coordinated":     ErrNotCoordinated,
 	"send_in_doubt":       ErrSendInDoubt,
+	"invite_limit":        ErrInviteLimit,
+	"invite_refused":      ErrInviteRefused,
 }
 
 // EdgeError is a Device API call the edge refused. It matches ErrEdge, and
@@ -352,6 +354,37 @@ func (s *Service) Send(ctx context.Context, mailbox string, body []byte) (json.R
 		return nil, fmt.Errorf("%w: a send body is JSON of at most %d bytes", ErrRequest, MaxSendBody)
 	}
 	return s.c.addressPost(ctx, k, "POST", "/send", body, maxJSON)
+}
+
+// The edge's codes for a refused invite (POST /coordinator/invite).
+var (
+	// ErrInviteLimit: the worker's invites for the day are spent.
+	ErrInviteLimit = errors.New("mail: the worker's invite limit for the day is reached")
+	// ErrInviteRefused: the message isn't an invite's shape: one recipient,
+	// plain text, small.
+	ErrInviteRefused = errors.New("mail: the edge refused the invite")
+)
+
+// SendInvite posts a team invite from mailbox (POST /coordinator/invite,
+// decision 26): signed by the current generation's key, not the address
+// key, which is what lets the edge send it to someone who isn't an owner.
+// raw is the whole message; the answer is the edge's, as for Send. The
+// edge records it as the worker's, so SentQuery finds it.
+func (s *Service) SendInvite(ctx context.Context, mailbox string, raw []byte) (json.RawMessage, error) {
+	if !validHex(mailbox, 32) || len(raw) == 0 {
+		return nil, fmt.Errorf("%w: a mailbox is 64 lowercase hex characters and an invite a message", ErrRequest)
+	}
+	body, err := json.Marshal(struct {
+		MailboxID string `json:"mailbox_id"`
+		Message   []byte `json:"message"`
+	}{mailbox, raw})
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > MaxSendBody {
+		return nil, fmt.Errorf("%w: an invite body is at most %d bytes", ErrRequest, MaxSendBody)
+	}
+	return s.coordinatorCall(ctx, "/coordinator/invite", body, maxJSON)
 }
 
 // SentRecord is one answer of POST /sent/query.

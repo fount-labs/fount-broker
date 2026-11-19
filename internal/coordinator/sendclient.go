@@ -18,6 +18,10 @@ import (
 type MailSender interface {
 	// Send posts raw as it is. A refusal is a *SendError.
 	Send(ctx context.Context, k *mail.Keys, raw []byte) ([]RecipientResult, error)
+	// SendInvite posts a team invite as it is (POST /coordinator/invite),
+	// signed by the coordinator's generation key, so it may go to someone
+	// who isn't an owner. A refusal is a *SendError.
+	SendInvite(ctx context.Context, k *mail.Keys, raw []byte) ([]RecipientResult, error)
 	// QuerySent asks what the edge knows of messageID from the worker.
 	QuerySent(ctx context.Context, k *mail.Keys, messageID string) (SentRecord, error)
 }
@@ -90,6 +94,20 @@ func (s serviceSender) Send(ctx context.Context, k *mail.Keys, raw []byte) ([]Re
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, fmt.Errorf("%w: POST /send: %v", mail.ErrEdge, err)
+	}
+	return out.Results, nil
+}
+
+func (s serviceSender) SendInvite(ctx context.Context, k *mail.Keys, raw []byte) ([]RecipientResult, error) {
+	data, err := s.service.SendInvite(ctx, s.mailbox(k), raw)
+	if err != nil {
+		return nil, sendError(err)
+	}
+	var out struct {
+		Results []RecipientResult `json:"results"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("%w: POST /coordinator/invite: %v", mail.ErrEdge, err)
 	}
 	return out.Results, nil
 }

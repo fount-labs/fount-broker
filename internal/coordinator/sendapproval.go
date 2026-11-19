@@ -57,7 +57,7 @@ func (c *Coordinator) approvalToken(workerID, threadID, draftID string, a *appro
 
 // askApproval sends the owner the draft with an approval token.
 func (c *Coordinator) askApproval(t *Tree, th *threadRecord, mb *Mailbox, rs *replySettings, id, draftID string, d *draftEntry, now time.Time) error {
-	keys, err := mb.keys()
+	keys, err := c.mailKeys(mb)
 	if err != nil {
 		return err
 	}

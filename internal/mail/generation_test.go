@@ -7,7 +7,10 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/fount-labs/fount-broker/internal/mail/mailtest"
 )
 
 // generation makes generation n under the fake edge's authority.
@@ -219,5 +222,58 @@ func TestDevGenerationsMoveOnPerProcess(t *testing.T) {
 	}
 	if err := g2.check(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// An invite goes on POST /coordinator/invite, signed by the generation's key,
+// and the fake edge holds it to the edge's rules: enrolled, one plain-text
+// recipient, the day's budget.
+func TestSendInviteIsTheCoordinatorsCall(t *testing.T) {
+	s, f, _, v := newService(t)
+	ctx := context.Background()
+	invite := func(to, id string, extra string) []byte {
+		return []byte("From: w@fountbox.com\r\nTo: " + to + "\r\nSubject: Join\r\nDate: Thu, 19 Nov 2026 12:00:00 +0000\r\nMessage-ID: <" + id + ">\r\n" + extra + "\r\nHi.\r\n")
+	}
+	var got [][]byte
+	f.coord.OnInvite = func(w http.ResponseWriter, mailbox string, message []byte) {
+		got = append(got, message)
+		w.Write([]byte(`{"results":[{"recipient":"ann@firm.com","status":"sent"}]}`))
+	}
+	if _, err := s.SendInvite(ctx, v.MailboxID, invite("ann@firm.com", "i0@x", "")); !errors.Is(err, ErrNoGeneration) {
+		t.Fatalf("before a generation: %v", err)
+	}
+	s.SetGeneration(f.generation(t, 1))
+	if err := s.AdvanceGeneration(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SendInvite(ctx, v.MailboxID, invite("ann@firm.com", "i1@x", "")); !errors.Is(err, ErrNotCoordinated) {
+		t.Fatalf("not enrolled: %v", err)
+	}
+	if err := s.Enroll(ctx, v.MailboxID); err != nil {
+		t.Fatal(err)
+	}
+	data, err := s.SendInvite(ctx, v.MailboxID, invite("ann@firm.com", "i2@x", "Content-Type: text/plain; charset=utf-8\r\n"))
+	if err != nil || !strings.Contains(string(data), `"sent"`) || len(got) != 1 {
+		t.Fatalf("%s %v", data, err)
+	}
+	for name, raw := range map[string][]byte{
+		"two":  invite("ann@firm.com, bo@firm.com", "i3@x", ""),
+		"html": invite("ann@firm.com", "i4@x", "Content-Type: text/html\r\n"),
+	} {
+		if _, err := s.SendInvite(ctx, v.MailboxID, raw); !errors.Is(err, ErrInviteRefused) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	f.coord.UseInvites(v.MailboxID, mailtest.InvitesPerDay)
+	if _, err := s.SendInvite(ctx, v.MailboxID, invite("ann@firm.com", "i5@x", "")); !errors.Is(err, ErrInviteLimit) {
+		t.Fatalf("past the limit: %v", err)
+	}
+	// A newer generation has spoken: this one is stale.
+	f.coord.Advance(2, f.generation(t, 2).Key.Public().(ed25519.PublicKey))
+	if _, err := s.SendInvite(ctx, v.MailboxID, invite("ann@firm.com", "i6@x", "")); !errors.Is(err, ErrStaleGeneration) {
+		t.Fatalf("stale: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("%d invites reached the sink", len(got))
 	}
 }

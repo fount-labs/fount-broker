@@ -1,6 +1,8 @@
 package mailtest
 
 import (
+	"bufio"
+	"bytes"
 	"cmp"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -10,7 +12,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
+	"net/textproto"
 	"slices"
 	"strconv"
 	"strings"
@@ -36,7 +40,18 @@ type Coordination struct {
 	nonces    map[string]bool
 	// calls is every coordinator route called and fence refusal, in order.
 	calls []string
+	// invites counts each mailbox's invites taken, against InvitesPerDay.
+	invites map[string]int
+
+	// OnInvite sends an invite the fake took (POST /coordinator/invite):
+	// the fake edge's send path, which answers it and keeps its sent
+	// record under mailbox. nil answers 501, as an edge with sending off.
+	OnInvite func(w http.ResponseWriter, mailbox string, message []byte)
 }
+
+// InvitesPerDay is the edge's per-worker invite budget (send.InvitesPerDay).
+// The fake never refills it.
+const InvitesPerDay = 20
 
 // CoordinatedMailbox is what the fake keeps of one mailbox.
 type CoordinatedMailbox struct {
@@ -51,7 +66,7 @@ type CoordinatedMailbox struct {
 }
 
 func NewCoordination(authority ed25519.PublicKey) *Coordination {
-	return &Coordination{authority: authority, epoch: randomHex(8), mailboxes: map[string]*CoordinatedMailbox{}, nonces: map[string]bool{}}
+	return &Coordination{authority: authority, epoch: randomHex(8), mailboxes: map[string]*CoordinatedMailbox{}, nonces: map[string]bool{}, invites: map[string]int{}}
 }
 
 // Refusal is an answer the fake gives instead of serving a call.
@@ -241,7 +256,7 @@ func (c *Coordination) Serve(w http.ResponseWriter, r *http.Request, body []byte
 			return true
 		}
 		json.NewEncoder(w).Encode(map[string]uint64{"generation": c.gen})
-	case "POST /coordinator/lapse", "POST /coordinator/changes", "POST /coordinator/signing-key":
+	case "POST /coordinator/lapse", "POST /coordinator/changes", "POST /coordinator/signing-key", "POST /coordinator/invite":
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		c.calls = append(c.calls, route)
@@ -263,6 +278,20 @@ func (c *Coordination) Serve(w http.ResponseWriter, r *http.Request, body []byte
 			c.lapse(w, body)
 		case "POST /coordinator/signing-key":
 			c.rotate(w, body, addressKey)
+		case "POST /coordinator/invite":
+			mailbox, message, ref := c.invite(body)
+			if ref != nil {
+				ref.Write(w)
+				return true
+			}
+			if c.OnInvite == nil {
+				refuse(http.StatusNotImplemented, "", "sending is off").Write(w)
+				return true
+			}
+			// The sink keeps its own lock, and may read c.
+			c.mu.Unlock()
+			c.OnInvite(w, mailbox, message)
+			c.mu.Lock()
 		default:
 			c.changes(w, body)
 		}
@@ -339,6 +368,45 @@ func (c *Coordination) rotate(w http.ResponseWriter, body []byte, addressKey fun
 	c.touch(m)
 	sum := sha256.Sum256(key)
 	json.NewEncoder(w).Encode(map[string]string{"mailbox_id": req.MailboxID, "signing_key_sha256": hex.EncodeToString(sum[:])})
+}
+
+// invite checks POST /coordinator/invite as the edge's send.Policy.CheckInvite
+// does: an enrolled worker, one recipient outside its domain, plain text, and
+// the day's budget. c.mu held.
+func (c *Coordination) invite(body []byte) (string, []byte, *Refusal) {
+	var req struct {
+		MailboxID string `json:"mailbox_id"`
+		Message   []byte `json:"message"`
+	}
+	if json.Unmarshal(body, &req) != nil || len(req.Message) == 0 {
+		return "", nil, refuse(http.StatusBadRequest, "", "bad request body")
+	}
+	m := c.mailboxes[req.MailboxID]
+	if m == nil || !m.Enrolled {
+		return "", nil, refuse(http.StatusConflict, "not_coordinated", "the mailbox isn't enrolled")
+	}
+	h, err := textproto.NewReader(bufio.NewReader(bytes.NewReader(req.Message))).ReadMIMEHeader()
+	if err != nil {
+		return "", nil, refuse(http.StatusBadRequest, "", "bad message")
+	}
+	notInvite := refuse(http.StatusBadRequest, "invite_refused", "not an invite")
+	from, to := h.Get("From"), h.Values("To")
+	if len(to) != 1 || strings.Contains(to[0], ",") || len(h.Values("Cc")) > 0 || len(req.Message) > 64<<10 {
+		return "", nil, notInvite
+	}
+	if at := strings.LastIndexByte(from, '@'); at < 0 || strings.HasSuffix(strings.ToLower(strings.TrimRight(to[0], "> ")), strings.ToLower(strings.TrimRight(from[at:], "> "))) {
+		return "", nil, notInvite
+	}
+	if ct := h.Get("Content-Type"); ct != "" {
+		if mt, _, err := mime.ParseMediaType(ct); err != nil || mt != "text/plain" {
+			return "", nil, notInvite
+		}
+	}
+	if c.invites[req.MailboxID] >= InvitesPerDay {
+		return "", nil, refuse(http.StatusTooManyRequests, "invite_limit", "this worker's invite limit for the day is reached")
+	}
+	c.invites[req.MailboxID]++
+	return req.MailboxID, req.Message, nil
 }
 
 func (c *Coordination) changes(w http.ResponseWriter, body []byte) {
@@ -480,4 +548,12 @@ func randomHex(n int) string {
 	b := make([]byte, n)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// UseInvites spends n of mailbox's invites for the day, as earlier invites
+// would have.
+func (c *Coordination) UseInvites(mailbox string, n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.invites[mailbox] += n
 }

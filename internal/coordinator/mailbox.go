@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"crypto/ecdh"
 	"crypto/ed25519"
+	"crypto/hkdf"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -54,12 +56,41 @@ type Mailbox struct {
 	DecryptionKey []byte `json:"decryptionKey"`
 	// NextSigningKey is a rotation's new seed, kept before the edge is
 	// asked so a lost answer is retried with the same key (rotate.go).
-	// ReplySeed is the first signing seed, which reply tokens stay keyed
-	// from once the signing key has rotated.
+	// Reply tokens aren't keyed from any of these (Coordinator.mailKeys).
 	NextSigningKey []byte `json:"nextSigningKey,omitempty"`
-	ReplySeed      []byte `json:"replySeed,omitempty"`
 }
 
+// replyTokenKeyInfo labels the reply-token key (decision 25).
+const replyTokenKeyInfo = "fount-coordinator/reply-token-key/v1"
+
+// mailKeys are mb's keys as the mail loop reads and sends with them, with
+// the reply-token key (internal/mail replytoken.go). That key is the
+// coordinator's alone: HKDF-SHA256 from its wrapping key, info the label, a
+// zero byte and the mailbox id in hex. It's derived, never stored, so it's in
+// no tree, backup, export or mail setup, and no device it wraps a DEK or an
+// address key to can mint a token. A Cloud worker's address keys are wrapped
+// to every admin device; a token keyed from the signing seed would let a
+// removed admin forge a thread's token, and its rotation would need the old
+// seed kept. This way rotating the signing key leaves every token as it was.
+func (c *Coordinator) mailKeys(mb *Mailbox) (*mail.Keys, error) {
+	k, err := mb.keys()
+	if err != nil {
+		return nil, err
+	}
+	k.TokenKey = c.tokenKey(mb.MailboxID)
+	return k, nil
+}
+
+func (c *Coordinator) tokenKey(mailboxID string) []byte {
+	key, err := hkdf.Key(sha256.New, c.cfg.Key[:], nil, replyTokenKeyInfo+"\x00"+mailboxID, mail.TokenKeySize)
+	if err != nil {
+		panic("hkdf: " + err.Error())
+	}
+	return key
+}
+
+// keys are mb's keys without the reply-token key: enough to sign a call or
+// read mail, not to mint or check a token. The mail loop's are mailKeys.
 func (m Mailbox) keys() (*mail.Keys, error) {
 	id, err := hex.DecodeString(m.MailboxID)
 	if err != nil || len(id) != 32 || hex.EncodeToString(id) != m.MailboxID {
@@ -72,7 +103,7 @@ func (m Mailbox) keys() (*mail.Keys, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: decryptionKey must be a 32-byte X25519 key", ErrInvalid)
 	}
-	return &mail.Keys{MailboxID: id, Signing: ed25519.NewKeyFromSeed(m.SigningKey), Decryption: dec, ReplySeed: m.ReplySeed}, nil
+	return &mail.Keys{MailboxID: id, Signing: ed25519.NewKeyFromSeed(m.SigningKey), Decryption: dec}, nil
 }
 
 func (m Mailbox) check() error {
@@ -238,7 +269,7 @@ func (c *Coordinator) SetMailbox(workerID string, mb Mailbox, requesters []Reque
 		return err
 	}
 	mb.Address, _ = mailAddress(mb.Address)
-	keys, _ := mb.keys()
+	keys, _ := c.mailKeys(&mb)
 	for i := range requesters {
 		a, err := mailAddress(requesters[i].Address)
 		if err != nil {

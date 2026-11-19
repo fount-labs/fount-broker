@@ -221,7 +221,7 @@ func (c *Coordinator) SetUpMail(device, workerID string, sealed []byte) error {
 	if err != nil {
 		return err
 	}
-	keys, _ := s.Mailbox.keys()
+	keys, _ := c.mailKeys(&s.Mailbox)
 	err = c.change(workerID, device, func(t *Tree) error {
 		held, err := loadMailbox(t)
 		switch {
