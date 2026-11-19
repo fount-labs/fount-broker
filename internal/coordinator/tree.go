@@ -24,6 +24,9 @@ type Tree struct {
 	store    Store
 	workerID string
 	dek      DEK
+	// secret seals what only the coordinator reads (treesecret.go); nil on
+	// a tree opened without it.
+	secret   []byte
 	manifest manifest
 	dirty    bool
 	// garbage is the objects the next Commit makes unreachable.

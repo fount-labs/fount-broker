@@ -1,9 +1,13 @@
 package coordinator
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -114,4 +118,70 @@ func TestARecordAdmittedDeviceSignsNoListUntilAListIncludesIt(t *testing.T) {
 	if err := f.tt.push(eve, "eve_acct", nil); err != nil {
 		t.Fatalf("a listed admin device: %v", err)
 	}
+}
+
+// H6: a DEK holder (a reviewer, or a removed member) with the bucket opened
+// the worker's mailbox.json, and so its address keys.
+func TestTheDEKAloneDoesntOpenTheAddressKeys(t *testing.T) {
+	v := newVaultRig(t, nil)
+	c := v.boot(t.TempDir())
+	dek, _ := NewDEK()
+	w, err := c.CreateWorker("acct1", &dek)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mb := Mailbox{Address: "ap@fountbox.com", MailboxID: hex.EncodeToString(seq(0x81)), SigningKey: seq(0x01), DecryptionKey: seq(0x21)}
+	if err := c.SetMailbox(w.ID, mb, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Backup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	keys, _ := v.bucket.List(context.Background(), backupObjectPrefix+w.ID+"/")
+	opened := 0
+	for _, k := range keys {
+		sealed, _ := v.bucket.Get(context.Background(), k)
+		obj := k[strings.LastIndex(k, "/")+1:]
+		plain, err := open(dek[:], sealed, aad(purposeBlob, w.ID, obj))
+		if err != nil {
+			continue
+		}
+		opened++
+		if bytes.Contains(plain, []byte(`"signingKey"`)) || bytes.Contains(plain, []byte(mb.MailboxID)) {
+			t.Fatalf("the DEK alone opened the address keys in %s", k)
+		}
+	}
+	if opened == 0 {
+		t.Fatal("opened no object with the DEK: the test isn't looking")
+	}
+	// The coordinator still reads them, from its tree and from the backup.
+	err = c.view(w.ID, anyDevice, func(t *Tree) error {
+		got, err := loadMailbox(t)
+		if err == nil && got.MailboxID != mb.MailboxID {
+			err = errors.New("another mailbox")
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// H6: a mailbox.json from before is sealed once the mail loop prepares it.
+func TestALegacyMailboxIsSealedOnPrepare(t *testing.T) {
+	r := newMailRig(t, MailConfig{})
+	w, mb := r.worker()
+	plain, _ := json.Marshal(mb)
+	if err := r.c.change(w.ID, anyDevice, func(t *Tree) error { return t.Write(mailboxPath, plain) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.c.prepareMail(w); err != nil {
+		t.Fatal(err)
+	}
+	r.c.view(w.ID, anyDevice, func(tr *Tree) error {
+		if mailboxLegacy(tr) {
+			t.Error("still under the DEK alone")
+		}
+		return nil
+	})
 }

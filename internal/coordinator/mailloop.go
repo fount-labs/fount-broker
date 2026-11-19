@@ -465,7 +465,9 @@ func pauseOf(edge *bool) pause {
 func (c *Coordinator) prepareMail(w Worker) (map[string]bool, error) {
 	m := c.mail
 	acted := map[string]bool{}
+	legacy := false
 	err := c.view(w.ID, anyDevice, func(t *Tree) error {
+		legacy = mailboxLegacy(t)
 		mb, err := loadMailbox(t)
 		if err != nil {
 			return err
@@ -495,7 +497,22 @@ func (c *Coordinator) prepareMail(w Worker) (map[string]bool, error) {
 		}
 		return nil
 	})
+	if err == nil && legacy {
+		err = c.sealMailbox(w.ID)
+	}
 	return acted, err
+}
+
+// sealMailbox writes a worker's mailbox.json again, which seals it under the
+// coordinator's own key (treesecret.go).
+func (c *Coordinator) sealMailbox(workerID string) error {
+	return c.change(workerID, anyDevice, func(t *Tree) error {
+		mb, err := loadMailbox(t)
+		if err != nil {
+			return err
+		}
+		return writeJSON(t, mailboxPath, mb)
+	})
 }
 
 // accountGaps asks the edge to account for missing sequence numbers, when

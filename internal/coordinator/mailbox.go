@@ -221,6 +221,9 @@ func readJSON[T any](t *Tree, path string, v *T) (bool, error) {
 	if errors.Is(err, ErrNotFound) {
 		return false, nil
 	}
+	if err == nil && path == mailboxPath {
+		data, _, err = t.openSecret(path, data)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -234,6 +237,11 @@ func writeJSON(t *Tree, path string, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
+	}
+	if path == mailboxPath {
+		if data, err = t.sealSecret(path, data); err != nil {
+			return err
+		}
 	}
 	return t.Write(path, data)
 }
