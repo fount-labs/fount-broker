@@ -237,6 +237,12 @@ needs `--status-listen` or `--client-listen`, either of which serves `/health`
 and `/status` while it waits, for the healthcheck. Test coordinators and the
 dev build say `--wrapping-key dev`, a key file in `--dir`.
 
+`--backup-bucket` backs the volume up to S3, and `--restore` restores a backup
+onto an empty volume (with `--restore-dry-run` to check one first). For now
+this works only with `--wrapping-key dev` and `--dev-vault`, a stand-in for the
+Cloud vault's generation and counter, which aren't built. Flags, the restore
+runbook and the AWS setup: [docs/backups.md](docs/backups.md).
+
 Desktop's broker reaches a coordinator over the attested client channel
 ([`internal/channel`](internal/channel/channel.go)), served by `--client-listen`
 with `--client-audience`, the origin grants must name. The broker announces that

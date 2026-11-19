@@ -10,6 +10,8 @@
 //	   --status-listen 0.0.0.0:8791]
 //	  [--client-listen 0.0.0.0:8792 --account-keys <base64 SPKI,...> [--client-attestation tinfoil]
 //	   [--cloud-credentials-only]] [--mail [--mail-generation-authority <file>]]
+//	  [--backup-bucket https://<bucket>.s3.<region>.amazonaws.com --backup-region <region>
+//	   [--backup-forwarder <host:port>] --dev-vault <file> [--restore latest|roots/<key> [--restore-dry-run]]]
 //	fount-coordinator health [http://127.0.0.1:8790/health]
 //
 // The runner command is started once per job with fount-runner's --workspace,
@@ -61,6 +63,13 @@
 // it or --client-listen, which serves both too, and the healthcheck must point
 // at one. Vault serves no dev API: its workers come only over the client
 // channel, to the devices their grants name.
+//
+// --backup-bucket backs the volume up to S3 and counts every security change
+// in the vault (coordinator.BackupConfig); --restore puts a backup onto an
+// empty --dir before serving, and --restore-dry-run checks one and writes
+// nothing. Until the Cloud vault has a generation and counter they need
+// --wrapping-key dev and --dev-vault, a file standing in for both. See
+// docs/backups.md.
 package main
 
 import (
@@ -138,6 +147,16 @@ func run() error {
 	mailLoop := flag.Bool("mail", false, "receive Cloud workers' mail from the mail edge: each worker with a mailbox gets its requests as thread turns")
 	mailAuthority := flag.String("mail-generation-authority", "", "with --mail and --wrapping-key dev: a file holding the Ed25519 seed a dev edge has as COORDINATOR_AUTHORITY_KEY, made on first run; the coordinator signs its own generation certificates with it, standing in for the vault")
 	audience := flag.String("client-audience", os.Getenv("FOUNT_CLIENT_AUDIENCE"), "with --client-listen: the coordinator's origin, https://<host>, which worker grants must name")
+	backups := backupFlags{getenv: os.Getenv}
+	flag.StringVar(&backups.bucket, "backup-bucket", os.Getenv("FOUNT_BACKUP_BUCKET"), "back the volume up to this S3 bucket, its endpoint https://<bucket>.s3.<region>.amazonaws.com; credentials from $AWS_ACCESS_KEY_ID and $AWS_SECRET_ACCESS_KEY")
+	flag.StringVar(&backups.region, "backup-region", os.Getenv("FOUNT_BACKUP_REGION"), "with --backup-bucket: the bucket's region")
+	flag.StringVar(&backups.forwarder, "backup-forwarder", os.Getenv("FOUNT_BACKUP_FORWARDER"), "with --backup-bucket: host:port of the S3 forwarder container every connection to the bucket goes through, in an enclave")
+	flag.DurationVar(&backups.interval, "backup-interval", coordinator.DefaultBackupInterval, "with --backup-bucket: how often a changed volume is backed up")
+	flag.DurationVar(&backups.retention, "backup-retention", coordinator.DefaultBackupRetention, "with --backup-bucket: how long backups are kept, at most 80 days")
+	flag.BoolVar(&backups.deleteMail, "backup-delete-mail", false, "with --backup-bucket: delete mail from the edge once every backup a restore could take has acted on it")
+	flag.StringVar(&backups.devVault, "dev-vault", "", "with --backup-bucket and --wrapping-key dev: a file, off the volume, standing in for the Cloud vault's generation and security counter")
+	flag.StringVar(&backups.restore, "restore", "", "with --backup-bucket: restore this backup, latest or roots/<key>, onto an empty --dir before serving; a volume already restored onto is served as it is")
+	flag.BoolVar(&backups.dryRun, "restore-dry-run", false, "with --restore: check the backup opens whole and a restore would take it, write nothing, serve nothing")
 	flag.Parse()
 	if *dir == "" || (flag.NArg() == 0) == (*runnerAddr == "") {
 		return errors.New("usage: fount-coordinator --dir <folder> [flags] (-- <runner command...> | --runner-addr <host:port>)")
@@ -195,6 +214,10 @@ func run() error {
 	if err := keys.check(); err != nil {
 		return err
 	}
+	backups.keyMode, backups.dir = keys.mode, *dir
+	if err := backups.check(); err != nil {
+		return err
+	}
 	clients, err := clientFlags{listen: *clientListen, accountKeys: *accountKeys, attestation: *clientAttest, cloudOnly: *cloudOnly, audience: *audience}.server()
 	if err != nil {
 		return err
@@ -242,7 +265,21 @@ func run() error {
 	if *mailLoop && intake == nil {
 		return errors.New("--mail needs a runner that runs intake")
 	}
-	mailCfg, err := mailConfig(*mailLoop, *mailAuthority, keys.mode, *dir)
+	dur, err := backups.openDurable(*mailAuthority)
+	if err != nil {
+		return err
+	}
+	if err := backups.restoreVolume(ctx, dur, key); err != nil {
+		if errors.Is(err, errDryRunDone) {
+			// Waiting, not exiting, so an enclave that restarts its
+			// container doesn't check again and again.
+			log.Printf("restore dry run done; serving nothing until stopped")
+			<-ctx.Done()
+			return nil
+		}
+		return err
+	}
+	mailCfg, err := mailConfig(*mailLoop, *mailAuthority, keys.mode, *dir, dur.generations())
 	if err != nil {
 		return err
 	}
@@ -260,6 +297,7 @@ func run() error {
 		JobConfig:   config,
 		Intake:      intake,
 		Mail:        mailCfg,
+		Backup:      backups.config(dur),
 	})
 	if err != nil {
 		return err
@@ -267,6 +305,9 @@ func run() error {
 	jobs.Store(c)
 	if *mailLoop {
 		go c.RunMail(ctx)
+	}
+	if dur != nil {
+		go c.RunBackups(ctx)
 	}
 
 	if clients != nil {
@@ -410,14 +451,21 @@ func readJobConfig(value string) (json.RawMessage, error) {
 // issues generation certificates (decision 18), only a dev coordinator has a
 // generation, from --mail-generation-authority, and reads the edge's changes
 // feed; without one the loop names none, and polls each mailbox.
-func mailConfig(on bool, authority, keyMode, dir string) (coordinator.MailConfig, error) {
+func mailConfig(on bool, authority, keyMode, dir string, gen mail.GenerationSource) (coordinator.MailConfig, error) {
 	if !on {
-		if authority != "" {
-			return coordinator.MailConfig{}, errors.New("--mail-generation-authority needs --mail")
+		if authority != "" && gen == nil {
+			return coordinator.MailConfig{}, errors.New("--mail-generation-authority needs --mail or --dev-vault")
 		}
 		return coordinator.MailConfig{}, nil
 	}
 	cfg := coordinator.MailConfig{Service: mail.New(route.NewMailEdge(), coordinator.NoLocalCheck{}), Send: true}
+	if gen != nil {
+		// Backups count under this process's generation from the dev
+		// vault, and mail runs under the same one.
+		cfg.Generations = gen
+		cfg.Changes = coordinator.EdgeChanges{Service: cfg.Service}
+		return cfg, nil
+	}
 	if authority == "" {
 		log.Printf("mail: no coordinator generation: the vault doesn't issue them yet, so the mail loop names none")
 		return cfg, nil
