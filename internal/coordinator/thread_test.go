@@ -196,7 +196,7 @@ func TestChangesSinceARevision(t *testing.T) {
 	}
 	got, _ := json.Marshal(th.changes(2))
 	want := `{"full":false,"revision":3,"header":{"id":"thr_1","revision":3,"worker":{"name":"","address":""},"subject":"Close Acme","status":"idle","replyMode":"off","participants":[],"viewers":[],"sessionId":null},` +
-		`"entries":[{"id":"` + th.Entries[1].ID + `","seq":2,"rev":3,"at":"2026-11-18T09:00:00Z","kind":"agent-turn","jobId":"j_1","steps":[],"files":[{"name":"memo.md"}]}]}`
+		`"entries":[{"id":"` + th.Entries[1].ID + `","seq":2,"rev":3,"at":"2026-11-18T09:00:00Z","kind":"agent-turn","jobId":"j_1","steps":[],"files":[{"name":"memo.md","path":"threads/thr_1/outputs/j_1/memo.md"}]}]}`
 	if string(got) != want {
 		t.Errorf("changes:\n got %s\nwant %s", got, want)
 	}

@@ -540,6 +540,9 @@ type turnView struct {
 
 type attachmentView struct {
 	Name string `json:"name"`
+	// Path is a job output's or a draft file's path in the worker root,
+	// which the files route reads as root/<path>.
+	Path string `json:"path,omitempty"`
 	Note string `json:"note,omitempty"`
 	// Proposal is a pending proposal's path in the worker root.
 	Proposal string `json:"proposal,omitempty"`
@@ -617,7 +620,7 @@ func (th *threadRecord) display(since uint64) []DisplayEntry {
 				v.Steps = []workStep{}
 			}
 			for _, p := range e.Outputs {
-				v.Files = append(v.Files, attachmentView{Name: path.Base(p)})
+				v.Files = append(v.Files, attachmentView{Name: path.Base(p), Path: p})
 			}
 			for _, p := range e.Proposed {
 				a := attachmentView{Name: path.Base(p), Note: proposalNotes[e.Decided[p]]}

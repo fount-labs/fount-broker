@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -10,8 +11,13 @@ import (
 // the draft and blocks nothing: anyone may still approve, and the first
 // approval wins (decision 5). A claim on a claimed draft takes it over.
 //
-//	claimDraft    {draftId}
+//	claimDraft    {draftId, editing?}
 //	releaseClaim  {draftId}   the claimer's own; anyone else's is left
+//
+// editing is the path of one of the draft's files the claimer has unsaved
+// edits to (draftfiles.go): "Maria is editing report.docx". Desktop claims
+// with it at the first unsaved change and again while the edits stay
+// unsaved; a save, or a claim without it, clears it.
 
 const claimLifetime = 30 * time.Minute
 
@@ -22,10 +28,14 @@ type draftClaim struct {
 	Device    string    `json:"device"`
 	At        time.Time `json:"at"`
 	ExpiresAt time.Time `json:"expiresAt"`
+	// Editing is the file the claimer has unsaved edits to, by its path in
+	// the worker root.
+	Editing string `json:"editing,omitempty"`
 }
 
 type claimArgs struct {
 	DraftID string `json:"draftId"`
+	Editing string `json:"editing,omitempty"`
 	release bool
 }
 
@@ -40,6 +50,14 @@ func parseClaimOp(env opEnvelope) (any, bool, error) {
 		return nil, true, err
 	}
 	a.release = env.Kind == "releaseClaim"
+	if a.Editing != "" {
+		if a.release {
+			return nil, true, fmt.Errorf("%w: releaseClaim takes no editing", ErrInvalid)
+		}
+		if err := checkPath(a.Editing); err != nil {
+			return nil, true, err
+		}
+	}
 	return a, true, checkID("draft", a.DraftID)
 }
 
@@ -56,7 +74,15 @@ func (a claimArgs) applyDraft(c *Coordinator, _ *Tree, th *threadRecord, device 
 		d.Claim, e.Rev = nil, rev
 		return []string{e.ID}, effects{}, nil
 	}
-	cl := &draftClaim{By: c.approverName(th.WorkerID, device), Device: device, At: now, ExpiresAt: now.Add(claimLifetime)}
+	if cl := editingElsewhere(d, device, now); cl != nil {
+		// Someone's unsaved edits keep their mark: a claim takes over a
+		// reviewer's label, not an editor's.
+		return nil, effects{}, beingEdited(cl)
+	}
+	if a.Editing != "" && !slices.Contains(d.Files, a.Editing) {
+		return nil, effects{}, refusal{code: CodeAttachmentMissing, detail: map[string]string{"path": a.Editing}}
+	}
+	cl := &draftClaim{By: c.approverName(th.WorkerID, device), Device: device, At: now, ExpiresAt: now.Add(claimLifetime), Editing: a.Editing}
 	if m := c.memberOf(th.WorkerID, device); m != nil {
 		cl.Member = m.ID
 	}

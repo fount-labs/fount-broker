@@ -138,7 +138,10 @@ type approval struct {
 	// Member is the approver's team member id; Token the approving
 	// device's signed approval (approvalsig.go), for an approval in the app.
 	Member string `json:"member,omitempty"`
-	Token  string `json:"token,omitempty"`
+	// Resent is who asked for this attempt after an earlier one may have
+	// arrived; the approval above is still the one that signed it.
+	Resent *resend `json:"resent,omitempty"`
+	Token  string  `json:"token,omitempty"`
 }
 
 func sendPath(id string) string  { return sendsDir + id + ".json" }
@@ -426,8 +429,10 @@ func refusedSend(err error, r *sendRecord) sendOutcome {
 	case 503:
 		return sendOutcome{retry: sendBackoff(r.Tries)}
 	case 429:
-		// A worker's sending limit, or its invites for the day
-		// (invite_limit).
+		// A worker's invites for the day, or its sending limit.
+		if se.Code == "invite_limit" {
+			return final(CodeInviteLimit)
+		}
 		return final(CodeSendLimit)
 	case 403:
 		msg := strings.ToLower(se.Message)
@@ -616,4 +621,13 @@ func (c *Coordinator) buildOut(t *Tree, th *threadRecord, mb *Mailbox, r *sendRe
 		From: mb.Address, To: to, Subject: subject, Date: now, MessageID: r.MessageID,
 		InReplyTo: inReplyTo, References: refs, Text: text, Files: files,
 	})
+}
+
+// resend is a member's choice to send an approved reply again under a new
+// Message-ID, from the record From.
+type resend struct {
+	By     string    `json:"by"`
+	Device string    `json:"device,omitempty"`
+	At     time.Time `json:"at"`
+	From   string    `json:"from"`
 }

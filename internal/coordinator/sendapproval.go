@@ -12,7 +12,7 @@ import (
 )
 
 // Approval by email (m4-cloud-runners.md §3.3, fount-mail-design §14). When
-// the owner is on Full, a draft's notice is the draft itself: its exact
+// a reviewer is on Full, the draft's notice to them is the draft itself: its exact
 // recipients, files and text. Its Message-ID's random part is a one-time
 // approval token, an HMAC under a key from the wrapping key, which only the
 // coordinator holds (decision 25), over the worker, thread, draft, draft_rev,
@@ -55,8 +55,10 @@ func (c *Coordinator) approvalToken(workerID, threadID, draftID string, a *appro
 	return c.derivedPart(approvalIDInfo, workerID, threadID, draftID, fmt.Sprint(a.DraftRev), a.Binding, a.To, fmt.Sprint(a.ExpiresAt.Unix()))
 }
 
-// askApproval sends the owner the draft with an approval token.
-func (c *Coordinator) askApproval(t *Tree, th *threadRecord, mb *Mailbox, rs *replySettings, id, draftID string, d *draftEntry, now time.Time) error {
+// askApproval sends a reviewer on Full, to, the draft with an approval
+// token: the owner's is the draft's Ask, every other reviewer's one of its
+// Asks.
+func (c *Coordinator) askApproval(t *Tree, th *threadRecord, mb *Mailbox, rs *replySettings, id, draftID string, d *draftEntry, to string, now time.Time) error {
 	keys, err := c.mailKeys(mb)
 	if err != nil {
 		return err
@@ -69,7 +71,7 @@ func (c *Coordinator) askApproval(t *Tree, th *threadRecord, mb *Mailbox, rs *re
 	if err != nil {
 		return err
 	}
-	ask := &approvalAsk{DraftRev: d.DraftRev, Binding: d.Binding, To: strings.ToLower(rs.Owner), ExpiresAt: now.Add(approvalLifetime).Truncate(time.Second), SendID: id}
+	ask := &approvalAsk{DraftRev: d.DraftRev, Binding: d.Binding, To: strings.ToLower(to), ExpiresAt: now.Add(approvalLifetime).Truncate(time.Second), SendID: id}
 	var names []string
 	for _, p := range d.Files {
 		names = append(names, path.Base(p))
@@ -99,8 +101,25 @@ func (c *Coordinator) askApproval(t *Tree, th *threadRecord, mb *Mailbox, rs *re
 	if _, err := c.stageSend(t, th.WorkerID, r, raw); err != nil {
 		return err
 	}
-	d.Ask = ask
+	if ask.To == strings.ToLower(rs.Owner) {
+		d.Ask = ask
+	} else {
+		d.Asks = append(d.Asks, *ask)
+	}
 	return nil
+}
+
+// asks are the approval emails out for d's draft_rev: the owner's, then the
+// other reviewers'.
+func (d *draftEntry) asks() []*approvalAsk {
+	var out []*approvalAsk
+	if d.Ask != nil {
+		out = append(out, d.Ask)
+	}
+	for i := range d.Asks {
+		out = append(out, &d.Asks[i])
+	}
+	return out
 }
 
 // approvalIDs are the random parts of the worker's Message-IDs a reply
@@ -170,10 +189,18 @@ func (c *Coordinator) emailApproval(t *Tree, th *threadRecord, mb *Mailbox, s *M
 	rev := th.Revision + 1
 	for i := range th.Entries {
 		e := &th.Entries[i]
-		if e.Kind != entryDraft || e.Draft.Ask == nil || !slices.Contains(ids, c.approvalToken(th.WorkerID, th.ID, e.ID, e.Draft.Ask)) {
+		if e.Kind != entryDraft {
 			continue
 		}
-		ask := e.Draft.Ask
+		var ask *approvalAsk
+		for _, a := range e.Draft.asks() {
+			if slices.Contains(ids, c.approvalToken(th.WorkerID, th.ID, e.ID, a)) {
+				ask = a
+			}
+		}
+		if ask == nil {
+			continue
+		}
 		if sender != ask.To {
 			// Someone else answered the approval email: an ordinary email.
 			return false, th.event(rev, now, "approval_refused", map[string]string{"draftId": e.ID, "reason": "it isn't from " + ask.To})
@@ -216,6 +243,8 @@ func emailApprovalRefused(d *draftEntry, ask *approvalAsk, rs *replySettings, s 
 		return "the draft was already sent or discarded"
 	case d.DraftRev != ask.DraftRev || d.Binding != ask.Binding:
 		return "the draft changed since the approval email"
+	case editingElsewhere(d, "", now) != nil:
+		return d.Claim.By + " is editing one of its attachments in Fount"
 	case !in.r.Spec.Reply:
 		return "intake didn't read it as a reply"
 	}
