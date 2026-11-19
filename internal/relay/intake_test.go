@@ -146,7 +146,7 @@ func TestIntakeCarriesNoCredentials(t *testing.T) {
 
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "message.eml"), []byte("x"), 0o644)
-	coordinator.RemoteRunner{Addr: jobL.Addr().String()}.RunIntake(context.Background(), "acct1", dir)
+	coordinator.RemoteRunner{Addr: jobL.Addr().String()}.RunIntake(context.Background(), "runner-1", "acct1", dir)
 	f := <-got
 	job, err := jobwire.DecodeJob(f, jobwire.FromBroker)
 	if err != nil || job.Mode != jobwire.ModeIntake || job.Credentials != nil || len(f.Body) != 0 {
@@ -211,7 +211,7 @@ func TestAHostileIntakeOutIsRefused(t *testing.T) {
 		}
 		dir := t.TempDir()
 		os.WriteFile(filepath.Join(dir, "message.eml"), []byte("x"), 0o644)
-		_, err := coordinator.RemoteRunner{Addr: h.addr, Limits: c.limits}.RunIntake(context.Background(), "acct1", dir)
+		_, err := coordinator.RemoteRunner{Addr: h.addr, Limits: c.limits}.RunIntake(context.Background(), "runner-1", "acct1", dir)
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v", c.name, err)
 		}
@@ -229,7 +229,7 @@ func TestAFailedIntakeHandsBackNothing(t *testing.T) {
 	}
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "message.eml"), []byte("x"), 0o644)
-	res, err := coordinator.RemoteRunner{Addr: h.addr}.RunIntake(context.Background(), "acct1", dir)
+	res, err := coordinator.RemoteRunner{Addr: h.addr}.RunIntake(context.Background(), "runner-1", "acct1", dir)
 	if err != nil || res.ExitCode != 1 || !strings.Contains(string(res.Events), "intake-failed") {
 		t.Fatalf("%+v: %v", res, err)
 	}
@@ -259,7 +259,7 @@ func TestIntakeInputIsOnlyTheEmail(t *testing.T) {
 			os.MkdirAll(filepath.Join(dir, filepath.Dir(f)), 0o755)
 			os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o644)
 		}
-		_, err := coordinator.RemoteRunner{Addr: h.addr}.RunIntake(context.Background(), "acct1", dir)
+		_, err := coordinator.RemoteRunner{Addr: h.addr}.RunIntake(context.Background(), "runner-1", "acct1", dir)
 		if err == nil || strings.Contains(err.Error(), "sandbox reached") {
 			t.Errorf("%s: %v", name, err)
 		}

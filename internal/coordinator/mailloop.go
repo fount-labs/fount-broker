@@ -125,6 +125,8 @@ type mailLoop struct {
 	restored map[string]bool
 	// kicked is the workers to pass over next, sweep or not.
 	kicked map[string]bool
+	// slotWaiters is the workers whose intake found no runner slot.
+	slotWaiters map[string]bool
 	// cursor is the changes feed's, kept in mailCursorFile; loaded says it
 	// was read from there.
 	cursor    string
@@ -159,7 +161,7 @@ func newMailLoop(cfg MailConfig) *mailLoop {
 	return &mailLoop{
 		cfg: cfg, service: cfg.Service, wake: make(chan struct{}, 1),
 		syncs: map[string]*sync.Mutex{}, restored: map[string]bool{}, kicked: map[string]bool{}, renewed: map[string]Renewed{},
-		enrolled: map[string]bool{},
+		enrolled: map[string]bool{}, slotWaiters: map[string]bool{},
 	}
 }
 
@@ -295,7 +297,10 @@ func (c *Coordinator) mailPass(ctx context.Context, now time.Time) {
 			// The cursor has moved past its change: it's tried again next
 			// pass, and on every sweep.
 			log.Printf("worker %s: mail: %v", w.ID, err)
-			m.kick(w.ID)
+			// Mail waiting on a runner slot is passed over when one frees.
+			if !errors.Is(err, errRunnersBusy) {
+				m.kick(w.ID)
+			}
 		}
 		if sweep {
 			c.renewDue(ctx, w, now)

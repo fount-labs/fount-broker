@@ -58,7 +58,7 @@ func (r RemoteRunner) Run(ctx context.Context, _, account string, job JobDirs) (
 // which holds no credentials and no index, and puts what comes back in
 // dir/out. The tree back is held to intake's own caps, and ReadIntake checks
 // it after.
-func (r RemoteRunner) RunIntake(ctx context.Context, account, dir string) (RunResult, error) {
+func (r RemoteRunner) RunIntake(ctx context.Context, _, account, dir string) (RunResult, error) {
 	out := filepath.Join(dir, intakeOut)
 	if _, err := os.Lstat(out); err == nil {
 		return RunResult{}, fmt.Errorf("%w: %s is there before intake ran", ErrIntake, intakeOut)

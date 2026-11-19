@@ -309,6 +309,9 @@ type fakeIntake struct {
 	// and reply says the email is a reply.
 	instruction, source string
 	reply               bool
+
+	// onRun, if set, sees each run's runner and account as it starts.
+	onRun func(runnerID, account string)
 }
 
 // ran says whether intake was asked to read the email edgeID.
@@ -324,7 +327,10 @@ const (
 	intakeCSV         = "date,amount\n2026-09-30,12\n"
 )
 
-func (f *fakeIntake) RunIntake(_ context.Context, account, dir string) (RunResult, error) {
+func (f *fakeIntake) RunIntake(_ context.Context, runnerID, account, dir string) (RunResult, error) {
+	if f.onRun != nil {
+		f.onRun(runnerID, account)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.runs++
@@ -425,6 +431,9 @@ type mailRig struct {
 	runner *mailRunner
 	intake *fakeIntake
 	cfg    MailConfig
+	// pool is the runner pool every start shares; nil is one runner with
+	// two slots.
+	pool   *Pool
 	c      *Coordinator
 	cancel context.CancelFunc
 }
@@ -448,9 +457,12 @@ func (r *mailRig) start() {
 	}
 	cfg := r.cfg
 	cfg.Service = mail.New(r.edge, NoLocalCheck{})
+	if r.pool == nil {
+		r.pool = NewPool(1, 2, nil)
+	}
 	c, err := New(Config{
 		StateDir: filepath.Join(r.dir, "state"), WorkDir: filepath.Join(r.dir, "work"),
-		Store: r.store, Key: r.key, Pool: NewPool(1, 2, nil), Runner: r.runner, Intake: r.intake, Audience: testAudience,
+		Store: r.store, Key: r.key, Pool: r.pool, Runner: r.runner, Intake: r.intake, Audience: testAudience,
 		JobConfig: json.RawMessage(`{"model":"m"}`), Mail: cfg,
 	})
 	if err != nil {

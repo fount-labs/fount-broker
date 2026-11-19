@@ -98,7 +98,7 @@ func TestRemoteIntakeRefusesAHostileTree(t *testing.T) {
 		addr, saw := fakeEnclave(t, back)
 		dir := t.TempDir()
 		os.WriteFile(filepath.Join(dir, "message.eml"), []byte("x"), 0o644)
-		_, err := RemoteRunner{Addr: addr}.RunIntake(context.Background(), "acct1", dir)
+		_, err := RemoteRunner{Addr: addr}.RunIntake(context.Background(), "runner-1", "acct1", dir)
 		if err := <-saw; err != nil {
 			t.Fatalf("%s: the enclave saw %v", name, err)
 		}
@@ -120,7 +120,7 @@ func TestRemoteIntakeKeepsAGoodTree(t *testing.T) {
 	addr, saw := fakeEnclave(t, buf.Bytes())
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "message.eml"), []byte("x"), 0o644)
-	if _, err := (RemoteRunner{Addr: addr}).RunIntake(context.Background(), "acct1", dir); err != nil {
+	if _, err := (RemoteRunner{Addr: addr}).RunIntake(context.Background(), "runner-1", "acct1", dir); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-saw; err != nil {
