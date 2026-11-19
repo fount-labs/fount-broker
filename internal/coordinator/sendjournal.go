@@ -132,6 +132,10 @@ type approval struct {
 	// that approved.
 	DKIM  string `json:"dkim,omitempty"`
 	Email string `json:"email,omitempty"`
+	// Member is the approver's team member id; Token the approving
+	// device's signed approval (approvalsig.go), for an approval in the app.
+	Member string `json:"member,omitempty"`
+	Token  string `json:"token,omitempty"`
 }
 
 func sendPath(id string) string  { return sendsDir + id + ".json" }

@@ -206,7 +206,7 @@ func (c *Coordinator) StartRecovery(caller Caller, team, member string, a passke
 	}
 	rec := TeamRecord{Kind: RecordRecoveryStart, Member: member, Account: caller.Account, Proof: raw}
 	var seq uint64
-	err = c.appendRecord(caller, team, rec, func(st *teamState, m *Member) error {
+	_, err = c.appendRecord(caller, team, rec, func(st *teamState, m *Member) error {
 		refuse := func(format string, args ...any) error {
 			return fmt.Errorf("%w: %s", ErrListRefused, fmt.Sprintf(format, args...))
 		}
@@ -254,7 +254,7 @@ func (c *Coordinator) CancelRecovery(caller Caller, team string, start uint64, s
 		return Recovery{}, err
 	}
 	rec := TeamRecord{Kind: RecordRecoveryCancel, Member: r.Member, Account: r.Account, Proof: raw}
-	err = c.appendRecord(caller, team, rec, func(st *teamState, m *Member) error {
+	_, err = c.appendRecord(caller, team, rec, func(st *teamState, m *Member) error {
 		d, by := st.device(caller.Device)
 		switch {
 		case by == nil || by.Account != caller.Account:
@@ -285,7 +285,7 @@ func (c *Coordinator) FinishRecovery(caller Caller, team string, start uint64, i
 		return Recovery{}, err
 	}
 	rec := TeamRecord{Kind: RecordRecoveryDone, Member: r.Member, Account: caller.Account, Device: inclusion, Proof: raw}
-	err = c.appendRecord(caller, team, rec, func(st *teamState, m *Member) error {
+	_, err = c.appendRecord(caller, team, rec, func(st *teamState, m *Member) error {
 		if err := c.recoveryIs(team, st, start, recoveryReady); err != nil {
 			return err
 		}

@@ -46,6 +46,8 @@ type CoordinatedMailbox struct {
 	HoldUntil int64
 	Sequence  uint64
 	Changed   uint64
+	// SigningKey is the address signing key a rotation set, nil before one.
+	SigningKey ed25519.PublicKey
 }
 
 func NewCoordination(authority ed25519.PublicKey) *Coordination {
@@ -113,6 +115,9 @@ func (c *Coordination) Address(r *http.Request, body []byte, mailbox string, pub
 	defer c.mu.Unlock()
 	if r.Header.Get("Fount-Key-Id") != mailbox {
 		return refuse(http.StatusUnauthorized, "", "unknown address key")
+	}
+	if m := c.mailboxes[mailbox]; m != nil && m.SigningKey != nil {
+		pub = m.SigningKey
 	}
 	if ref := c.verify(r, body, pub); ref != nil {
 		return ref
@@ -236,7 +241,7 @@ func (c *Coordination) Serve(w http.ResponseWriter, r *http.Request, body []byte
 			return true
 		}
 		json.NewEncoder(w).Encode(map[string]uint64{"generation": c.gen})
-	case "POST /coordinator/lapse", "POST /coordinator/changes":
+	case "POST /coordinator/lapse", "POST /coordinator/changes", "POST /coordinator/signing-key":
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		c.calls = append(c.calls, route)
@@ -253,9 +258,12 @@ func (c *Coordination) Serve(w http.ResponseWriter, r *http.Request, body []byte
 			refuse(http.StatusConflict, "stale_generation", "a newer coordinator generation has taken over").Write(w)
 			return true
 		}
-		if route == "POST /coordinator/lapse" {
+		switch route {
+		case "POST /coordinator/lapse":
 			c.lapse(w, body)
-		} else {
+		case "POST /coordinator/signing-key":
+			c.rotate(w, body, addressKey)
+		default:
 			c.changes(w, body)
 		}
 	default:
@@ -287,6 +295,50 @@ func (c *Coordination) lapse(w http.ResponseWriter, body []byte) {
 		c.touch(m)
 	}
 	json.NewEncoder(w).Encode(map[string]any{"mailbox_id": req.MailboxID, "lapsed": m.Lapsed, "hold_until": m.HoldUntil})
+}
+
+// rotate is POST /coordinator/signing-key: the new key must prove it's held
+// and differ from the current one, which addressKey or an earlier rotation
+// gives.
+func (c *Coordination) rotate(w http.ResponseWriter, body []byte, addressKey func(string) ed25519.PublicKey) {
+	var req struct {
+		MailboxID  string `json:"mailbox_id"`
+		SigningKey string `json:"signing_key"`
+		Proof      string `json:"proof"`
+	}
+	if json.Unmarshal(body, &req) != nil {
+		refuse(http.StatusBadRequest, "", "bad request body").Write(w)
+		return
+	}
+	key, kerr := base64.StdEncoding.DecodeString(req.SigningKey)
+	proof, perr := base64.StdEncoding.DecodeString(req.Proof)
+	id, ierr := hex.DecodeString(req.MailboxID)
+	if kerr != nil || perr != nil || ierr != nil || len(key) != ed25519.PublicKeySize {
+		refuse(http.StatusBadRequest, "", "bad request body").Write(w)
+		return
+	}
+	m := c.mailboxes[req.MailboxID]
+	if m == nil || !m.Enrolled {
+		refuse(http.StatusConflict, "not_coordinated", "the mailbox isn't enrolled").Write(w)
+		return
+	}
+	msg := append(append([]byte("fount-mail-edge/v1/signing-key\x00"), id...), key...)
+	if !ed25519.Verify(key, msg, proof) {
+		refuse(http.StatusForbidden, "", "the proof isn't the new key's").Write(w)
+		return
+	}
+	current := m.SigningKey
+	if current == nil && addressKey != nil {
+		current = addressKey(req.MailboxID)
+	}
+	if current != nil && current.Equal(ed25519.PublicKey(key)) {
+		refuse(http.StatusConflict, "", "routing: that is already the mailbox's signing key").Write(w)
+		return
+	}
+	m.SigningKey = ed25519.PublicKey(key)
+	c.touch(m)
+	sum := sha256.Sum256(key)
+	json.NewEncoder(w).Encode(map[string]string{"mailbox_id": req.MailboxID, "signing_key_sha256": hex.EncodeToString(sum[:])})
 }
 
 func (c *Coordination) changes(w http.ResponseWriter, body []byte) {

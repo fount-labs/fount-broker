@@ -175,8 +175,8 @@ their proof checks**, and call `appendRecord` (§9) once a proof checks out.
 
 | Kind | Proof | Checked by the coordinator | Admits | Built in |
 |---|---|---|---|---|
-| `invite` | the invite's secret, revealed once used | an open invite on the member, `SHA-256("fount-team-invite-v1\0" ‖ team ‖ member ‖ secret) == commit`, before `exp`, not used before (a record for it exists = used), the channel credential's **verified email** is the member's, and the channel's account isn't another member's. Binds `account`. | a device | T, invites |
-| `join` | a signature by one of the member's admitted devices over `("fount-team-join-v1", team, join id, nonce, new key)` | the approver is admitted under the same member; the channel's account is the member's. The code comparison of `cloud-worker-devices.md` §2.3 happens on the devices. | a device | H, second device |
+| `invite` | the invite's secret, revealed once used | an open invite on the member, `commit == base64url(SHA-256(lp("fount-team-invite-v1\0", team, member, invite, secret)))`, before `exp`, not used before (a record for it exists = used), the channel credential's **verified email** is the member's, and the channel's account isn't another member's. Binds `account`. | a device | T, invites |
+| `join` | `{join, nonce, approver, sig}`: a signature by one of the member's admitted devices over `lp("fount-team-join-v1\0", aud, team, member, join, nonce, key, enc)`, the new device's Ed25519 and X25519 keys | the approver is admitted under the same member; the channel's account is the member's. The code comparison of `cloud-worker-devices.md` §2.3 happens on the devices. | a device | T, second device (the code path; the passkey path is H's) |
 | `recovery-start` | a WebAuthn assertion by the member's `rec` passkey over `SHA-256(join id ‖ nonce ‖ new key)` | the passkey is the member's `rec`; the channel's account is the member's. Starts a 72-hour wait. | nothing | H, recovery |
 | `recovery-cancel` | a signature over `("fount-team-recovery-cancel-v1", team, start seq)` | the signer is admitted under the member or under an admin, and the recovery still waits | nothing | H, recovery |
 | `recovery-done` | the `recovery-start` record's `seq` | 72 hours have passed and no `recovery-cancel` names it | a device | H, recovery |
@@ -207,6 +207,55 @@ So the existing under-the-lock checks (`loadTree`, `enqueueAs`) keep meaning "th
 this worker" without a rewrite, and a removal takes effect in them at once.
 
 ---
+
+### 2.5 Invites, second devices, signed approvals and rotation (T)
+
+`lp(ctx, f…)` is `lengthPrefixed`: the context, then each field as a big-endian u16 length and its
+bytes. Vectors for every format here: `internal/coordinator/testdata/team-invite-vectors.json`.
+
+- **The team name** is an optional `name` in the list (≤ 120 runes, trimmed, no control
+  characters), so it is admin-signed like everything else in it.
+- **An invite.** The admin's device makes a 32-byte secret and lists the member with
+  `invite: {id, commit, exp}`. The secret never goes in a list: it travels in the code
+  `fi1.<team>.<member>.<invite>.<base64url secret>`, after `#` in `https://fount.sh/join#…` and
+  `fount://join#…`, so no server log sees it. `POST /v1/teams/{team}/invites/{invite}/open`
+  `{member, secret}` checks it without using it (Desktop shows the firm, role and email);
+  `…/accept` `{member, secret, device}` appends the `invite` record, whose proof is
+  `{invite, secret, email}`, and seals the device its wraps. The checks, in order: not used, an
+  open invite with that id, the commit (constant time), before `exp`, the Cloud credential's `eml`
+  (lower-case, present only when Clerk verified it) equals the member's email. The record's proof
+  rechecks all but the credential when any client replays the log.
+- **Sending it.** `…/send` (admin) stages one notice per invite on the send journal from a team
+  worker's address. The edge today sends only to a mailbox's proven owners, so this is refused
+  until the edge allows a coordinator-signed invite to a non-owner; Desktop's main path is "Copy
+  invite link".
+- **A second device.** `POST /v1/teams/{team}/joins {key, enc}` from the new device (its own
+  key; its account must be a member's) gives `{join, nonce, member, expiresAt}`, kept 15 minutes
+  in memory, 3 per member. The member's admitted devices list them (`GET …/joins`), both show
+  `JoinCode` = `SHA-256(lp("fount-team-join-code-v1\0", join, nonce, key, enc))[:4]` big-endian
+  mod 10⁶ as six digits, and one signs (`…/{join}/approve {sig}`) or drops it (`…/deny`). The new
+  device polls `GET …/{join}` and accepts (`…/accept {device}`) with an inclusion carrying the
+  approved keys. About 20 bits: the code stops a person approving the wrong request, not a
+  coordinator, which holds the DEKs anyway.
+- **Admissions** email the team's owner (`member_joined`, once per entry). The cancel window is
+  the next list without the device.
+- **A signed approval** of a draft in the app is a token like a list's:
+  `base64url(payload).base64url(Ed25519(device, "fount-draft-approval-v1\n" ‖ payload))`, payload
+  `{v:1, typ:"fount-draft-approval", aud, worker, thread, draft, draftRev, to (lower-case,
+  sorted), subject, text (SHA-256 hex of the exact text sent), files [{path, sha256}] (never
+  null), dev, iat}`. A device's `approveDraft` must carry it as `approval`; it is checked against
+  the final text and files (after the approver's edit), `iat` within the last hour (5 minutes'
+  skew), and kept in the send record, the draft and the sign-off record
+  `record/mail/signoff/<sendId>.json` (requesters, reviewer, via, time, recipients, subject, text
+  hash, files with hashes, the token; DKIM domain and edge id for an approval by email, which has
+  no device signature).
+- **A claim** (`claimDraft`, `releaseClaim`) is a label on the draft for 30 minutes, shown as
+  "Maria is reviewing". It blocks nothing; a later claim takes it over with a `claim_taken` event;
+  an expired one is hidden when the thread is read.
+- **Rotation.** The mail pass rotates every worker in `Team.Rotate`: a new seed is kept in the
+  mailbox record first, then `POST /coordinator/signing-key` (the edge's 409 for its current key
+  is a retry landing), then it becomes the signing key, the old seed is kept as `replySeed` for
+  reply tokens, and the worker leaves `Rotate`.
 
 ## 3. Roles and the check on every operation
 
@@ -348,8 +397,9 @@ wiped when this ships. Desktop moves to the team log in the same release.
 
 - They vouch for **an account and a device** each time the channel opens, as before.
 - For invites, the Cloud credential needs one more claim: the account's **verified email**
-  (`eml`, present only when Clerk verified it). The coordinator compares it with the invite's. This
-  is T's fount-infra work.
+  (`eml`, lower-case, present only when Clerk verified it, on the `fount-cloud` credential). The
+  coordinator compares it with the invite's (`DeviceClaims.VerifiedEmail`). This is T's fount-infra
+  work.
 - They never name a team. A firm team's id is the coordinator's (§2.2); fount-infra keeps which
   Clerk organisation it bills, and the coordinator never reads an organisation id.
 - They never make an admin. A Clerk organisation role, if the credential carries one, may be shown

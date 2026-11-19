@@ -306,6 +306,7 @@ func (c *Coordinator) mailPass(ctx context.Context, now time.Time) {
 			c.renewDue(ctx, w, now)
 		}
 	}
+	c.rotateDue(ctx)
 }
 
 // readChanges reads the feed's pages after cursor: the mailboxes that changed,

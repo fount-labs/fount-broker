@@ -152,6 +152,7 @@ func reduceTeam(team, aud string, log []TeamEntry) (*teamState, error) {
 // applyList makes a list the state; what it leaves out is gone.
 func (s *teamState) applyList(l TeamList, aud string) error {
 	s.members, s.byID, s.byDevice, s.workers = nil, map[string]*Member{}, map[string]*Member{}, map[string]string{}
+	s.name = l.Name
 	for _, w := range l.Workers {
 		s.workers[w.ID] = w.DEK
 	}
@@ -177,10 +178,17 @@ func (s *teamState) applyRecord(r TeamRecord, team, aud string) error {
 	if m == nil || !recordKinds[r.Kind] {
 		return errors.New("a record for no member, or of no kind")
 	}
-	if r.Kind == RecordInvite {
-		if m.Invite == nil {
-			return errors.New("an invite record for a member with no invite")
+	switch r.Kind {
+	case RecordInvite:
+		if err := checkInviteProof(s, team, r, m); err != nil {
+			return err
 		}
+	case RecordJoin:
+		if err := checkJoinProof(s, aud, team, r, m); err != nil {
+			return err
+		}
+	}
+	if r.Kind == RecordInvite {
 		s.usedInvites[m.Invite.ID] = true
 		m.Invite, m.Account = nil, r.Account
 	}
@@ -410,42 +418,48 @@ func listMemberOf(l TeamList, device, aud string) *ListMember {
 // the same locks, and is the caller's: the invite secret and verified email,
 // a listed device's approval, the passkey and the wait. The caller is the
 // device being admitted, or for recovery-cancel the one cancelling.
-func (c *Coordinator) appendRecord(caller Caller, team string, rec TeamRecord, proof func(*teamState, *Member) error) error {
+func (c *Coordinator) appendRecord(caller Caller, team string, rec TeamRecord, proof func(*teamState, *Member) error) (uint64, error) {
 	unlock := c.lockTeam(team, nil)
 	defer unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, ok := c.state.Teams[team]; !ok {
-		return ErrNoTeam
+		return 0, ErrNoTeam
 	}
 	prior, err := c.teamState(team)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	seq, err := c.appendRecordLocked(caller, team, prior, rec, proof)
+	return seq, err
+}
+
+// appendRecordLocked is appendRecord with c.mu and the team's locks held.
+func (c *Coordinator) appendRecordLocked(caller Caller, team string, prior *teamState, rec TeamRecord, proof func(*teamState, *Member) error) (uint64, error) {
 	refuse := func(format string, args ...any) error {
 		return fmt.Errorf("%w: %s", ErrListRefused, fmt.Sprintf(format, args...))
 	}
 	m := prior.byID[rec.Member]
 	switch {
 	case !recordKinds[rec.Kind]:
-		return refuse("no record kind %.20q", rec.Kind)
+		return 0, refuse("no record kind %.20q", rec.Kind)
 	case m == nil:
-		return refuse("no member %.40q", rec.Member)
+		return 0, refuse("no member %.40q", rec.Member)
 	case m.Account != "" && rec.Account != m.Account:
-		return refuse("member %s is another account", m.ID)
+		return 0, refuse("member %s is another account", m.ID)
 	case m.Account == "" && rec.Kind != RecordInvite:
-		return refuse("member %s hasn't taken their invite", m.ID)
+		return 0, refuse("member %s hasn't taken their invite", m.ID)
 	case rec.Kind == RecordInvite && m.Invite == nil:
-		return refuse("member %s has no open invite", m.ID)
+		return 0, refuse("member %s has no open invite", m.ID)
 	case checkID("account", rec.Account) != nil:
-		return refuse("the record's account isn't an id")
+		return 0, refuse("the record's account isn't an id")
 	}
 	if rec.Kind != RecordRecoveryCancel && rec.Account != caller.Account {
-		return refuse("the record is for another account than the caller's")
+		return 0, refuse("the record is for another account than the caller's")
 	}
 	for _, o := range prior.members {
 		if o.Account == rec.Account && o.ID != m.ID {
-			return refuse("account %s is member %s", rec.Account, o.ID)
+			return 0, refuse("account %s is member %s", rec.Account, o.ID)
 		}
 	}
 	rec.Seq, rec.Prev, rec.At = prior.seq+1, prior.head, time.Now().Unix()
@@ -453,31 +467,33 @@ func (c *Coordinator) appendRecord(caller Caller, team string, rec TeamRecord, p
 		d, err := parseTeamInclusion(rec.Device, c.cfg.Audience, team, rec.Account)
 		switch {
 		case err != nil:
-			return refuse("%v", err)
+			return 0, refuse("%v", err)
 		case d.ID != caller.Device:
-			return refuse("a device admits only itself")
+			return 0, refuse("a device admits only itself")
 		case d.Since != rec.Seq:
-			return refuse("device %s's inclusion is for entry %d, and it must be for %d", d.ID, d.Since, rec.Seq)
+			return 0, refuse("device %s's inclusion is for entry %d, and it must be for %d", d.ID, d.Since, rec.Seq)
 		case prior.byDevice[d.ID] != nil:
-			return refuse("device %s is admitted already", d.ID)
+			return 0, refuse("device %s is admitted already", d.ID)
 		case len(m.Devices) >= MaxMemberDevices:
-			return refuse("member %s has %d devices", m.ID, MaxMemberDevices)
+			return 0, refuse("member %s has %d devices", m.ID, MaxMemberDevices)
 		}
 	} else if rec.Device != "" {
-		return refuse("a %s admits no device", rec.Kind)
+		return 0, refuse("a %s admits no device", rec.Kind)
 	}
 	if proof == nil {
-		return refuse("a record needs its proof checked")
+		return 0, refuse("a record needs its proof checked")
 	}
 	if err := proof(prior, m); err != nil {
-		return err
+		return 0, err
 	}
 	payload, err := json.Marshal(rec)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	_, err = c.commitEntry(team, prior, TeamEntry{Seq: rec.Seq, Record: payload, Hash: entryHash(TeamRecordContext, payload)}, nil)
-	return err
+	if _, err := c.commitEntry(team, prior, TeamEntry{Seq: rec.Seq, Record: payload, Hash: entryHash(TeamRecordContext, payload)}, nil); err != nil {
+		return 0, err
+	}
+	return rec.Seq, nil
 }
 
 // commitEntry appends entry to the team's log, makes each of its workers'

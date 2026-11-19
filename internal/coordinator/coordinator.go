@@ -97,6 +97,9 @@ type Coordinator struct {
 	// a newer generation takes over (backupcommit.go).
 	durable *durability
 	fence   fence
+	// joins are devices waiting to join as a member's (teamjoin.go), by id.
+	// Not kept: a restart drops them, and the device asks again.
+	joins map[string]*joinRequest
 }
 
 func New(cfg Config) (*Coordinator, error) {
@@ -125,7 +128,7 @@ func New(cfg Config) (*Coordinator, error) {
 	if cfg.Mail.Send && cfg.Mail.Service == nil {
 		return nil, errors.New("coordinator config: sending mail needs the mail loop's Service")
 	}
-	c := &Coordinator{cfg: cfg, state: state, busy: map[string]bool{}, accountJobs: map[string]int{}, locks: map[string]*sync.Mutex{}, cancels: map[string]context.CancelFunc{}, queued: map[string]string{}, wake: make(chan struct{}, 1)}
+	c := &Coordinator{cfg: cfg, state: state, busy: map[string]bool{}, accountJobs: map[string]int{}, locks: map[string]*sync.Mutex{}, cancels: map[string]context.CancelFunc{}, queued: map[string]string{}, wake: make(chan struct{}, 1), joins: map[string]*joinRequest{}}
 	if cfg.Mail.Send {
 		c.sender = serviceSender{service: cfg.Mail.Service}
 		if c.cfg.Mail.Ack == nil {

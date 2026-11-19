@@ -391,23 +391,64 @@ func TestAReviewerApprovesAndANonMemberCant(t *testing.T) {
 			draftID = e["id"].(string)
 		}
 	}
-	body := func(op string) string {
+	th0, _ := f.c.thread(anyDevice, f.w1.ID, threadID)
+	d0 := th0.entry(draftID).Draft
+	claims := ApprovalClaims{Aud: testAudience, Worker: f.w1.ID, Thread: threadID, Draft: draftID, DraftRev: 1, To: d0.To, Subject: d0.Subject, Text: sha256Hex([]byte(d0.Text)), Iat: time.Now().Unix()}
+	sign := func(d testDevice, a ApprovalClaims) string {
+		token, err := SignApproval(d.key, a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+	body := func(op, token string) string {
+		approval := ""
+		if token != "" {
+			approval = `,"approval":"` + token + `"`
+		}
 		return `{"opId":"` + op + `","threadId":"` + threadID + `","baseRevision":` + strconv.Itoa(int(view["revision"].(float64))) +
-			`,"kind":"approveDraft","args":{"draftId":"` + draftID + `","draftRev":1}}`
+			`,"kind":"approveDraft","args":{"draftId":"` + draftID + `","draftRev":1` + approval + `}}`
 	}
 	stranger := newTestDevice(t)
 	outsider := httptest.NewServer(f.c.AccountHandler(stranger.caller("eve")))
 	t.Cleanup(outsider.Close)
-	if code, out := do(t, outsider, "POST", base+"/ops", body("op_eve")); code != 404 {
+	if code, out := do(t, outsider, "POST", base+"/ops", body("op_eve", sign(stranger, claims))); code != 404 {
 		t.Fatalf("a non-member: %d %v", code, out)
 	}
-	if code, out := do(t, reviewer, "POST", base+"/ops", body("op_maria")); code != 200 || out["ok"] != true {
+	// A device's approval is its signature over exactly what is sent.
+	other := claims
+	other.Text = sha256Hex([]byte("something else"))
+	late := claims
+	late.Iat = time.Now().Add(-2 * time.Hour).Unix()
+	for i, token := range []string{"", sign(f.owner, claims), sign(f.reviewer, other), sign(f.reviewer, late), sign(f.reviewer, claims) + "x"} {
+		if code, out := do(t, reviewer, "POST", base+"/ops", body("op_bad"+strconv.Itoa(i), token)); code != 200 || out["code"] != string(CodeApprovalUnsigned) {
+			t.Fatalf("approval %d: %d %v", i, code, out)
+		}
+	}
+	token := sign(f.reviewer, claims)
+	if code, out := do(t, reviewer, "POST", base+"/ops", body("op_maria", token)); code != 200 || out["ok"] != true {
 		t.Fatalf("the reviewer: %d %v", code, out)
 	}
 	th, _ := f.c.thread(anyDevice, f.w1.ID, threadID)
 	d := th.entry(draftID).Draft
 	if d.State != draftSent || d.Approval.Device != f.reviewer.id() || d.Send.State != sendSending {
 		t.Fatalf("approved: %+v %+v", d, d.Approval)
+	}
+	if d.Approval.Token != token || d.Approval.Member == "" {
+		t.Errorf("the approval keeps no signature: %+v", d.Approval)
+	}
+	// The sign-off record: who asked, who approved, what, signed.
+	var so signoff
+	err = f.c.view(f.w1.ID, anyDevice, func(tr *Tree) error {
+		_, err := readJSON(tr, signoffDir+d.SendID+".json", &so)
+		return err
+	})
+	if err != nil || so.Signature != token || so.Reviewer.Device != f.reviewer.id() || !slices.Equal(so.Requesters, []string{"dana@example.com"}) || so.Text != claims.Text || so.Files == nil {
+		t.Fatalf("the sign-off: %v %+v", err, so)
+	}
+	payload, sig, _ := splitToken(so.Signature)
+	if !ed25519.Verify(f.reviewer.pub(), append([]byte(ApprovalContext), payload...), sig) {
+		t.Error("the sign-off's signature doesn't verify")
 	}
 }
 
