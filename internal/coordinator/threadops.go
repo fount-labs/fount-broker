@@ -419,9 +419,10 @@ func (c *Coordinator) applyThreadOp(device, workerID, threadID string, env opEnv
 		}
 		var r refusal
 		if errors.As(err, &r) {
+			// Nothing a refused operation wrote is kept.
 			result = refused(th.Revision, r.code)
 			result.Detail = r.detail
-			return nil
+			return errAbort
 		}
 		if err != nil {
 			return err
@@ -437,6 +438,9 @@ func (c *Coordinator) applyThreadOp(device, workerID, threadID string, env opEnv
 		}
 		return saveOpLog(t, threadOpsPath(th.ID), ops)
 	}, func() { c.runEffects(device, workerID, fx) })
+	if errors.Is(err, errAbort) {
+		return result, nil
+	}
 	return result, err
 }
 

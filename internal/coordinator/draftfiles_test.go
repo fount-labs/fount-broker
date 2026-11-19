@@ -369,3 +369,140 @@ func TestAnEmailApprovalIsRefusedWhileSomeoneEdits(t *testing.T) {
 		t.Fatal("the thread doesn't say why")
 	}
 }
+
+// Security review H5: a text edit rebuilds the draft from the tree; a file
+// swapped since the reviewer saw it is refused, not sent under their
+// signature. The same holds with a file unticked.
+func TestAnEditedApprovalSendsOnlyTheSignedFiles(t *testing.T) {
+	r := newDraftFileRig(t, "")
+	signed := r.draft(t).FileHashes
+	if err := r.f.c.change(r.f.w1.ID, anyDevice, func(tr *Tree) error {
+		return tr.Write(prefixRoot+r.report, []byte("SWAPPED"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sign := func(files []string, text string) string {
+		dr := r.draft(t)
+		approved := []ApprovedFile{}
+		for _, p := range files {
+			approved = append(approved, ApprovedFile{Path: p, SHA256: signed[p]})
+		}
+		token, err := SignApproval(r.f.admin.key, ApprovalClaims{Aud: testAudience, Worker: r.f.w1.ID, Thread: r.threadID, Draft: r.draftID, DraftRev: 1,
+			To: dr.To, Subject: dr.Subject, Text: sha256Hex([]byte(text)), Files: approved, Iat: time.Now().Unix()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+	before := r.draft(t)
+	out := r.op(t, r.admin, "op_edit", "approveDraft", map[string]any{"draftId": r.draftID, "draftRev": 1, "text": "Edited.", "approval": sign(before.Files, "Edited.")})
+	if out["code"] != string(CodeDraftChanged) || out["detail"].(map[string]any)["path"] != r.report {
+		t.Fatalf("an edit over a swapped file: %v", out)
+	}
+	out = r.op(t, r.admin, "op_untick", "approveDraft", map[string]any{"draftId": r.draftID, "draftRev": 1, "attachments": []string{r.report}, "approval": sign([]string{r.report}, before.Text)})
+	if out["code"] != string(CodeDraftChanged) {
+		t.Fatalf("an untick over a swapped file: %v", out)
+	}
+	d := r.draft(t)
+	if d.State != draftPending || d.DraftRev != 1 || d.Hash != before.Hash || d.Text != before.Text {
+		t.Fatalf("a refused approval changed the draft: %+v", d)
+	}
+	if rec, err := r.f.c.ReadFile(r.f.w1.ID, sendPath(d.SendID)); err != nil || !strings.Contains(string(rec), `"state":"draft"`) {
+		t.Fatalf("a refused approval touched the draft's bytes: %s %v", rec, err)
+	}
+	// Without a swap, the same edit goes.
+	if err := r.f.c.change(r.f.w1.ID, anyDevice, func(tr *Tree) error {
+		return tr.Write(prefixRoot+r.report, []byte("Q3 report"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if out := r.op(t, r.admin, "op_edit2", "approveDraft", map[string]any{"draftId": r.draftID, "draftRev": 1, "text": "Edited.", "approval": sign(before.Files, "Edited.")}); out["ok"] != true {
+		t.Fatalf("an edit over the signed files: %v", out)
+	}
+}
+
+// Security review M6: sending an in-doubt reply again rebuilds it under a
+// new Message-ID; a file changed since the approval is refused, and the
+// approval stays the approver's, with the resend recorded beside it.
+func TestSendingAgainSendsOnlyTheApprovedFiles(t *testing.T) {
+	r := newSendRig(t, modeFull)
+	th, e := r.drafted()
+	file := "threads/" + th.ID + "/outputs/extra/r.txt"
+	err := r.c.change(r.w.ID, anyDevice, func(tr *Tree) error {
+		if err := tr.Write(prefixRoot+file, []byte("A")); err != nil {
+			return err
+		}
+		cur, err := loadThread(tr, th.ID)
+		if err != nil {
+			return err
+		}
+		mb, err := loadMailbox(tr)
+		if err != nil {
+			return err
+		}
+		rs, err := loadReplySettings(tr)
+		if err != nil {
+			return err
+		}
+		d := cur.entry(e.ID).Draft
+		now := time.Now().UTC()
+		if err := r.c.dropDraftBytes(tr, d.SendID, now); err != nil {
+			return err
+		}
+		d.Files, d.DraftRev = []string{file}, d.DraftRev+1
+		if err := r.c.buildDraft(tr, cur, mb, rs, e.ID, d, 1, now); err != nil {
+			return err
+		}
+		return saveThread(tr, cur)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	th, _ = r.c.thread(anyDevice, r.w.ID, th.ID)
+	r.send.mu.Lock()
+	r.send.doubtNext = true
+	r.send.mu.Unlock()
+	if res := r.approve(th, e, "op_ok", 2); !res.OK {
+		t.Fatalf("approve: %+v", res)
+	}
+	r.pass()
+	r.pass()
+	r.pass()
+	d := r.draft(th.ID, e.ID)
+	if d.Send.State != sendMaybe {
+		t.Fatalf("send %+v", d.Send)
+	}
+	first, approver := d.SendID, d.Approval.By
+	sendAgain := func(opID string) OpResult {
+		th, _ := r.c.thread(anyDevice, r.w.ID, th.ID)
+		raw, _ := json.Marshal(sendAgainArgs{SentID: first, DuplicateOK: true})
+		res, err := r.c.applyThreadOp(anyDevice, r.w.ID, th.ID, opEnvelope{OpID: opID, ThreadID: th.ID, BaseRevision: th.Revision, Kind: "sendAgain", Args: raw})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	write := func(body string) {
+		if err := r.c.change(r.w.ID, anyDevice, func(tr *Tree) error { return tr.Write(prefixRoot+file, []byte(body)) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("SWAPPED")
+	if res := sendAgain("op_again"); res.OK || res.Code != CodeFilesChanged || res.Detail["path"] != file {
+		t.Fatalf("sending again over a swapped file: %+v", res)
+	}
+	if d := r.draft(th.ID, e.ID); d.SendID != first || d.Send.State != sendMaybe {
+		t.Fatalf("a refused resend changed the draft: %+v", d.Send)
+	}
+	write("A")
+	if res := sendAgain("op_again2"); !res.OK {
+		t.Fatalf("sending again: %+v", res)
+	}
+	d = r.draft(th.ID, e.ID)
+	if d.SendID == first || d.Approval.By != approver || d.Approval.Resent == nil || d.Approval.Resent.From != first {
+		t.Fatalf("the resend's approval: %+v", d.Approval)
+	}
+	if data, err := r.c.ReadFile(r.w.ID, signoffDir+d.SendID+".json"); err != nil || !strings.Contains(string(data), `"resent"`) {
+		t.Fatalf("no sign-off for the resend: %s %v", data, err)
+	}
+}

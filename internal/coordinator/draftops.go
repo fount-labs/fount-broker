@@ -247,6 +247,7 @@ func (a approveArgs) applyDraft(c *Coordinator, t *Tree, th *threadRecord, devic
 		}
 	}
 	var member *Member
+	var approved []ApprovedFile
 	if device != anyDevice {
 		if a.Approval == "" {
 			return nil, effects{}, refusal{code: CodeApprovalUnsigned}
@@ -261,7 +262,7 @@ func (a approveArgs) applyDraft(c *Coordinator, t *Tree, th *threadRecord, devic
 				return nil, effects{}, err
 			}
 		}
-		approved := []ApprovedFile{}
+		approved = []ApprovedFile{}
 		for _, p := range files {
 			approved = append(approved, ApprovedFile{Path: p, SHA256: hashes[p]})
 		}
@@ -285,6 +286,11 @@ func (a approveArgs) applyDraft(c *Coordinator, t *Tree, th *threadRecord, devic
 		if err := c.buildDraft(t, th, mb, rs, e.ID, d, 1, now); err != nil {
 			return nil, effects{}, err
 		}
+	}
+	// The rebuild read the files from the tree again: what it sends must be
+	// what the device signed, or nothing is sent (the change is undone).
+	if p := unsigned(d, approved); device != anyDevice && p != "" {
+		return nil, effects{}, refusal{code: CodeDraftChanged, detail: map[string]string{"draftRev": fmt.Sprint(a.DraftRev), "path": p}}
 	}
 	ap := approval{By: c.approverName(th.WorkerID, device), Device: device, Via: viaApp, Token: a.Approval}
 	if member != nil {
@@ -357,20 +363,28 @@ func (a sendAgainArgs) applyDraft(c *Coordinator, t *Tree, th *threadRecord, dev
 			return nil, effects{}, err
 		}
 		d := e.Draft
+		was := sealedFiles(d)
 		if err := c.buildDraft(t, th, mb, rs, e.ID, d, r.Attempt+1, now); err != nil {
 			return nil, effects{}, err
+		}
+		// A new attempt is new bytes under a new Message-ID. It goes only if
+		// its text and every file are the ones approved; the approval stays
+		// the approver's, and the resend is recorded as whoever asked.
+		if p := unsigned(d, was); p != "" || sha256Hex([]byte(d.Text)) != r.Approval.SentTextHash {
+			return nil, effects{}, refusal{code: CodeFilesChanged, detail: map[string]string{"path": p}}
 		}
 		next, err := loadSend(t, d.SendID)
 		if err != nil {
 			return nil, effects{}, err
 		}
 		ap := *r.Approval
-		ap.Hash, ap.At = next.Hash, now
-		if by := c.approverName(th.WorkerID, device); by != ap.By {
-			ap.By, ap.Device, ap.Via = by, device, viaApp
-		}
+		ap.Hash = next.Hash
+		ap.Resent = &resend{By: c.approverName(th.WorkerID, device), Device: device, At: now, From: r.ID}
 		next.Approval = &ap
 		if err := c.startSending(t, th.WorkerID, next, now); err != nil {
+			return nil, effects{}, err
+		}
+		if err := writeSignoff(t, th, e, next, ap); err != nil {
 			return nil, effects{}, err
 		}
 		d.Approval, r = &ap, next
@@ -495,4 +509,27 @@ func (c *Coordinator) applyDefaultMode(device, workerID string, env workerOpEnve
 		return saveOpLog(t, workerOps, ops)
 	})
 	return result, err
+}
+
+// sealedFiles is the files a draft's bytes were built from, with their hashes.
+func sealedFiles(d *draftEntry) []ApprovedFile {
+	files := make([]ApprovedFile, 0, len(d.Files))
+	for _, p := range d.Files {
+		files = append(files, ApprovedFile{Path: p, SHA256: d.FileHashes[p]})
+	}
+	return files
+}
+
+// unsigned is the first file the draft's bytes now hold that isn't as
+// approved: a path or hash that differs, or a file added or dropped.
+func unsigned(d *draftEntry, approved []ApprovedFile) string {
+	for i, f := range approved {
+		if i >= len(d.Files) || d.Files[i] != f.Path || !strings.EqualFold(d.FileHashes[f.Path], f.SHA256) {
+			return f.Path
+		}
+	}
+	if len(d.Files) > len(approved) {
+		return d.Files[len(approved)]
+	}
+	return ""
 }

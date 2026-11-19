@@ -207,6 +207,8 @@ type signoff struct {
 	Signature string `json:"signature,omitempty"`
 	DKIM      string `json:"dkim,omitempty"`
 	Email     string `json:"email,omitempty"`
+	// Resent is who sent an approved reply again under a new Message-ID.
+	Resent *resend `json:"resent,omitempty"`
 }
 
 type signoffBy struct {
@@ -226,7 +228,7 @@ func writeSignoff(t *Tree, th *threadRecord, e *threadEntry, r *sendRecord, a ap
 		V: 1, Worker: th.WorkerID, Thread: th.ID, Draft: e.ID, DraftRev: d.DraftRev, SendID: r.ID, MessageID: r.MessageID,
 		Bytes: r.Hash, Requesters: slices.Clone(th.Participants), Reviewer: signoffBy{Name: a.By, Member: a.Member, Device: a.Device},
 		Via: a.Via, At: a.At, To: d.To, Subject: d.Subject, Text: a.SentTextHash, Files: files,
-		Signature: a.Token, DKIM: a.DKIM, Email: a.Email,
+		Signature: a.Token, DKIM: a.DKIM, Email: a.Email, Resent: a.Resent,
 	}
 	if s.Requesters == nil {
 		s.Requesters = []string{}
