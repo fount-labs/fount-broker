@@ -91,6 +91,7 @@ import (
 	"github.com/fount-labs/fount-broker/internal/channel"
 	"github.com/fount-labs/fount-broker/internal/coordinator"
 	"github.com/fount-labs/fount-broker/internal/healthcheck"
+	"github.com/fount-labs/fount-broker/internal/infraent"
 	"github.com/fount-labs/fount-broker/internal/jobcred"
 	"github.com/fount-labs/fount-broker/internal/mail"
 	"github.com/fount-labs/fount-broker/internal/route"
@@ -136,6 +137,7 @@ func run() error {
 	clientAttest := flag.String("client-attestation", attestTinfoil, "with --client-listen: how the coordinator proves itself: tinfoil, or unattested in a dev build")
 	cloudOnly := flag.Bool("cloud-credentials-only", false, "with --client-listen: take only hour-long Cloud credentials, not device credentials")
 	mailLoop := flag.Bool("mail", false, "receive Cloud workers' mail from the mail edge: each worker with a mailbox gets its requests as thread turns")
+	entitlementsAPI := flag.String("mail-entitlements", "", "with --mail: fount-infra's API, https://api.fount.sh/, which issues Cloud mailboxes' entitlements to this coordinator (POST coordinator/mail-entitlement, signed with the job-signing key), so they renew with every laptop closed; without it nothing renews them")
 	mailAuthority := flag.String("mail-generation-authority", "", "with --mail and --wrapping-key dev: a file holding the Ed25519 seed a dev edge has as COORDINATOR_AUTHORITY_KEY, made on first run; the coordinator signs its own generation certificates with it, standing in for the vault")
 	audience := flag.String("client-audience", os.Getenv("FOUNT_CLIENT_AUDIENCE"), "with --client-listen: the coordinator's origin, https://<host>, which worker grants must name")
 	flag.Parse()
@@ -245,6 +247,18 @@ func run() error {
 	mailCfg, err := mailConfig(*mailLoop, *mailAuthority, keys.mode, *dir)
 	if err != nil {
 		return err
+	}
+	if *entitlementsAPI != "" {
+		if !*mailLoop {
+			return errors.New("--mail-entitlements needs --mail")
+		}
+		signing, _, err := jobKeys(*dir)
+		if err != nil {
+			return fmt.Errorf("the job-signing key: %w", err)
+		}
+		if mailCfg.Entitlements, err = infraent.New(*entitlementsAPI, signing); err != nil {
+			return fmt.Errorf("--mail-entitlements: %w", err)
+		}
 	}
 	c, err := coordinator.New(coordinator.Config{
 		StateDir: filepath.Join(*dir, "state"),
@@ -405,8 +419,8 @@ func readJobConfig(value string) (json.RawMessage, error) {
 	return json.RawMessage(data), nil
 }
 
-// mailConfig is the mail loop's, against the attested mail edge. Until fount-
-// infra issues Cloud mailbox entitlements it doesn't renew. Until the vault
+// mailConfig is the mail loop's, against the attested mail edge. It renews
+// Cloud mailboxes only with --mail-entitlements (run). Until the vault
 // issues generation certificates (decision 18), only a dev coordinator has a
 // generation, from --mail-generation-authority, and reads the edge's changes
 // feed; without one the loop names none, and polls each mailbox.
