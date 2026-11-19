@@ -223,15 +223,29 @@ func (c *Coordinator) RunMail(ctx context.Context) {
 	}
 }
 
-// mailWorkers is every worker with a mailbox and a DEK, by mailbox.
+// mailWorkers is every worker with a mailbox and a DEK, by mailbox. A
+// mailbox two workers claim is neither's: it's left out, loudly, rather than
+// read into whichever worker the map gives first (security review
+// 2026-11-19, C1). SetUpMail refuses a duplicate, so one is a volume from
+// before that, or a fault.
 func (c *Coordinator) mailWorkers() map[string]Worker {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := map[string]Worker{}
+	dup := map[string]bool{}
 	for _, w := range c.state.Workers {
-		if w.Mailbox != "" && w.WrappedDEK != nil {
-			out[w.Mailbox] = *w
+		if w.Mailbox == "" || w.WrappedDEK == nil {
+			continue
 		}
+		if other, ok := out[w.Mailbox]; ok || dup[w.Mailbox] {
+			if ok {
+				log.Printf("mail: workers %s and %s both claim mailbox %s; neither gets its mail until one is removed", other.ID, w.ID, w.Mailbox)
+			}
+			delete(out, w.Mailbox)
+			dup[w.Mailbox] = true
+			continue
+		}
+		out[w.Mailbox] = *w
 	}
 	return out
 }
@@ -451,7 +465,9 @@ func pauseOf(edge *bool) pause {
 func (c *Coordinator) prepareMail(w Worker) (map[string]bool, error) {
 	m := c.mail
 	acted := map[string]bool{}
+	legacy := false
 	err := c.view(w.ID, anyDevice, func(t *Tree) error {
+		legacy = mailboxLegacy(t)
 		mb, err := loadMailbox(t)
 		if err != nil {
 			return err
@@ -481,7 +497,22 @@ func (c *Coordinator) prepareMail(w Worker) (map[string]bool, error) {
 		}
 		return nil
 	})
+	if err == nil && legacy {
+		err = c.sealMailbox(w.ID)
+	}
 	return acted, err
+}
+
+// sealMailbox writes a worker's mailbox.json again, which seals it under the
+// coordinator's own key (treesecret.go).
+func (c *Coordinator) sealMailbox(workerID string) error {
+	return c.change(workerID, anyDevice, func(t *Tree) error {
+		mb, err := loadMailbox(t)
+		if err != nil {
+			return err
+		}
+		return writeJSON(t, mailboxPath, mb)
+	})
 }
 
 // accountGaps asks the edge to account for missing sequence numbers, when

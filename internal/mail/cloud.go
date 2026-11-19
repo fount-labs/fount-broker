@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -173,3 +174,24 @@ func (k *Keys) SigningPublic() ed25519.PublicKey {
 
 // MailboxHex is the mailbox id as the edge and the Service name it.
 func (k *Keys) MailboxHex() string { return hex.EncodeToString(k.MailboxID) }
+
+// ProveKeys shows that k's signing key is the one the edge holds for k's
+// mailbox, by a signed GET /gaps, without giving k to the Service. The
+// coordinator calls it before it records a mailbox a device hands over, so
+// a mailbox id with keys that aren't its own replaces nothing (security
+// review 2026-11-19, C1). It answers ErrKeysRefused when the edge refuses
+// the key, and the edge's error otherwise.
+func (s *Service) ProveKeys(ctx context.Context, k *Keys) error {
+	_, _, err := s.c.call(ctx, k, "GET", "/gaps", "after=0", maxJSON)
+	var e *EdgeError
+	if errors.As(err, &e) && (e.Status == http.StatusUnauthorized || e.Status == http.StatusNotFound) {
+		return fmt.Errorf("%w: %v", ErrKeysRefused, err)
+	}
+	if errors.Is(err, ErrNotFound) {
+		return fmt.Errorf("%w: %v", ErrKeysRefused, err)
+	}
+	return err
+}
+
+// ErrKeysRefused is a mailbox whose edge doesn't take the keys offered for it.
+var ErrKeysRefused = errors.New("mail: the edge doesn't take these keys for that mailbox")

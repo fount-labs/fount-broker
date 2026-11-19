@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/fount-labs/fount-broker/internal/mail"
 )
 
 // Creating a worker in Cloud (launch-plan.md, A). The admin device that made
@@ -49,6 +51,10 @@ const (
 
 // ErrMailboxSet is a worker that already has another address.
 var ErrMailboxSet = errors.New("the worker already has an address")
+
+// ErrMailboxTaken is a mailbox another worker already has. A mailbox id is
+// one worker's (security review 2026-11-19, C1).
+var ErrMailboxTaken = errors.New("another worker has that address")
 
 // MailSetup is what a worker starts its Cloud life with.
 type MailSetup struct {
@@ -221,7 +227,23 @@ func (c *Coordinator) SetUpMail(device, workerID string, sealed []byte) error {
 	if err != nil {
 		return err
 	}
+	if err := c.mailboxFree(workerID, s.Mailbox.MailboxID); err != nil {
+		return err
+	}
 	keys, _ := c.mailKeys(&s.Mailbox)
+	if c.mail != nil && keys != nil {
+		// The keys must be the mailbox's at the edge before anything records
+		// them: else any admin could name another worker's mailbox id.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := c.mail.service.ProveKeys(ctx, keys)
+		cancel()
+		if errors.Is(err, mail.ErrKeysRefused) {
+			return fmt.Errorf("%w: the edge doesn't take these keys for %s", ErrInvalid, s.Mailbox.Address)
+		}
+		if err != nil {
+			return fmt.Errorf("checking the address's keys at the edge: %w", err)
+		}
+	}
 	err = c.change(workerID, device, func(t *Tree) error {
 		held, err := loadMailbox(t)
 		switch {
@@ -317,7 +339,7 @@ func (a *api) setUpMail(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.c.SetUpMail(a.device(), w.ID, sealed); err != nil {
-		if errors.Is(err, ErrMailboxSet) {
+		if errors.Is(err, ErrMailboxSet) || errors.Is(err, ErrMailboxTaken) {
 			fail(rw, http.StatusConflict, err)
 			return
 		}

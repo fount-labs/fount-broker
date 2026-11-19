@@ -58,6 +58,11 @@ type Mailbox struct {
 	// asked so a lost answer is retried with the same key (rotate.go).
 	// Reply tokens aren't keyed from any of these (Coordinator.mailKeys).
 	NextSigningKey []byte `json:"nextSigningKey,omitempty"`
+	// NextDecryptionKey is a rotation's new X25519 key, kept the same way,
+	// and OlderDecryptionKeys the ones it replaced, newest first, for mail
+	// the edge sealed to them before (rotate.go).
+	NextDecryptionKey   []byte   `json:"nextDecryptionKey,omitempty"`
+	OlderDecryptionKeys [][]byte `json:"olderDecryptionKeys,omitempty"`
 }
 
 // replyTokenKeyInfo labels the reply-token key (decision 25).
@@ -103,7 +108,18 @@ func (m Mailbox) keys() (*mail.Keys, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: decryptionKey must be a 32-byte X25519 key", ErrInvalid)
 	}
-	return &mail.Keys{MailboxID: id, Signing: ed25519.NewKeyFromSeed(m.SigningKey), Decryption: dec}, nil
+	k := &mail.Keys{MailboxID: id, Signing: ed25519.NewKeyFromSeed(m.SigningKey), Decryption: dec}
+	for _, raw := range append([][]byte{m.NextDecryptionKey}, m.OlderDecryptionKeys...) {
+		if raw == nil {
+			continue
+		}
+		older, err := ecdh.X25519().NewPrivateKey(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%w: a kept decryption key isn't a 32-byte X25519 key", ErrInvalid)
+		}
+		k.Older = append(k.Older, older)
+	}
+	return k, nil
 }
 
 func (m Mailbox) check() error {
@@ -221,6 +237,9 @@ func readJSON[T any](t *Tree, path string, v *T) (bool, error) {
 	if errors.Is(err, ErrNotFound) {
 		return false, nil
 	}
+	if err == nil && path == mailboxPath {
+		data, _, err = t.openSecret(path, data)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -234,6 +253,11 @@ func writeJSON(t *Tree, path string, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
+	}
+	if path == mailboxPath {
+		if data, err = t.sealSecret(path, data); err != nil {
+			return err
+		}
 	}
 	return t.Write(path, data)
 }
@@ -269,6 +293,9 @@ func (c *Coordinator) SetMailbox(workerID string, mb Mailbox, requesters []Reque
 		return err
 	}
 	mb.Address, _ = mailAddress(mb.Address)
+	if err := c.mailboxFree(workerID, mb.MailboxID); err != nil {
+		return err
+	}
 	keys, _ := c.mailKeys(&mb)
 	for i := range requesters {
 		a, err := mailAddress(requesters[i].Address)
@@ -306,6 +333,10 @@ func (c *Coordinator) SetMailbox(workerID string, mb Mailbox, requesters []Reque
 func (c *Coordinator) mailboxReady(workerID string, mb Mailbox, keys *mail.Keys) error {
 	var err error
 	c.mu.Lock()
+	if holder := c.mailboxHolder(workerID, mb.MailboxID); holder != "" {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: worker %s has %s", ErrMailboxTaken, holder, mb.Address)
+	}
 	if w := c.state.Workers[workerID]; w != nil && w.Mailbox != mb.MailboxID {
 		w.Mailbox = mb.MailboxID
 		err = c.state.Save(c.cfg.StateDir)
@@ -321,6 +352,27 @@ func (c *Coordinator) mailboxReady(workerID string, mb Mailbox, keys *mail.Keys)
 		c.mail.kick(workerID)
 	}
 	return nil
+}
+
+// mailboxFree refuses a mailbox id another worker than workerID holds.
+func (c *Coordinator) mailboxFree(workerID, mailboxID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if holder := c.mailboxHolder(workerID, mailboxID); holder != "" {
+		return fmt.Errorf("%w: worker %s has it", ErrMailboxTaken, holder)
+	}
+	return nil
+}
+
+// mailboxHolder is the worker other than workerID that holds mailboxID, or
+// "". Caller holds c.mu.
+func (c *Coordinator) mailboxHolder(workerID, mailboxID string) string {
+	for id, w := range c.state.Workers {
+		if id != workerID && w.Mailbox == mailboxID {
+			return id
+		}
+	}
+	return ""
 }
 
 // MailView is a worker's mail settings as a client reads them: no keys.

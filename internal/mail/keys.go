@@ -24,6 +24,10 @@ type Keys struct {
 	MailboxID  []byte
 	Signing    ed25519.PrivateKey
 	Decryption *ecdh.PrivateKey
+	// Older are decryption keys the address had before a rotation (or the
+	// next one, while it lands): mail the edge sealed to one is opened with
+	// it. Only a Cloud worker's coordinator sets them.
+	Older []*ecdh.PrivateKey
 	// TokenKey, when set, is the key reply tokens are a MAC under instead of
 	// one from Signing's seed: a Cloud worker's, which only the coordinator
 	// holds (decision 25, replytoken.go). It's never in a mail_keys

@@ -753,7 +753,11 @@ func (c *Coordinator) backedUpTree(ctx context.Context, b BackupBucket, root *ba
 		return nil, err
 	}
 	defer clear(dek[:])
-	return LoadTree(bucketTree{ctx: ctx, bucket: b, workerID: w.ID, manifest: bt.Manifest}, w.ID, dek, 0)
+	t, err := LoadTree(bucketTree{ctx: ctx, bucket: b, workerID: w.ID, manifest: bt.Manifest}, w.ID, dek, 0)
+	if t != nil {
+		t.secret = c.treeSecret(w.ID)
+	}
+	return t, err
 }
 
 // bucketTree is one worker's tree in a backup, read-only, as a Store.

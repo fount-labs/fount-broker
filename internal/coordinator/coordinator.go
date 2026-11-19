@@ -879,7 +879,11 @@ func (c *Coordinator) loadTree(w Worker, device string) (*Tree, error) {
 		return nil, err
 	}
 	defer clear(dek[:])
-	return LoadTree(c.cfg.Store, w.ID, dek, version)
+	t, err := LoadTree(c.cfg.Store, w.ID, dek, version)
+	if t != nil {
+		t.secret = c.treeSecret(w.ID)
+	}
+	return t, err
 }
 
 func newID(prefix string) (string, error) {

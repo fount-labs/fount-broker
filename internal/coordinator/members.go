@@ -164,6 +164,8 @@ type teamState struct {
 	// usedInvites are the invites a record has taken, which no list may open
 	// again.
 	usedInvites map[string]bool
+	// lastList is the seq of the last list (teamsigner.go).
+	lastList uint64
 }
 
 // device is a device the state admits, and its member.
