@@ -423,7 +423,8 @@ type ThreadSummary struct {
 	Preview  *string      `json:"preview"`
 	// UpdatedAt is epoch milliseconds.
 	UpdatedAt int64 `json:"updatedAt"`
-	// Unread is always false: read state is per device and not kept yet.
+	// Unread says the caller's device hasn't read the thread at this
+	// revision (markRead, threadread.go).
 	Unread bool `json:"unread"`
 	// SessionID is always null: the session is the coordinator's, not on
 	// the client's device.
