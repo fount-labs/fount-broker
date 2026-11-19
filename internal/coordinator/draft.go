@@ -75,6 +75,13 @@ type draftEntry struct {
 	Ask *approvalAsk `json:"ask,omitempty"`
 	// Claim is who said they're reviewing it, until when (claim.go).
 	Claim *draftClaim `json:"claim,omitempty"`
+	// Edits are the members' saves of its files, each a draft_rev
+	// (draftfiles.go); every version stays in the worker root.
+	Edits []draftEdit `json:"edits,omitempty"`
+	// Asks are the approval emails sent to reviewers other than the owner
+	// on Full for this draft_rev, each with its own token (Ask is the
+	// owner's).
+	Asks []approvalAsk `json:"asks,omitempty"`
 	// Send mirrors the journal record once it is sending.
 	Send *sendView `json:"send,omitempty"`
 }
@@ -400,9 +407,13 @@ func (c *Coordinator) problemNotice(t *Tree, workerID, threadID, kind, ref strin
 }
 
 func (c *Coordinator) sendNotice(t *Tree, th *threadRecord, mb *Mailbox, rs *replySettings, id string, parts []string, kind string, now time.Time) error {
+	return c.sendNoticeTo(t, th, mb, rs, id, parts, kind, rs.Owner, now)
+}
+
+func (c *Coordinator) sendNoticeTo(t *Tree, th *threadRecord, mb *Mailbox, rs *replySettings, id string, parts []string, kind, to string, now time.Time) error {
 	words, firm := noticeText[kind], rs.firm(mb)
 	text := fmt.Sprintf(words[1], firm) + "\n\nOpen it in Fount: " + fountLink(th.WorkerID, th.ID) + "\n\n" + footer(firm, false) + "\n"
-	r := &sendRecord{ID: id, Kind: sendKindNotice, ThreadID: th.ID, Attempt: 1, State: sendSending, To: []string{rs.Owner}}
+	r := &sendRecord{ID: id, Kind: sendKindNotice, ThreadID: th.ID, Attempt: 1, State: sendSending, To: []string{to}}
 	raw, err := c.buildOut(t, th, mb, r, parts, fmt.Sprintf(words[0], firm), "", nil, text, nil, now)
 	if err != nil {
 		return err
@@ -411,21 +422,33 @@ func (c *Coordinator) sendNotice(t *Tree, th *threadRecord, mb *Mailbox, rs *rep
 	return err
 }
 
-// draftNotice tells the owner a draft is waiting: the approval email when
-// they are on Full, otherwise a notice without content.
+// draftNotice tells every reviewer a draft is waiting (decision 27), each
+// once per draft_rev, in their own mode: the approval email to one on Full,
+// otherwise a notice without content. The reviewers are reviewers().
 func (c *Coordinator) draftNotice(t *Tree, th *threadRecord, mb *Mailbox, rs *replySettings, draftID string, d *draftEntry, now time.Time) error {
-	if rs.Owner == "" {
-		return nil
+	s, err := loadMailSettings(t)
+	if err != nil {
+		return err
 	}
-	parts := []string{sendKindNotice, noticeDraft, draftID, fmt.Sprint(d.DraftRev)}
-	id := c.sendID(th.WorkerID, parts...)
-	if t.Has(sendPath(id)) {
-		return nil
+	for _, to := range c.reviewers(th.WorkerID, rs, s) {
+		parts := []string{sendKindNotice, noticeDraft, draftID, fmt.Sprint(d.DraftRev)}
+		if to != rs.Owner {
+			parts = append(parts, to)
+		}
+		id := c.sendID(th.WorkerID, parts...)
+		if t.Has(sendPath(id)) {
+			continue
+		}
+		if rs.modeOf(to) != modeFull {
+			err = c.sendNoticeTo(t, th, mb, rs, id, parts, noticeDraft, to, now)
+		} else {
+			err = c.askApproval(t, th, mb, rs, id, draftID, d, to, now)
+		}
+		if err != nil {
+			return err
+		}
 	}
-	if rs.modeOf(rs.Owner) != modeFull {
-		return c.sendNotice(t, th, mb, rs, id, parts, noticeDraft, now)
-	}
-	return c.askApproval(t, th, mb, rs, id, draftID, d, now)
+	return nil
 }
 
 // The display form: Desktop's Draft, Approval and MailOut entries (view.rs).
@@ -453,6 +476,9 @@ type draftView struct {
 	// claim in force (claim.go).
 	FileHashes map[string]string `json:"fileHashes,omitempty"`
 	Claim      *draftClaim       `json:"claim,omitempty"`
+	// Edits are the members' saves of its files (draftfiles.go), oldest
+	// first.
+	Edits []editView `json:"edits,omitempty"`
 }
 
 type approvalView struct {
@@ -484,9 +510,12 @@ func draftViews(head entryHead, e threadEntry) []DisplayEntry {
 	}
 	var files []attachmentView
 	for _, p := range d.Files {
-		files = append(files, attachmentView{Name: path.Base(p)})
+		files = append(files, attachmentView{Name: path.Base(p), Path: p})
 	}
 	v.Files = files
+	for _, ed := range d.Edits {
+		v.Edits = append(v.Edits, editView{Path: ed.Path, Name: path.Base(ed.Path), DraftRev: ed.DraftRev, By: ed.By, Member: ed.Member, At: ed.At.UTC().Format(time.RFC3339)})
+	}
 	out := []DisplayEntry{v}
 	switch {
 	case d.Approval != nil:

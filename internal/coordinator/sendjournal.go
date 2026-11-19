@@ -426,8 +426,10 @@ func refusedSend(err error, r *sendRecord) sendOutcome {
 	case 503:
 		return sendOutcome{retry: sendBackoff(r.Tries)}
 	case 429:
-		// A worker's sending limit, or its invites for the day
-		// (invite_limit).
+		// A worker's invites for the day, or its sending limit.
+		if se.Code == "invite_limit" {
+			return final(CodeInviteLimit)
+		}
 		return final(CodeSendLimit)
 	case 403:
 		msg := strings.ToLower(se.Message)

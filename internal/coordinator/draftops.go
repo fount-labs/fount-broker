@@ -15,7 +15,7 @@ import (
 // discardDraft and sendAgain are a reviewer's; setThreadReplyMode and
 // setDefaultMode an admin's.
 //
-//	approveDraft        {draftId, draftRev, text?, attachments?, changes?, hash?}
+//	approveDraft        {draftId, draftRev, text?, attachments?, changes?, hash?, editingOk?}
 //	discardDraft        {draftId}
 //	sendAgain           {sentId, duplicateOk?}
 //	setThreadReplyMode  {mode}
@@ -37,6 +37,7 @@ const (
 	CodeSending             OpCode = "SENDING"
 	CodeSendFailed          OpCode = "SEND_FAILED"
 	CodeSendLimit           OpCode = "SEND_LIMIT"
+	CodeInviteLimit         OpCode = "INVITE_LIMIT"
 	CodeBadMessage          OpCode = "BAD_MESSAGE"
 	CodeMailLapsed          OpCode = "MAIL_LAPSED"
 	CodeSendingOff          OpCode = "SENDING_OFF"
@@ -58,6 +59,7 @@ func init() {
 		CodeSending:             "This email is still being sent.",
 		CodeSendFailed:          "Fount Mail didn't send this email.",
 		CodeSendLimit:           "This worker has reached its sending limit for today. It can send again tomorrow.",
+		CodeInviteLimit:         "This worker has sent its most invites for today. Copy the invite link and send it yourself, or email it again tomorrow.",
 		CodeBadMessage:          "Fount couldn't build this email. Nothing was sent.",
 		CodeMailLapsed:          "This worker's Fount Mail has lapsed. Renew it, then send again.",
 		CodeSendingOff:          "Fount Mail isn't sending email yet. Nothing was sent.",
@@ -82,7 +84,10 @@ type approveArgs struct {
 	// Approval is the approving device's signed approval (approvalsig.go),
 	// which a device's approval must carry.
 	Approval string `json:"approval,omitempty"`
-	base     uint64
+	// EditingOK is the approver's choice to approve while another reviewer
+	// has unsaved edits to one of its files (DRAFT_BEING_EDITED).
+	EditingOK bool `json:"editingOk,omitempty"`
+	base      uint64
 }
 
 type discardArgs struct {
@@ -208,6 +213,9 @@ func (a approveArgs) applyDraft(c *Coordinator, t *Tree, th *threadRecord, devic
 	case th.peopleSince(a.base):
 		return nil, effects{}, refusal{code: CodeParticipantsChanged}
 	}
+	if cl := editingElsewhere(d, device, now); cl != nil && !a.EditingOK {
+		return nil, effects{}, beingEdited(cl)
+	}
 	mb, err := loadMailbox(t)
 	if errors.Is(err, ErrNoMailbox) {
 		return nil, effects{}, refusal{code: CodeNoMailbox}
@@ -273,7 +281,7 @@ func (a approveArgs) applyDraft(c *Coordinator, t *Tree, th *threadRecord, devic
 			return nil, effects{}, err
 		}
 		d.DraftRev++
-		d.Text, d.Files, d.Ask = text, files, nil
+		d.Text, d.Files, d.Ask, d.Asks = text, files, nil, nil
 		if err := c.buildDraft(t, th, mb, rs, e.ID, d, 1, now); err != nil {
 			return nil, effects{}, err
 		}

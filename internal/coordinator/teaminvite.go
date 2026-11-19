@@ -206,20 +206,36 @@ func inviteMailText(firm, email string, role Role, code string, exp time.Time) s
 	return b.String()
 }
 
+// InviteSend is how emailing an invite went: the send record, and its state
+// after the first attempt, or "sending" if that took longer than
+// inviteSendWait. A refusal (failed) carries its code and message, and the
+// admin copies the link instead.
+type InviteSend struct {
+	SendID  string `json:"sendId"`
+	State   string `json:"state"`
+	Code    OpCode `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// inviteSendWait bounds how long SendInvite waits for the first attempt.
+var inviteSendWait = 20 * time.Second
+
 // SendInvite emails an open invite from a team worker's address, for an
 // admin who has its secret: the coordinator only mails an invite whose secret
 // it can check. The worker is the one named, or the team's first with an
-// address. It goes through the send journal once per invite. It returns the
-// send record's id.
+// address. It goes through the send journal once per invite, and waits for
+// the journal's first attempt, so the admin hears the edge's answer and not
+// only that the email was queued. Asking again for the same invite answers
+// with its record's state.
 //
 // /send goes only to an address the worker's owners proved they read, so an
 // invite is posted on the edge's coordinator route instead (POST
 // /coordinator/invite, signed by the generation key): one plain-text message
 // to one address, at most 20 a day per worker. A refusal fails the record
 // with the edge's code, and the admin copies the link instead.
-func (c *Coordinator) SendInvite(caller Caller, team, invite, member string, secret []byte, workerID string) (string, error) {
+func (c *Coordinator) SendInvite(ctx context.Context, caller Caller, team, invite, member string, secret []byte, workerID string) (InviteSend, error) {
 	if c.sender == nil {
-		return "", fmt.Errorf("%w: this coordinator doesn't send mail", ErrUnsupported)
+		return InviteSend{}, fmt.Errorf("%w: this coordinator doesn't send mail", ErrUnsupported)
 	}
 	c.mu.Lock()
 	me, st, err := c.requireMember(caller, team)
@@ -253,10 +269,10 @@ func (c *Coordinator) SendInvite(caller Caller, team, invite, member string, sec
 	}
 	c.mu.Unlock()
 	if err != nil {
-		return "", err
+		return InviteSend{}, err
 	}
 	if time.Now().Unix() >= m.Invite.Exp {
-		return "", fmt.Errorf("%w: this invite expired", ErrListRefused)
+		return InviteSend{}, fmt.Errorf("%w: this invite expired", ErrListRefused)
 	}
 	from := candidates[0]
 	id := c.sendID(from, sendKindNotice, "invite", team, invite)
@@ -285,7 +301,58 @@ func (c *Coordinator) SendInvite(caller Caller, team, invite, member string, sec
 		_, err = c.stageSend(t, from, r, raw)
 		return err
 	})
-	return id, err
+	if err != nil {
+		return InviteSend{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, inviteSendWait)
+	defer cancel()
+	c.firstAttempt(ctx, from)
+	out := InviteSend{SendID: id, State: sendSending}
+	err = c.view(from, anyDevice, func(t *Tree) error {
+		rec, err := loadSend(t, id)
+		if err != nil {
+			return err
+		}
+		out.State = rec.State
+		if rec.Error != nil {
+			out.Code, out.Message = rec.Error.Code, rec.Error.Message
+		}
+		return nil
+	})
+	return out, err
+}
+
+// firstAttempt runs workerID's due sends now, under its mail lock, as the mail
+// pass would, until ctx ends. A send still waiting to be tried again stays
+// for the mail pass.
+func (c *Coordinator) firstAttempt(ctx context.Context, workerID string) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if c.mail != nil {
+			lock := c.mail.workerSync(workerID)
+			lock.Lock()
+			defer lock.Unlock()
+			w, err := c.Worker(workerID)
+			if err == nil && ctx.Err() == nil {
+				err = c.enrollMail(ctx, w)
+			}
+			if err != nil {
+				log.Printf("worker %s: sends: %v", workerID, err)
+				return
+			}
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if err := c.runSends(ctx, workerID); err != nil {
+			log.Printf("worker %s: sends: %v", workerID, err)
+		}
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 // admitted tells the team's owner that a device joined (decision 26 step 5):
@@ -399,7 +466,8 @@ func (a *api) acceptInvite(rw http.ResponseWriter, r *http.Request) {
 }
 
 // sendInvite is POST /v1/teams/{team}/invites/{invite}/send {member, secret,
-// worker?}, an admin's.
+// worker?}, an admin's. It answers InviteSend once the first attempt is done,
+// or after inviteSendWait.
 func (a *api) sendInvite(rw http.ResponseWriter, r *http.Request) {
 	req, secret, ok := a.inviteRequest(rw, r)
 	if !ok {
@@ -412,10 +480,10 @@ func (a *api) sendInvite(rw http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	id, err := a.c.SendInvite(*a.caller, r.PathValue("team"), r.PathValue("invite"), req.Member, secret, req.Worker)
+	sent, err := a.c.SendInvite(r.Context(), *a.caller, r.PathValue("team"), r.PathValue("invite"), req.Member, secret, req.Worker)
 	if err != nil {
 		fail(rw, statusOf(err), err)
 		return
 	}
-	reply(rw, http.StatusOK, map[string]string{"sendId": id})
+	reply(rw, http.StatusOK, sent)
 }
