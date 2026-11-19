@@ -69,10 +69,13 @@ type MailSetup struct {
 	RoutingVersion uint64 `json:"routingVersion"`
 }
 
-// SetupRequester is a requester the creating device named.
+// SetupRequester is a requester the creating device named. DKIMDomain is
+// the d= a Desktop worker's pairing recorded, when one is re-created in
+// Cloud (decision 2); a requester typed in has none until a pairing.
 type SetupRequester struct {
-	Address string `json:"address"`
-	AutoRun bool   `json:"autoRun"`
+	Address    string `json:"address"`
+	DKIMDomain string `json:"dkimDomain,omitempty"`
+	AutoRun    bool   `json:"autoRun"`
 }
 
 // SetupReply is the worker's reply mode: notify, full or full_owner, the
@@ -139,6 +142,11 @@ func (s *MailSetup) check() error {
 		}
 		seen[a] = true
 		s.Requesters[i].Address = a
+		if d := s.Requesters[i].DKIMDomain; d != "" {
+			if _, err := mailAddress("x@" + d); err != nil || d != strings.ToLower(d) {
+				return fmt.Errorf("%w: %q isn't a DKIM domain", ErrInvalid, d)
+			}
+		}
 	}
 	if len(s.Instructions) > maxSetupInstruction || !utf8.ValidString(s.Instructions) {
 		return fmt.Errorf("%w: instructions are UTF-8 of at most %d bytes", ErrInvalid, maxSetupInstruction)
@@ -256,7 +264,7 @@ func writeMailSetup(t *Tree, s *MailSetup, now time.Time) error {
 	}
 	for _, r := range s.Requesters {
 		if ms.requester(r.Address) == nil {
-			ms.addRequester(Requester{Address: r.Address, AutoRun: r.AutoRun, PairedBy: "added", AddedAt: now}, nil)
+			ms.addRequester(Requester{Address: r.Address, DKIMDomain: r.DKIMDomain, AutoRun: r.AutoRun, PairedBy: "added", AddedAt: now}, nil)
 		}
 	}
 	ms.RoutingUnsent = s.RoutingVersion == 0 && len(ms.Requesters) > 0

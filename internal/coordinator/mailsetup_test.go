@@ -33,7 +33,7 @@ func vectorSetup() MailSetup {
 	return MailSetup{
 		Mailbox: Mailbox{Address: "ap.smith@fountbox.com", MailboxID: hex.EncodeToString(seq(0x81)), SigningKey: seq(0x01), DecryptionKey: seq(0x21)},
 		Requesters: []SetupRequester{
-			{Address: "dana@example.com", AutoRun: true},
+			{Address: "dana@example.com", DKIMDomain: "example.com", AutoRun: true},
 			{Address: "lee@client.example", AutoRun: false},
 		},
 		Instructions:   "Answer client questions.\nBe brief.",
@@ -141,6 +141,7 @@ func TestASealedSetupRoundTripsAndIsChecked(t *testing.T) {
 		"a short signing key":                func(s *MailSetup) { s.Mailbox.SigningKey = s.Mailbox.SigningKey[:16] },
 		"another worker's worker.json":       func(s *MailSetup) { s.Worker = json.RawMessage(`{"address":"ar.smith@fountbox.com"}`) },
 		"a worker.json that isn't an object": func(s *MailSetup) { s.Worker = json.RawMessage(`[1]`) },
+		"a DKIM domain with a space":         func(s *MailSetup) { s.Requesters[0].DKIMDomain = "exa mple.com" },
 		"long instructions":                  func(s *MailSetup) { s.Instructions = strings.Repeat("x", maxSetupInstruction+1) },
 	} {
 		s := vectorSetup()
@@ -199,7 +200,7 @@ func TestOnlyAnAdminSetsUpAWorkersMail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(v.Requesters) != 2 || !v.Requesters[0].AutoRun || v.Requesters[1].AutoRun || v.Requesters[0].PairedBy != "added" ||
+	if len(v.Requesters) != 2 || !v.Requesters[0].AutoRun || v.Requesters[1].AutoRun || v.Requesters[0].PairedBy != "added" || v.Requesters[0].DKIMDomain != "example.com" || v.Requesters[1].DKIMDomain != "" ||
 		!v.AutoRun || v.Acknowledge || v.RoutingUnsent {
 		t.Errorf("settings: %+v", v.MailSettings)
 	}
