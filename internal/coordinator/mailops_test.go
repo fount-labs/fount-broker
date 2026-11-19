@@ -168,8 +168,12 @@ func TestPairingByReply(t *testing.T) {
 	if l.Acted[reply].Outcome != outcomePaired || l.Acted[other].Outcome != outcomeHeld {
 		t.Fatalf("ledger: %+v", l.Acted)
 	}
-	// The pairing's reply makes no thread; kim's email waits on one.
+	// The pairing's reply makes no thread and isn't read by intake; kim's
+	// email waits on one.
 	onlyThread(t, r.threads(w.ID))
+	if r.intake.ran(reply) || !r.intake.ran(other) {
+		t.Fatalf("intake read %v", r.intake.read)
+	}
 	if res := r.workerOp(w.ID, "op_c", "pairingConfirm", pairingConfirmArgs{MailID: other, BaseRevision: s.PairingRev}); res.Code != CodePairingClosed {
 		t.Fatalf("confirm after pairing: %+v", res)
 	}

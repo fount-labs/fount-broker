@@ -358,14 +358,15 @@ func (c *Coordinator) syncMail(ctx context.Context, w Worker, now time.Time) err
 	})
 	var errs []error
 	for _, msg := range fetched {
-		in, err := c.intakeMail(ctx, w.ID, msg)
-		if err != nil {
+		err := c.receiveMail(ctx, w.ID, msg, paused, now)
+		var stopped intakeStopped
+		if errors.As(err, &stopped) {
 			// Intake couldn't run: this message and the ones after it
 			// wait for the next pass, in order.
-			errs = append(errs, fmt.Errorf("mail %s: intake: %w", msg.ID, err))
+			errs = append(errs, fmt.Errorf("mail %s: intake: %w", msg.ID, stopped.err))
 			break
 		}
-		if err := c.actOnMail(w.ID, msg, in, paused, now); err != nil {
+		if err != nil {
 			errs = append(errs, fmt.Errorf("mail %s: %w", msg.ID, err))
 		}
 	}
@@ -459,9 +460,43 @@ func (c *Coordinator) accountGaps(ctx context.Context, w Worker) error {
 }
 
 // intook is a message's intake: its result, or why intake couldn't read it.
+// ran is false before intake has been asked.
 type intook struct {
+	ran    bool
 	r      IntakeResult
 	unread error
+}
+
+// errNeedsIntake is place finding a message that becomes a turn or is held,
+// with no intake run for it yet. The tree change is dropped, intake runs, and
+// the message is placed again.
+var errNeedsIntake = errors.New("the message needs intake")
+
+// intakeStopped is intake that couldn't run at all: the message waits.
+type intakeStopped struct{ err error }
+
+func (e intakeStopped) Error() string { return e.err.Error() }
+
+// receiveMail acts on one message, running intake only when it is needed.
+// The sender check, pairing and decide come first, on what the edge's check
+// read of the headers: mail that is ignored (a bounce, a replay) or answers a
+// pairing is placed without intake ever reading it. Anything else, a turn or
+// held mail, needs intake's folder, so the first change stops with
+// errNeedsIntake and is dropped; intake runs; and the message is decided and
+// placed again, with its ledger entry, in one change (decision 15). Deciding
+// again covers the one input only intake has, whether the email looks
+// automatic, which can only turn the decision into ignored, and anything that
+// changed on the worker in between.
+func (c *Coordinator) receiveMail(ctx context.Context, workerID string, msg *mail.Message, paused pause, now time.Time) error {
+	err := c.actOnMail(workerID, msg, intook{}, paused, now)
+	if !errors.Is(err, errNeedsIntake) {
+		return err
+	}
+	in, err := c.intakeMail(ctx, workerID, msg)
+	if err != nil {
+		return intakeStopped{err}
+	}
+	return c.actOnMail(workerID, msg, in, paused, now)
 }
 
 // asMail is the message as intake takes it.
@@ -472,10 +507,11 @@ func asMail(msg *mail.Message) *Mail {
 	}
 }
 
-// intakeMail runs intake on msg, before anything is decided: decide needs to
-// know whether it looks automatic, and its folder goes into the thread in the
-// same commit as the ledger. An email intake refuses is placed unread; an
-// error is intake not running at all, and the message waits.
+// intakeMail runs intake on msg, once receiveMail has found it a turn or held
+// mail: decide needs to know whether it looks automatic, and its folder goes
+// into the thread in the same commit as the ledger. An email intake refuses
+// is placed unread; an error is intake not running at all, and the message
+// waits.
 func (c *Coordinator) intakeMail(ctx context.Context, workerID string, msg *mail.Message) (intook, error) {
 	var req IntakeRequest
 	if tok := msg.ReplyToken; tok != nil && tok.Handle != "" {
@@ -513,11 +549,11 @@ func (c *Coordinator) intakeMail(ctx context.Context, workerID string, msg *mail
 	case errors.Is(err, ErrIntake):
 		// The error isn't logged: it can quote the email.
 		log.Printf("worker %s: intake couldn't read mail %s", workerID, msg.ID)
-		return intook{unread: err}, nil
+		return intook{ran: true, unread: err}, nil
 	case err != nil:
 		return intook{}, err
 	}
-	return intook{r: r}, nil
+	return intook{ran: true, r: r}, nil
 }
 
 // actOnMail decides one message and applies what it causes, with its ledger
@@ -626,9 +662,16 @@ func (c *Coordinator) place(t *Tree, workerID string, mb *Mailbox, s *MailSettin
 	for _, q := range s.Requesters {
 		worker.Requesters = append(worker.Requesters, decide.Requester{Address: q.Address, DKIMDomain: q.DKIMDomain, AutoRun: q.AutoRun})
 	}
-	// Intake says whether an email looks automatic; the coordinator reads
-	// no email.
-	d := decide.Decide(worker, r, in.r.Spec.Automatic, l.Signers)
+	// First without intake: what it would ignore is ignored unread. Then,
+	// once intake has run, with whether it found the email automatic, which
+	// the coordinator, reading no email, can't tell.
+	d := decide.Decide(worker, r, "", l.Signers)
+	if d.Verdict != decide.Ignored {
+		if !in.ran {
+			return actedMail{}, errNeedsIntake
+		}
+		d = decide.Decide(worker, r, in.r.Spec.Automatic, l.Signers)
+	}
 	act := actedMail{Sender: sender, Verdict: string(d.Verdict), Reason: d.Reason}
 	if d.Verdict == decide.Ignored {
 		act.Outcome = outcomeIgnored

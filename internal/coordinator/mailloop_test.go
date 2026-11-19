@@ -119,6 +119,7 @@ type email struct {
 	inReplyTo  string
 	sigHash    string // the aligned signature's hash; random when empty
 	unsigned   bool
+	bounce     bool // no envelope sender
 	receivedAt time.Time
 }
 
@@ -161,7 +162,7 @@ func (f *fakeMailEdge) deliver(mb Mailbox, e email) string {
 	rand.Read(edgeID)
 	obj, err := mailtest.SealV3(mailtest.Object{
 		EdgeID: edgeID, MailboxID: keys.MailboxID, ReceivedAt: at, Sequence: f.seq[mb.MailboxID], BootID: f.boot,
-		Sender: e.from, Recipient: cmpOrStr(e.recipient, e.to), Check: check, Raw: raw,
+		Sender: envelopeSender(e), Recipient: cmpOrStr(e.recipient, e.to), Check: check, Raw: raw,
 	}, keys.Decryption.PublicKey(), f.priv)
 	if err != nil {
 		f.t.Fatal(err)
@@ -173,6 +174,13 @@ func (f *fakeMailEdge) deliver(mb Mailbox, e email) string {
 	f.objects[mb.MailboxID][id] = obj
 	f.mail[mb.MailboxID] = append(f.mail[mb.MailboxID], id)
 	return id
+}
+
+func envelopeSender(e email) string {
+	if e.bounce {
+		return ""
+	}
+	return e.from
 }
 
 func cmpOrStr(a, b string) string {
@@ -247,6 +255,14 @@ type fakeIntake struct {
 	automatic string
 	calls     map[string]int // by account
 	runs      int
+	read      []string // the edge ids intake was asked to read
+}
+
+// ran says whether intake was asked to read the email edgeID.
+func (f *fakeIntake) ran(edgeID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Contains(f.read, edgeID)
 }
 
 const (
@@ -260,6 +276,13 @@ func (f *fakeIntake) RunIntake(_ context.Context, account, dir string) (RunResul
 	defer f.mu.Unlock()
 	f.runs++
 	f.calls[account]++
+	if data, err := os.ReadFile(filepath.Join(dir, "check.json")); err == nil {
+		var check struct {
+			ID string `json:"id"`
+		}
+		json.Unmarshal(data, &check)
+		f.read = append(f.read, check.ID)
+	}
 	switch {
 	case f.down:
 		return RunResult{}, errors.New("no runner free")
@@ -742,6 +765,24 @@ func TestAReplayIsIgnored(t *testing.T) {
 		t.Fatalf("%+v", l.Acted)
 	}
 	onlyThread(t, r.threads(w.ID))
+	if !r.intake.ran(a) || r.intake.ran(b) {
+		t.Fatalf("intake read %v; the replay must not be read", r.intake.read)
+	}
+}
+
+// Mail decide ignores on its headers alone is never read by intake: a bounce
+// is placed in the ledger, ignored, without it (a replay: TestAReplayIsIgnored).
+func TestIgnoredMailIsntRead(t *testing.T) {
+	r := newMailRig(t, MailConfig{})
+	w, mb := r.worker()
+	bounce := r.edge.deliver(mb, email{from: "mailer-daemon@example.com", to: testWorkerAddr, bounce: true})
+	r.pass()
+	if a := r.ledger(w.ID).Acted[bounce]; a.Outcome != outcomeIgnored || !strings.Contains(a.Reason, "bounce") {
+		t.Fatalf("a bounce: %+v", a)
+	}
+	if r.intake.runs != 0 || len(r.threads(w.ID)) != 0 {
+		t.Fatalf("intake ran %d times on ignored mail", r.intake.runs)
+	}
 }
 
 // A crash between fetching a message and committing its thread operation
