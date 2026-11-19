@@ -45,6 +45,8 @@ type Config struct {
 	Key     WrappingKey
 	Pool    *Pool
 	Runner  Runner
+	// Intake runs intake on received mail (intake.go). Nil refuses it.
+	Intake IntakeRunner
 	// Credentials are a job's credentials, by the broker's names: in the pool,
 	// minted for that one job (package jobcred). Nil gives jobs none.
 	Credentials func(account, workerID, jobID string) (map[string]string, error)

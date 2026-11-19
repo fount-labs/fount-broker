@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // A JobSpec asks for one job on one worker's thread. It is one of the
@@ -24,6 +25,11 @@ type JobSpec struct {
 	// Script stands in for the model in scripted jobs, which only debug and
 	// release-scripted runners accept. Passed to the runner unread.
 	Script json.RawMessage `json:"script,omitempty"`
+	// Message makes the job a mail turn: the email's folder in the worker
+	// root, threads/<thread id>/<folder>, as intake wrote it (intake.go). The
+	// runner tells the turn where the email is and that it's data, and starts
+	// it once each attachment has been indexed or has failed to.
+	Message string `json:"message,omitempty"`
 }
 
 const (
@@ -70,6 +76,12 @@ func (s JobSpec) check() error {
 	if len(s.Script) > 0 && (s.Script[0] != '[' || len(s.Script) > maxScriptBytes) {
 		return fmt.Errorf("%w: script must be an array of at most %d bytes", ErrInvalid, maxScriptBytes)
 	}
+	if s.Message != "" {
+		folder, ok := strings.CutPrefix(s.Message, "threads/"+s.ThreadID+"/")
+		if !ok || strings.Contains(folder, "/") || checkPath(s.Message) != nil {
+			return fmt.Errorf("%w: message must be a folder of the thread, threads/<thread id>/<folder>", ErrInvalid)
+		}
+	}
 	return nil
 }
 
@@ -80,8 +92,9 @@ type runnerJob struct {
 	Prompt    string          `json:"prompt"`
 	Config    json.RawMessage `json:"config"`
 	Script    json.RawMessage `json:"script,omitempty"`
+	Message   string          `json:"message,omitempty"`
 }
 
 func (s JobSpec) runnerJob() ([]byte, error) {
-	return json.Marshal(runnerJob{SessionID: s.SessionID, Prompt: s.Instruction, Config: s.Config, Script: s.Script})
+	return json.Marshal(runnerJob{SessionID: s.SessionID, Prompt: s.Instruction, Config: s.Config, Script: s.Script, Message: s.Message})
 }
