@@ -408,19 +408,26 @@ func TestCancelJob(t *testing.T) {
 		t.Errorf("the job is %s", j.State)
 	}
 
-	// A queued job is cancelled before it runs: it never opens a turn.
+	// A queued job's turn says it waits, on its worker's running job; it
+	// is cancelled before it runs.
 	c2, r2, w2 := newThreadCoordinator(t, `{"model":"m"}`)
 	first := startThread(t, c2, w2, "op_1", "one").ThreadID
 	waitThread(t, c2, w2, first, "the first job runs", func(th *threadRecord) bool { return th.Revision == 2 })
 	second := startThread(t, c2, w2, "op_2", "two").ThreadID
-	queued := readThread(t, c2, w2, second).Jobs[0].ID
-	if res := threadOp(t, c2, w2, second, "op_3", 1, "cancelJob", cancelArgs{JobID: queued}); !res.OK {
+	waiting := waitThread(t, c2, w2, second, "the turn says it waits", func(th *threadRecord) bool {
+		return kinds(th) == "note turn:live" && th.Entries[1].Queued == queuedWaiting
+	})
+	if v := waiting.display(0)[1].(turnView); !v.Live || v.Queued != queuedWaiting || waiting.Status != StatusWorking {
+		t.Fatalf("the queued turn: %+v, %s", v, waiting.Status)
+	}
+	queued := waiting.Jobs[0].ID
+	if res := threadOp(t, c2, w2, second, "op_3", waiting.Revision, "cancelJob", cancelArgs{JobID: queued}); !res.OK {
 		t.Fatalf("cancel a queued job: %+v", res)
 	}
 	r2.release <- struct{}{}
 	waitThread(t, c2, w2, first, "the first job ends", func(th *threadRecord) bool { return th.Status == StatusIdle })
 	time.Sleep(100 * time.Millisecond)
-	if th := readThread(t, c2, w2, second); kinds(th) != "note" || th.Status != StatusIdle || r2.started() != 1 {
+	if th := readThread(t, c2, w2, second); kinds(th) != "note turn:cancelled" || th.Status != StatusIdle || r2.started() != 1 {
 		t.Fatalf("the cancelled queued job: %s, %s, %d started", kinds(th), th.Status, r2.started())
 	}
 }
