@@ -250,6 +250,9 @@ func TestAListsShapeIsChecked(t *testing.T) {
 		{"an admin limited to some workers", func(l *TeamList) { l.Members[0].Workers = []string{f.w1.ID} }},
 		{"a reviewer of no worker", func(l *TeamList) { l.Members[2].Workers = nil }},
 		{"a reviewer of another team's worker", func(l *TeamList) { l.Members[2].Workers = []string{"w_0123456789abcdef01234567"} }},
+		{"a reviewer of every worker and one", func(l *TeamList) { l.Members[2].Workers = []string{allWorkers, f.w1.ID} }},
+		{"a reviewer of one worker and every", func(l *TeamList) { l.Members[2].Workers = []string{f.w1.ID, allWorkers} }},
+		{"a reviewer of every worker twice", func(l *TeamList) { l.Members[2].Workers = []string{allWorkers, allWorkers} }},
 		{"one account as two members", func(l *TeamList) { l.Members[2].Account = "dev" }},
 		{"one device under two members", func(l *TeamList) {
 			l.Members[2].Devices = []string{f.admin.include(t, "acme", "maria", f.tt.since[f.admin.id()])}
@@ -404,6 +407,31 @@ func TestAFirmTeamsIDIsMinted(t *testing.T) {
 	}
 	if again, _ := c2.MintTeam(me.caller("acme")); again != next {
 		t.Errorf("after a restart: %q, want %q", again, next)
+	}
+}
+
+// A reviewer assigned ["*"] reaches every worker of the team, including one
+// added after; one with an explicit list reaches only those.
+func TestAReviewerOfEveryWorkerReachesLaterOnes(t *testing.T) {
+	f := newTeamFixture(t)
+	other := newTestDevice(t)
+	f.tt.set("m_zoe", "zoe", RoleReviewer, other)
+	f.tt.update("m_zoe", func(m *ListMember) { m.Workers = []string{f.w1.ID} })
+	if err := f.tt.push(f.owner, "acme", nil); err != nil {
+		t.Fatal(err)
+	}
+	w3, err := f.tt.addWorker(f.owner, "acme", mustDEK(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, role, err := f.c.access(f.reviewer.caller("maria"), w3.ID, RoleReviewer); err != nil || role != RoleReviewer {
+		t.Errorf("the [\"*\"] reviewer on a later worker: %v %s", err, role)
+	}
+	if _, _, err := f.c.access(other.caller("zoe"), w3.ID, RoleReviewer); !errors.Is(err, ErrNoWorker) {
+		t.Errorf("the explicit reviewer on a later worker: %v", err)
+	}
+	if w, _ := f.c.Worker(w3.ID); !slices.ContainsFunc(w.Devices, func(d Device) bool { return d.ID == f.reviewer.id() }) {
+		t.Error("the [\"*\"] reviewer has no wrap for the later worker")
 	}
 }
 
