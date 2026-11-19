@@ -91,6 +91,7 @@ func (c *Coordinator) renewDue(ctx context.Context, w Worker, now time.Time) {
 	}
 	next, err := c.renew(ctx, w, r, now)
 	if err != nil {
+		c.fenced(ctx, w.Mailbox, err)
 		log.Printf("worker %s: couldn't renew its mailbox: %v", w.ID, err)
 	} else if next.ExpiresAt.Sub(now) < renewWarn {
 		log.Printf("worker %s: its mailbox expires %s", w.ID, next.ExpiresAt.Format(time.RFC3339))

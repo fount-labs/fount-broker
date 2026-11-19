@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -40,39 +41,75 @@ const maxJSON = 4 << 20
 type client struct {
 	edge Edge
 	now  func() time.Time
+	// gen is the coordinator generation every address-key call names, once
+	// SetGeneration has given one.
+	gen atomic.Pointer[Generation]
 }
 
+// generation is the number address-key calls send in Fount-Generation, or 0
+// for none.
+func (c *client) generation() uint64 {
+	if g := c.gen.Load(); g != nil {
+		return g.Number
+	}
+	return 0
+}
+
+// call is an address-key call with no body, or an unsigned one when k is nil.
 func (c *client) call(ctx context.Context, k *Keys, method, path, query string, limit int64) ([]byte, int, error) {
+	return c.do(ctx, method, path, query, nil, limit, func(h http.Header) {
+		if k != nil {
+			signRequest(h, k, method, path, nil, c.now(), c.generation())
+		}
+	})
+}
+
+// addressPost is an address-key POST or PUT with a JSON body.
+func (c *client) addressPost(ctx context.Context, k *Keys, method, path string, body []byte, limit int64) ([]byte, error) {
+	out, _, err := c.do(ctx, method, path, "", body, limit, func(h http.Header) {
+		signRequest(h, k, method, path, body, c.now(), c.generation())
+	})
+	return out, err
+}
+
+// do sends one request, signed by sign, and reads its answer: the body on a
+// 2xx, ErrNotFound on a 404, and an *EdgeError otherwise.
+func (c *client) do(ctx context.Context, method, path, query string, body []byte, limit int64, sign func(http.Header)) ([]byte, int, error) {
 	url := c.edge.Base() + path[1:]
 	if query != "" {
 		url += "?" + query
 	}
-	req, err := http.NewRequestWithContext(ctx, method, url, http.NoBody)
+	var rd io.Reader = http.NoBody
+	if body != nil {
+		rd = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, rd)
 	if err != nil {
 		return nil, 0, err
 	}
-	if k != nil {
-		signRequest(req.Header, k, method, path, nil, c.now())
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
+	sign(req.Header)
 	resp, err := c.edge.Do(ctx, req)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, resp.StatusCode, err
 	}
-	if int64(len(body)) > limit {
+	if int64(len(data)) > limit {
 		return nil, resp.StatusCode, fmt.Errorf("%w: %s %s answered more than %d bytes", ErrEdge, method, path, limit)
 	}
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
 		return nil, resp.StatusCode, ErrNotFound
 	case resp.StatusCode >= 300:
-		return nil, resp.StatusCode, fmt.Errorf("%w: %s %s answered %d: %s", ErrEdge, method, path, resp.StatusCode, edgeMessage(body))
+		return nil, resp.StatusCode, edgeError(method, path, resp.StatusCode, data)
 	}
-	return body, resp.StatusCode, nil
+	return data, resp.StatusCode, nil
 }
 
 // edgeMessage returns the edge's error text, bounded, for the app to show.
@@ -117,6 +154,12 @@ type Listing struct {
 	// Whether the worker is paused (edge v0.2.1). Mail still arrives and is fetched while
 	// it is. Nil when the edge didn't say, which the app treats as paused.
 	Paused *bool `json:"paused,omitempty"`
+	// Lapsed is set by an edge with coordinator routes: the worker is
+	// paused for a lapsed payment (decision 11), and its mail is held, not
+	// bounced, until HoldUntil (unix seconds; 0 when the entitlement has no
+	// expiry).
+	Lapsed    *bool `json:"lapsed,omitempty"`
+	HoldUntil int64 `json:"hold_until,omitempty"`
 }
 
 func (c *client) list(ctx context.Context, k *Keys) (Listing, error) {

@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -42,13 +43,21 @@ type fakeMailEdge struct {
 	seq     map[string]uint64
 	renews  []string // the Fount-Entitlement of each POST /entitlement
 	expiry  int64
+	// coord is the edge's coordinator side: it checks every address-key
+	// call's signature against keys and holds an enrolled mailbox to the
+	// generation fence. authority signs generation certificates.
+	coord     *mailtest.Coordination
+	authority ed25519.PrivateKey
+	keys      map[string]ed25519.PublicKey
 }
 
 func newFakeMailEdge(t *testing.T) *fakeMailEdge {
 	pub, priv, _ := ed25519.GenerateKey(nil)
+	apub, apriv, _ := ed25519.GenerateKey(nil)
 	running := false
 	f := &fakeMailEdge{
 		t: t, boot: make([]byte, 16), pub: pub, priv: priv, paused: &running,
+		coord: mailtest.NewCoordination(apub), authority: apriv, keys: map[string]ed25519.PublicKey{},
 		mail: map[string][]string{}, objects: map[string]map[string][]byte{}, lists: map[string]int{}, seq: map[string]uint64{},
 		expiry: time.Now().Add(30 * 24 * time.Hour).Unix(),
 	}
@@ -77,7 +86,19 @@ func (f *fakeMailEdge) serve(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"boot_id": id, "signing_key": []byte(f.pub), "started_at": 1})
 		return
 	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		f.t.Errorf("fake edge: %v", err)
+		return
+	}
+	if f.coord.Serve(w, r, body, func(mb string) ed25519.PublicKey { return f.keys[mb] }) {
+		return
+	}
 	mb := r.Header.Get("Fount-Key-Id")
+	if ref := f.coord.Address(r, body, mb, f.keys[mb]); ref != nil {
+		ref.Write(w)
+		return
+	}
 	switch {
 	case r.Method == "GET" && r.URL.Path == "/mail":
 		f.lists[mb]++
@@ -123,9 +144,22 @@ type email struct {
 	receivedAt time.Time
 }
 
+// register tells the edge mb's address key, as making the mailbox did.
+func (f *fakeMailEdge) register(mb Mailbox) {
+	f.t.Helper()
+	keys, err := mb.keys()
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.keys[mb.MailboxID] = keys.SigningPublic()
+}
+
 // deliver seals e to mb's address and holds it, returning its edge id.
 func (f *fakeMailEdge) deliver(mb Mailbox, e email) string {
 	f.t.Helper()
+	f.register(mb)
 	keys, err := mb.keys()
 	if err != nil {
 		f.t.Fatal(err)
@@ -173,6 +207,7 @@ func (f *fakeMailEdge) deliver(mb Mailbox, e email) string {
 	}
 	f.objects[mb.MailboxID][id] = obj
 	f.mail[mb.MailboxID] = append(f.mail[mb.MailboxID], id)
+	f.coord.Arrived(mb.MailboxID, f.seq[mb.MailboxID])
 	return id
 }
 
@@ -429,6 +464,7 @@ func (r *mailRig) worker() (Worker, Mailbox) {
 		r.t.Fatal(err)
 	}
 	mb := newMailbox(r.t, testWorkerAddr)
+	r.edge.register(mb)
 	if err := r.c.SetMailbox(w.ID, mb, []Requester{{Address: "Dana@Example.com", DKIMDomain: "example.com", AutoRun: true, PairedBy: "reply"}}); err != nil {
 		r.t.Fatal(err)
 	}
