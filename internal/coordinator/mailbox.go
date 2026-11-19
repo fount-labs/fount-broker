@@ -269,6 +269,9 @@ func (c *Coordinator) SetMailbox(workerID string, mb Mailbox, requesters []Reque
 		return err
 	}
 	mb.Address, _ = mailAddress(mb.Address)
+	if err := c.mailboxFree(workerID, mb.MailboxID); err != nil {
+		return err
+	}
 	keys, _ := c.mailKeys(&mb)
 	for i := range requesters {
 		a, err := mailAddress(requesters[i].Address)
@@ -306,6 +309,10 @@ func (c *Coordinator) SetMailbox(workerID string, mb Mailbox, requesters []Reque
 func (c *Coordinator) mailboxReady(workerID string, mb Mailbox, keys *mail.Keys) error {
 	var err error
 	c.mu.Lock()
+	if holder := c.mailboxHolder(workerID, mb.MailboxID); holder != "" {
+		c.mu.Unlock()
+		return fmt.Errorf("%w: worker %s has %s", ErrMailboxTaken, holder, mb.Address)
+	}
 	if w := c.state.Workers[workerID]; w != nil && w.Mailbox != mb.MailboxID {
 		w.Mailbox = mb.MailboxID
 		err = c.state.Save(c.cfg.StateDir)
@@ -321,6 +328,27 @@ func (c *Coordinator) mailboxReady(workerID string, mb Mailbox, keys *mail.Keys)
 		c.mail.kick(workerID)
 	}
 	return nil
+}
+
+// mailboxFree refuses a mailbox id another worker than workerID holds.
+func (c *Coordinator) mailboxFree(workerID, mailboxID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if holder := c.mailboxHolder(workerID, mailboxID); holder != "" {
+		return fmt.Errorf("%w: worker %s has it", ErrMailboxTaken, holder)
+	}
+	return nil
+}
+
+// mailboxHolder is the worker other than workerID that holds mailboxID, or
+// "". Caller holds c.mu.
+func (c *Coordinator) mailboxHolder(workerID, mailboxID string) string {
+	for id, w := range c.state.Workers {
+		if id != workerID && w.Mailbox == mailboxID {
+			return id
+		}
+	}
+	return ""
 }
 
 // MailView is a worker's mail settings as a client reads them: no keys.
