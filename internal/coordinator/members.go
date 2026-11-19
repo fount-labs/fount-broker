@@ -16,7 +16,7 @@ import (
 // arriving, a job ending) act as anyDevice and need no role.
 
 // roleCaller marks a route that checks its caller itself: making a worker
-// before it has a team, the retired v2 grant routes.
+// before it has a team, making a firm team's id, the retired v2 grant routes.
 const roleCaller Role = "caller"
 
 var opRoles = map[string]Role{
@@ -35,6 +35,7 @@ var opRoles = map[string]Role{
 	"POST /workers/{id}/threads/{tid}/ops": RoleReviewer,
 	"POST /workers/{id}/ops":               RoleReviewer,
 	"GET /workers/{id}/mail":               RoleReviewer,
+	"POST /teams":                          roleCaller,
 	"GET /teams/{team}/log":                RoleReviewer,
 	"POST /teams/{team}/log":               RoleAdmin,
 

@@ -26,6 +26,10 @@ type State struct {
 	// counts the changes to them (commitSecurity).
 	Teams       map[string]*Team `json:"teams,omitempty"`
 	SecuritySeq uint64           `json:"securitySeq,omitempty"`
+	// TeamMints are firm teams' ids the coordinator made (MintTeam) whose
+	// first list hasn't been appended yet, each with the account it was made
+	// for: one at a time per account.
+	TeamMints map[string]string `json:"teamMints,omitempty"`
 }
 
 type Worker struct {
@@ -101,7 +105,7 @@ func statePath(dir string) string { return filepath.Join(dir, "state.json") }
 // LoadState reads the volume's state, or starts empty. A job that was running
 // when the coordinator stopped is failed, not run again: it may have sent mail.
 func LoadState(dir string) (*State, error) {
-	s := &State{Workers: map[string]*Worker{}, Jobs: map[string]*Job{}, Teams: map[string]*Team{}}
+	s := &State{Workers: map[string]*Worker{}, Jobs: map[string]*Job{}, Teams: map[string]*Team{}, TeamMints: map[string]string{}}
 	data, err := os.ReadFile(statePath(dir))
 	if errors.Is(err, fs.ErrNotExist) {
 		return s, nil
@@ -120,6 +124,9 @@ func LoadState(dir string) (*State, error) {
 	}
 	if s.Teams == nil {
 		s.Teams = map[string]*Team{}
+	}
+	if s.TeamMints == nil {
+		s.TeamMints = map[string]string{}
 	}
 	for _, j := range s.Jobs {
 		switch {

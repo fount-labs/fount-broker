@@ -346,6 +346,67 @@ func TestAMembersAccountNeverChanges(t *testing.T) {
 	}
 }
 
+// A firm team's id is one the coordinator made for the signer's account: an
+// organisation's id, or another account's minted id, can't be claimed.
+func TestAFirmTeamsIDIsMinted(t *testing.T) {
+	c, _ := newTestCoordinator(t, "ok", 0)
+	me, other := newTestDevice(t), newTestDevice(t)
+
+	id, err := c.MintTeam(me.caller("acme"))
+	if err != nil || !strings.HasPrefix(id, teamIDPrefix+"_") || checkID("team", id) != nil {
+		t.Fatalf("minted %q: %v", id, err)
+	}
+	if again, _ := c.MintTeam(me.caller("acme")); again != id {
+		t.Errorf("an account's open mint is returned again: %q, want %q", again, id)
+	}
+	theirs, _ := c.MintTeam(other.caller("globex"))
+	if theirs == id {
+		t.Fatal("two accounts were given one id")
+	}
+
+	// An organisation's id, and another account's mint, aren't the
+	// signer's.
+	for _, team := range []string{"org_2abcDEF", theirs} {
+		tt := newTestTeam(t, c, team)
+		tt.set("m_owner", "acme", RoleAdmin, me)
+		if err := tt.push(me, "acme", nil); !errors.Is(err, ErrNotAdmin) {
+			t.Errorf("a first list for %s: %v", team, err)
+		}
+	}
+
+	// Through the account API, as Desktop asks.
+	srv := httptest.NewServer(c.AccountHandler(me.caller("acme")))
+	t.Cleanup(srv.Close)
+	if code, out := do(t, srv, "POST", "/v1/teams", ""); code != 200 || out["team"] != id {
+		t.Fatalf("POST /v1/teams: %d %v", code, out)
+	}
+
+	tt := newTestTeam(t, c, id)
+	tt.set("m_owner", "acme", RoleAdmin, me)
+	if err := tt.push(me, "acme", nil); err != nil {
+		t.Fatalf("the firm's first list: %v", err)
+	}
+	w, err := tt.addWorker(me, "acme", mustDEK(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Team != id || w.Account != id {
+		t.Errorf("a firm worker's team and account: %s %s", w.Team, w.Account)
+	}
+	// The mint is used: the next is a new team's, and survives a restart.
+	next, _ := c.MintTeam(me.caller("acme"))
+	if next == id {
+		t.Error("a used mint was given again")
+	}
+	c2, err := New(c.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := c2.MintTeam(me.caller("acme")); again != next {
+		t.Errorf("after a restart: %q, want %q", again, next)
+	}
+}
+
 // Every route and operation needs its role on the worker, and a reviewer
 // reaches only the workers assigned them.
 func TestEveryOperationChecksTheRole(t *testing.T) {

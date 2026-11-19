@@ -309,10 +309,11 @@ func (c *Coordinator) checkList(prior *teamState, l TeamList, caller Caller, dek
 	}
 	// The signer: an admin of the caller's account, in the state before the
 	// list or, for a team's first, in the list, which must be the caller's
-	// own team of one.
+	// own team of one or a firm team's id MintTeam made for the caller's
+	// account.
 	if prior == nil {
-		if l.Team != caller.Account {
-			return fmt.Errorf("%w: a team's first list is for the signer's own account", ErrNotAdmin)
+		if l.Team != caller.Account && c.state.TeamMints[l.Team] != caller.Account {
+			return fmt.Errorf("%w: a team's first list is for the signer's own account or an id the coordinator made for it", ErrNotAdmin)
 		}
 		if lm := listMemberOf(l, caller.Device, c.cfg.Audience); lm == nil || lm.Role != RoleAdmin || lm.Account != caller.Account {
 			return fmt.Errorf("%w: a team's first list names its signer as an admin", ErrNotAdmin)
@@ -555,6 +556,8 @@ func (c *Coordinator) commitEntry(team string, prior *teamState, entry TeamEntry
 		}
 	}
 	c.state.Teams[team] = &Team{ID: team, Log: log, Rotate: rotate, state: next}
+	mintedFor, minted := c.state.TeamMints[team]
+	delete(c.state.TeamMints, team)
 	if err := c.commitSecurity(); err != nil {
 		maps.Copy(c.state.Workers, oldWorkers)
 		maps.Copy(c.state.Jobs, oldJobs)
@@ -562,6 +565,9 @@ func (c *Coordinator) commitEntry(team string, prior *teamState, entry TeamEntry
 			c.state.Teams[team] = t
 		} else {
 			delete(c.state.Teams, team)
+		}
+		if minted {
+			c.state.TeamMints[team] = mintedFor
 		}
 		return nil, err
 	}
@@ -624,6 +630,59 @@ func (c *Coordinator) commitSecurity() error {
 		return err
 	}
 	return nil
+}
+
+// teamIDPrefix starts the id of a firm team, which the coordinator makes.
+// A solo account's team id is its account id.
+const teamIDPrefix = "tm"
+
+// MintTeam makes a firm team's id for the caller's account to sign its first
+// list for (§2.2): random, so no one can claim another's team, and never an
+// identity provider's organisation id. fount-infra maps an organisation to
+// it for billing alone. Until a first list is appended for it, asking again
+// returns the same id, so an account holds one at a time.
+func (c *Coordinator) MintTeam(caller Caller) (string, error) {
+	if err := checkID("account", caller.Account); err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, id := range slices.Sorted(maps.Keys(c.state.TeamMints)) {
+		if c.state.TeamMints[id] == caller.Account {
+			return id, nil
+		}
+	}
+	for {
+		id, err := newID(teamIDPrefix)
+		if err != nil {
+			return "", err
+		}
+		if _, taken := c.state.Teams[id]; taken {
+			continue
+		}
+		if _, taken := c.state.TeamMints[id]; taken {
+			continue
+		}
+		if _, taken := c.state.Workers[id]; taken {
+			continue
+		}
+		c.state.TeamMints[id] = caller.Account
+		if err := c.state.Save(c.cfg.StateDir); err != nil {
+			delete(c.state.TeamMints, id)
+			return "", err
+		}
+		return id, nil
+	}
+}
+
+// mintTeam is POST /v1/teams: a new firm team's id, {"team": id}.
+func (a *api) mintTeam(rw http.ResponseWriter, r *http.Request) {
+	id, err := a.c.MintTeam(*a.caller)
+	if err != nil {
+		fail(rw, statusOf(err), err)
+		return
+	}
+	reply(rw, http.StatusOK, map[string]string{"team": id})
 }
 
 // TeamLogView is a team's log after a point, and where it stands: what a

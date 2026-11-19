@@ -22,6 +22,7 @@ import (
 //	GET  v1/workers/{id}/threads          GET  v1/workers/{id}/threads/{tid}[?since=N]
 //	POST v1/workers/{id}/threads/{tid}/ops  POST v1/workers/{id}/ops
 //	GET  v1/teams/{team}/log[?since=N]    POST v1/teams/{team}/log
+//	POST v1/teams
 //
 // The v2 grant and revoke routes stay, so Desktop hears they are retired
 // (410) rather than that the broker refused them.
@@ -53,6 +54,8 @@ func checkRequest(method, target string) (*url.URL, error) {
 		switch {
 		case seg[1] == "workers" && len(seg) == 2:
 			ok = method == http.MethodPost || method == http.MethodGet
+		case seg[1] == "teams" && len(seg) == 2:
+			ok = method == http.MethodPost
 		case seg[1] == "teams" && len(seg) == 4 && teamID.MatchString(seg[2]) && seg[3] == "log":
 			ok, changes = method == http.MethodGet || method == http.MethodPost, method == http.MethodGet
 		case seg[1] == "jobs" && len(seg) == 3:

@@ -324,6 +324,7 @@ func TestCheckRequest(t *testing.T) {
 		"GET v1/workers/" + w + "/threads/" + th + "?since=42", "POST v1/workers/" + w + "/threads/" + th + "/ops",
 		"POST v1/workers/" + w + "/ops",
 		"GET v1/teams/acct_acme/log", "GET v1/teams/acct_acme/log?since=3", "POST v1/teams/acct_acme/log",
+		"POST v1/teams",
 	} {
 		method, target, _ := strings.Cut(ok, " ")
 		if _, err := CheckRequest(method, target); err != nil {
@@ -344,6 +345,7 @@ func TestCheckRequest(t *testing.T) {
 		"GET v1/workers/" + w + "/ops", "GET v1/workers/" + w + "/threads/" + th + "?since=1&since=2",
 		"PUT v1/teams/acct_acme/log", "GET v1/teams/acct_acme", "GET v1/teams/acct.acme/log", "GET v1/teams/acct_acme/log/x",
 		"POST v1/teams/acct_acme/log?since=1", "GET v1/teams/acct_acme/log?prefix=a", "GET v1/teams/" + strings.Repeat("a", 65) + "/log",
+		"GET v1/teams", "PUT v1/teams", "POST v1/teams?since=1",
 	} {
 		method, target, _ := strings.Cut(bad, " ")
 		if _, err := CheckRequest(method, target); err == nil {

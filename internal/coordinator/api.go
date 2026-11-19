@@ -73,6 +73,7 @@ func (a *api) accountRoutes(mux router) {
 	mux.HandleFunc("GET /v1/workers", a.listWorkers)
 	mux.HandleFunc("POST /v1/workers/{id}/grant", a.retired)
 	mux.HandleFunc("POST /v1/workers/{id}/revoke", a.retired)
+	mux.HandleFunc("POST /v1/teams", a.mintTeam)
 	mux.HandleFunc("GET /v1/teams/{team}/log", a.teamLog)
 	mux.HandleFunc("POST /v1/teams/{team}/log", a.appendTeamList)
 	a.routes(mux, "/v1")
