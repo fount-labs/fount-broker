@@ -216,6 +216,8 @@ type mailRunner struct {
 	messages []string
 	// seen is every file each job's workspace had, by its path there.
 	seen [][]string
+	// events is what each agent job prints: a turn summary, say.
+	events []byte
 }
 
 func (r *mailRunner) Run(_ context.Context, _, _ string, job JobDirs) (RunResult, error) {
@@ -240,8 +242,9 @@ func (r *mailRunner) Run(_ context.Context, _, _ string, job JobDirs) (RunResult
 		return nil
 	})
 	r.seen = append(r.seen, seen)
+	events := r.events
 	r.mu.Unlock()
-	return RunResult{}, nil
+	return RunResult{Events: events}, nil
 }
 
 // fakeIntake stands in for fount-runner --mode intake: it writes what intake
@@ -256,6 +259,11 @@ type fakeIntake struct {
 	calls     map[string]int // by account
 	runs      int
 	read      []string // the edge ids intake was asked to read
+
+	// instruction and source replace intake's instruction and its source,
+	// and reply says the email is a reply.
+	instruction, source string
+	reply               bool
 }
 
 // ran says whether intake was asked to read the email edgeID.
@@ -300,7 +308,7 @@ func (f *fakeIntake) RunIntake(_ context.Context, account, dir string) (RunResul
 		return RunResult{}, err
 	}
 	spec, err := json.Marshal(IntakeSpec{
-		Version: 1, ParserVersion: 2, Message: check.ID, Instruction: intakeInstruction, InstructionSource: "worker",
+		Version: 1, ParserVersion: 2, Message: check.ID, Instruction: cmpOrStr(f.instruction, intakeInstruction), InstructionSource: cmpOrStr(f.source, "worker"), Reply: f.reply,
 		Note: "none", Automatic: f.automatic, Flags: []string{},
 		Attachments: []IntakeAttachment{{Path: intakeAttachment, ContentType: "text/csv", Size: int64(len(intakeCSV))}},
 	})

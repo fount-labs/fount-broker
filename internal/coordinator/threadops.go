@@ -114,22 +114,17 @@ func (r refusal) Error() string { return string(r.code) }
 // unsupportedThreadOps are the thread operations Desktop's Op has that Cloud
 // doesn't apply yet, and what each waits on.
 var unsupportedThreadOps = map[string]string{
-	"answerQuestion":     "questions: the runner reporting an ask, and resuming its wait",
-	"dismissQuestion":    "questions: the runner reporting an ask, and resuming its wait",
-	"forwardQuestion":    "questions and sending mail from Cloud",
-	"approveDraft":       "drafts from a job's final answer, and sending mail from Cloud",
-	"discardDraft":       "drafts from a job's final answer",
-	"keepFileAsCopy":     "drafts from a job's final answer",
-	"redoOnLatest":       "drafts from a job's final answer",
-	"sendAgain":          "sending mail from Cloud",
-	"setThreadReplyMode": "the email side of a thread",
-	"markRead":           "read state per device",
+	"answerQuestion":  "questions: the runner reporting an ask, and resuming its wait",
+	"dismissQuestion": "questions: the runner reporting an ask, and resuming its wait",
+	"forwardQuestion": "questions and sending mail from Cloud",
+	"keepFileAsCopy":  "drafts from a job's final answer",
+	"redoOnLatest":    "drafts from a job's final answer",
+	"markRead":        "read state per device",
 }
 
 var unsupportedWorkerOps = map[string]string{
 	"removeRequester":  "the worker's requesters, moved in with worker.json",
 	"setRequesterMode": "the worker's requesters, moved in with worker.json",
-	"setDefaultMode":   "the worker's settings, moved in with worker.json",
 }
 
 // noteArgs are sendNote's and startThread's. files is accepted and, as on
@@ -208,6 +203,9 @@ func parseThreadOp(env opEnvelope, threadID string) (args any, hash string, err 
 	default:
 		var mailOp bool
 		if args, mailOp, err = parseMailThreadOp(env); mailOp {
+			break
+		}
+		if args, mailOp, err = parseDraftThreadOp(env); mailOp {
 			break
 		}
 		if needs, ok := unsupportedThreadOps[env.Kind]; ok {
@@ -411,6 +409,8 @@ func (c *Coordinator) applyThreadOp(device, workerID, threadID string, env opEnv
 			fx, err = c.runHeldMail(t, th, a, rev)
 		case mailRequesterArgs:
 			err = c.addRequesterFromMail(t, th, a, rev, now)
+		case draftOp:
+			ids, fx, err = a.applyDraft(c, t, th, device, rev, now)
 		}
 		var r refusal
 		if errors.As(err, &r) {
@@ -541,6 +541,9 @@ func loadBases(t *Tree, jobID string) (map[string]string, error) {
 func (c *Coordinator) applyWorkerOp(device, workerID string, env workerOpEnvelope) (OpResult, error) {
 	if isMailWorkerOp(env.Kind) {
 		return c.applyMailWorkerOp(device, workerID, env)
+	}
+	if env.Kind == "setDefaultMode" {
+		return c.applyDefaultMode(device, workerID, env)
 	}
 	args, hash, err := parseWorkerOp(env)
 	if err != nil {

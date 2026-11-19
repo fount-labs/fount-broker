@@ -468,8 +468,9 @@ func TestEveryOperationChecksTheRole(t *testing.T) {
 		{"POST", base + "/ops", `{"opId":"op_req","kind":"addRequester","args":{"address":"lee@client.example","baseRevision":0}}`, 403, 200},
 		{"POST", base + "/threads/thr_0123456789abcdef01234567/ops", `{"opId":"op_x","threadId":"thr_0123456789abcdef01234567","baseRevision":0,"kind":"runHeldMail","args":{"mailId":"m_1"}}`, 200, 200},
 		{"POST", base + "/ops", op("noSuchKind"), 403, 403},
-		{"POST", base + "/threads/thr_0123456789abcdef01234567/ops", `{"opId":"op_x","threadId":"thr_0123456789abcdef01234567","baseRevision":0,"kind":"setThreadReplyMode","args":{}}`, 403, 501},
-		{"POST", base + "/threads/thr_0123456789abcdef01234567/ops", `{"opId":"op_x","threadId":"thr_0123456789abcdef01234567","baseRevision":0,"kind":"approveDraft","args":{}}`, 501, 501},
+		{"POST", base + "/threads/thr_0123456789abcdef01234567/ops", `{"opId":"op_x","threadId":"thr_0123456789abcdef01234567","baseRevision":0,"kind":"setThreadReplyMode","args":{}}`, 403, 400},
+		{"POST", base + "/threads/thr_0123456789abcdef01234567/ops", `{"opId":"op_x","threadId":"thr_0123456789abcdef01234567","baseRevision":0,"kind":"approveDraft","args":{}}`, 400, 400},
+		{"POST", base + "/ops", `{"opId":"op_mode","kind":"setDefaultMode","args":{"mode":"notify","baseRevision":0}}`, 403, 200},
 		// The worker not assigned to the reviewer: as if there were none.
 		{"GET", "/v1/workers/" + f.w2.ID, "", 404, 200},
 		{"GET", "/v1/workers/" + f.w2.ID + "/threads", "", 404, 200},
@@ -511,6 +512,7 @@ func TestEveryOperationHasARole(t *testing.T) {
 	}
 	kinds := opKindsIn(t, "threadops.go")
 	kinds = append(kinds, opKindsIn(t, "mailops.go")...)
+	kinds = append(kinds, opKindsIn(t, "draftops.go")...)
 	for k := range mailWorkerOps {
 		kinds = append(kinds, k)
 	}
@@ -520,7 +522,7 @@ func TestEveryOperationHasARole(t *testing.T) {
 	for k := range unsupportedWorkerOps {
 		kinds = append(kinds, k)
 	}
-	if !slices.Contains(kinds, "sendNote") || !slices.Contains(kinds, "startThread") || !slices.Contains(kinds, "runHeldMail") {
+	if !slices.Contains(kinds, "sendNote") || !slices.Contains(kinds, "startThread") || !slices.Contains(kinds, "runHeldMail") || !slices.Contains(kinds, "approveDraft") {
 		t.Fatalf("the walk found %v", kinds)
 	}
 	for _, k := range kinds {

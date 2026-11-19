@@ -81,6 +81,10 @@ type threadRecord struct {
 	// Jobs is every job run on the thread, with the last state the thread
 	// followed. The job queue is the authority on a job (followJobs).
 	Jobs []threadJob `json:"jobs"`
+	// ReplyMode is the mode in force on a mail thread, and ModeSet the
+	// lower one setThreadReplyMode chose, if any (draft.go).
+	ReplyMode string `json:"replyMode,omitempty"`
+	ModeSet   string `json:"modeSet,omitempty"`
 }
 
 const (
@@ -134,6 +138,8 @@ type threadEntry struct {
 	Detail string `json:"detail,omitempty"`
 	// A received email's.
 	Mail *mailEntry `json:"mail,omitempty"`
+	// A draft reply's (draft.go); its job is JobID.
+	Draft *draftEntry `json:"draft,omitempty"`
 }
 
 type threadJob struct {
@@ -218,6 +224,9 @@ func (th *threadRecord) status() ThreadStatus {
 	}
 	if slices.ContainsFunc(th.Entries, func(e threadEntry) bool { return e.Kind == entryQuestion && e.State == questionOpen }) {
 		return StatusWaiting
+	}
+	if th.pendingDraft() {
+		return StatusReview
 	}
 	if th.holding() {
 		return StatusHeld
@@ -405,8 +414,13 @@ func (c *Coordinator) follow(t *Tree, th *threadRecord) (bool, error) {
 		}
 		return f
 	}
-	changed, err := th.followJobs(jobs, left, time.Now().UTC())
-	if err != nil || !changed {
+	now := time.Now().UTC()
+	changed, err := th.followJobs(jobs, left, now)
+	if err != nil {
+		return changed, err
+	}
+	drafted, err := c.afterFollow(t, th, now)
+	if err != nil || !(changed || drafted) {
 		return changed, err
 	}
 	return true, saveThread(t, th)
@@ -436,7 +450,7 @@ type ThreadHeader struct {
 	Worker   WorkerName   `json:"worker"`
 	Subject  string       `json:"subject"`
 	Status   ThreadStatus `json:"status"`
-	// ReplyMode is "off": a thread started in the app has no email side.
+	// ReplyMode is the mode in force: "off" on a thread with no email side.
 	ReplyMode    string   `json:"replyMode"`
 	Participants []any    `json:"participants"`
 	Viewers      []string `json:"viewers"`
@@ -537,7 +551,7 @@ func (th *threadRecord) summary() ThreadSummary {
 func (th *threadRecord) header() ThreadHeader {
 	return ThreadHeader{
 		ID: th.ID, Revision: th.Revision, Subject: th.Subject, Status: th.Status,
-		ReplyMode: "off", Participants: th.participantViews(), Viewers: []string{},
+		ReplyMode: th.replyMode(), Participants: th.participantViews(), Viewers: []string{},
 	}
 }
 
@@ -599,6 +613,8 @@ func (th *threadRecord) display(since uint64) []DisplayEntry {
 			out = append(out, questionView{entryHead: head, WaitID: e.WaitID, State: e.State, Question: e.Text, Detail: e.Detail})
 		case entryMail:
 			out = append(out, mailIn(head, th.ID, e))
+		case entryDraft:
+			out = append(out, draftViews(head, e)...)
 		}
 	}
 	return out

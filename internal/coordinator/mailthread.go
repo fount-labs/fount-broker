@@ -42,6 +42,26 @@ type mailEntry struct {
 	// "queued" (mailintake.go). JobID is that job's.
 	Intake string `json:"intake,omitempty"`
 	JobID  string `json:"jobId,omitempty"`
+	// The signed headers a reply to it needs, as the edge's check read them.
+	MessageID  string `json:"messageId,omitempty"`
+	InReplyTo  string `json:"inReplyTo,omitempty"`
+	References string `json:"references,omitempty"`
+	Subject    string `json:"subject,omitempty"`
+}
+
+// references is what a reply's References carries: the email's own, then
+// its Message-ID.
+func (m *mailEntry) references() []string {
+	var refs []string
+	for _, f := range strings.Fields(m.References) {
+		if strings.HasPrefix(f, "<") && strings.HasSuffix(f, ">") {
+			refs = append(refs, f)
+		}
+	}
+	if m.MessageID != "" {
+		refs = append(refs, m.MessageID)
+	}
+	return refs
 }
 
 const (
@@ -203,7 +223,7 @@ func mailIn(head entryHead, threadID string, e threadEntry) mailInView {
 	switch m.Verdict {
 	case "request", verdictThreadReply:
 		v.Verdict = verdictView{Kind: "request"}
-	case "context":
+	case "context", verdictApproval:
 		v.Verdict = verdictView{Kind: "context"}
 	default:
 		v.Verdict = verdictView{Kind: m.Verdict, Reason: m.Reason}

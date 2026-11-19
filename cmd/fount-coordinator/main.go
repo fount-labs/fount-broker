@@ -405,5 +405,6 @@ func mailConfig(on bool) coordinator.MailConfig {
 	if !on {
 		return coordinator.MailConfig{}
 	}
-	return coordinator.MailConfig{Service: mail.New(route.NewMailEdge(), coordinator.NoLocalCheck{})}
+	edge := route.NewMailEdge()
+	return coordinator.MailConfig{Service: mail.New(edge, coordinator.NoLocalCheck{}), Send: coordinator.NewEdgeSender(edge)}
 }

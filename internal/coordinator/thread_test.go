@@ -505,7 +505,8 @@ func TestOperationsThatArentHereOrArentRight(t *testing.T) {
 		path string
 		want error
 	}{
-		{opEnvelope{OpID: "op_1", ThreadID: "thr_1", Kind: "approveDraft", Args: json.RawMessage(`{}`)}, "thr_1", ErrUnsupported},
+		{opEnvelope{OpID: "op_1", ThreadID: "thr_1", Kind: "keepFileAsCopy", Args: json.RawMessage(`{}`)}, "thr_1", ErrUnsupported},
+		{opEnvelope{OpID: "op_1", ThreadID: "thr_1", Kind: "approveDraft", Args: json.RawMessage(`{}`)}, "thr_1", ErrInvalid},
 		{opEnvelope{OpID: "op_1", ThreadID: "thr_1", Kind: "frobnicate", Args: json.RawMessage(`{}`)}, "thr_1", ErrInvalid},
 		{opEnvelope{OpID: "op_1", ThreadID: "thr_2", Kind: "sendNote", Args: noteJSON("hi")}, "thr_1", ErrInvalid},
 		{opEnvelope{OpID: "op 1", ThreadID: "thr_1", Kind: "sendNote", Args: noteJSON("hi")}, "thr_1", ErrInvalid},
@@ -518,8 +519,8 @@ func TestOperationsThatArentHereOrArentRight(t *testing.T) {
 			t.Errorf("%s %s: %v, want %v", tc.env.Kind, tc.env.Args, err, tc.want)
 		}
 	}
-	if _, err := c.applyWorkerOp(anyDevice, w.ID, workerOpEnvelope{OpID: "op_1", Kind: "setDefaultMode", Args: json.RawMessage(`{}`)}); !errors.Is(err, ErrUnsupported) {
-		t.Errorf("setDefaultMode: %v", err)
+	if _, err := c.applyWorkerOp(anyDevice, w.ID, workerOpEnvelope{OpID: "op_1", Kind: "setRequesterMode", Args: json.RawMessage(`{}`)}); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("setRequesterMode: %v", err)
 	}
 	if _, err := c.applyWorkerOp(anyDevice, "w_nope", workerOpEnvelope{OpID: "op_1", Kind: "startThread", Args: noteJSON("hi")}); !errors.Is(err, ErrNoWorker) {
 		t.Errorf("no worker: %v", err)
@@ -586,9 +587,9 @@ func TestThreadsThroughTheAPI(t *testing.T) {
 		{"GET", base + "/threads/" + tid + "?since=x", "", 400},
 		{"GET", base + "/threads/thr_nope", "", 404},
 		{"GET", "/v0/workers/w_nope/threads", "", 404},
-		{"POST", base + "/threads/" + tid + "/ops", `{"opId":"op_4","threadId":"` + tid + `","baseRevision":2,"kind":"approveDraft","args":{}}`, 501},
+		{"POST", base + "/threads/" + tid + "/ops", `{"opId":"op_4","threadId":"` + tid + `","baseRevision":2,"kind":"keepFileAsCopy","args":{}}`, 501},
 		{"POST", base + "/threads/" + tid + "/ops", `{"opId":"op_4","threadId":"` + tid + `","baseRevision":2,"kind":"sendNote","args":{"text":"x"},"extra":1}`, 400},
-		{"POST", base + "/ops", `{"opId":"op_4","kind":"setDefaultMode","args":{}}`, 501},
+		{"POST", base + "/ops", `{"opId":"op_4","kind":"setRequesterMode","args":{}}`, 501},
 		{"POST", "/v0/workers/w_nope/ops", `{"opId":"op_4","kind":"startThread","args":{"text":"x"}}`, 404},
 	} {
 		if code, out := do(t, srv, tc.method, tc.path, tc.body); code != tc.want {
