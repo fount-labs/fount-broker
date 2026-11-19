@@ -35,7 +35,7 @@ func (c *Coordinator) Handler() http.Handler {
 	mux.HandleFunc("POST /v0/workers", a.createWorker)
 	mux.HandleFunc("PUT /v0/workers/{id}/mail", a.putMailbox)
 	a.routes(mux, "/v0")
-	return mux
+	return c.serving(mux)
 }
 
 // AccountHandler is the API for one caller, as the attested client channel
@@ -60,7 +60,7 @@ func (c *Coordinator) AccountHandler(caller Caller) http.Handler {
 	a := &api{c: c, account: caller.Account, caller: &caller}
 	mux := http.NewServeMux()
 	a.accountRoutes(mux)
-	return mux
+	return c.serving(mux)
 }
 
 // router is what registers a route: an http.ServeMux, or a test's list.
@@ -76,6 +76,7 @@ func (a *api) accountRoutes(mux router) {
 	mux.HandleFunc("POST /v1/teams", a.mintTeam)
 	mux.HandleFunc("GET /v1/teams/{team}/log", a.teamLog)
 	mux.HandleFunc("POST /v1/teams/{team}/log", a.appendTeamList)
+	a.recoveryRoutes(mux)
 	a.routes(mux, "/v1")
 }
 
@@ -109,6 +110,7 @@ func (a *api) routes(mux router, prefix string) {
 	mux.HandleFunc("POST "+prefix+"/workers/{id}/threads/{tid}/ops", a.threadOp)
 	mux.HandleFunc("POST "+prefix+"/workers/{id}/ops", a.workerOp)
 	mux.HandleFunc("GET "+prefix+"/workers/{id}/mail", a.getMail)
+	mux.HandleFunc("GET "+prefix+"/workers/{id}/export", a.exportWorker)
 }
 
 // worker is the request's worker, if this API may touch it with the role

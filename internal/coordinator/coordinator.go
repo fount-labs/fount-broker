@@ -64,6 +64,9 @@ type Config struct {
 	// Mail runs each Cloud worker's mail loop (mailloop.go, RunMail). Zero
 	// runs none.
 	Mail MailConfig
+	// Backup backs the volume up and counts security changes in the vault
+	// (backup.go, RunBackups). Nil does neither.
+	Backup *BackupConfig
 }
 
 type Coordinator struct {
@@ -90,6 +93,10 @@ type Coordinator struct {
 	mail *mailLoop
 	// sender is the send journal's way to the edge, nil when sending is off.
 	sender MailSender
+	// durable is the backups', nil without Config.Backup; fence is set once
+	// a newer generation takes over (backupcommit.go).
+	durable *durability
+	fence   fence
 }
 
 func New(cfg Config) (*Coordinator, error) {
@@ -129,6 +136,9 @@ func New(cfg Config) (*Coordinator, error) {
 		}
 	}
 	c.mail = newMailLoop(c.cfg.Mail)
+	if err := c.openDurability(); err != nil {
+		return nil, err
+	}
 	if err := c.state.Save(cfg.StateDir); err != nil {
 		return nil, err
 	}
@@ -396,6 +406,9 @@ func (c *Coordinator) Run(ctx context.Context) {
 // slot goes to the account with the fewest jobs running, then the oldest job,
 // so an account with a long queue takes turns with the others.
 func (c *Coordinator) schedule(ctx context.Context) {
+	if c.Retired() {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var queued []*Job

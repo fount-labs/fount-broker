@@ -396,7 +396,7 @@ func (c *Coordinator) syncMail(ctx context.Context, w Worker, now time.Time) err
 	})
 	var errs []error
 	for _, msg := range fetched {
-		err := c.receiveMail(ctx, w.ID, msg, paused, now)
+		err := c.receiveMail(ctx, w.ID, msg, c.restoredPause(msg, paused), now)
 		var stopped intakeStopped
 		if errors.As(err, &stopped) {
 			// Intake couldn't run: this message and the ones after it
@@ -430,6 +430,9 @@ const (
 	pauseUnknown
 	// pauseLapsed is a worker paused for a lapsed payment (lapse.go).
 	pauseLapsed
+	// pauseRestored is mail from before a restore that the restored ledger
+	// doesn't have: it may have run already (restore.go).
+	pauseRestored
 )
 
 func pauseOf(edge *bool) pause {
@@ -924,6 +927,8 @@ func (c *Coordinator) whyNotRun(s *MailSettings, l *mailLedger, th *threadRecord
 	switch {
 	case paused == pauseLapsed:
 		return "the account's payment lapsed"
+	case paused == pauseRestored:
+		return restoredReason
 	case !s.AutoRun:
 		return "automatic runs are off"
 	case time.UnixMilli(msg.ReceivedAt).Before(s.AutoRunSince):
