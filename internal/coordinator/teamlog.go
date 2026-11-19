@@ -23,20 +23,19 @@ import (
 // TeamRecordContext is what a record's hash is taken over, before its JSON.
 const TeamRecordContext = "fount-team-record-v1\n"
 
-// The record kinds (§2.3). T builds the invite, H the join and recovery;
-// each checks its proof and calls appendRecord.
+// The record kinds (§2.3): an invite taken (teaminvite.go), a member's new
+// device approved by another of theirs (teamjoin.go) or by their passkey
+// (passkeyjoin.go). Each checks its proof and calls appendRecord.
 const (
-	RecordInvite         = "invite"
-	RecordJoin           = "join"
-	RecordRecoveryStart  = "recovery-start"
-	RecordRecoveryCancel = "recovery-cancel"
-	RecordRecoveryDone   = "recovery-done"
+	RecordInvite      = "invite"
+	RecordJoin        = "join"
+	RecordPasskeyJoin = "passkey-join"
 )
 
-// recordAdmits are the record kinds that admit a device.
-var recordAdmits = map[string]bool{RecordInvite: true, RecordJoin: true, RecordRecoveryDone: true}
+// recordAdmits are the record kinds that admit a device: all of them.
+var recordAdmits = map[string]bool{RecordInvite: true, RecordJoin: true, RecordPasskeyJoin: true}
 
-var recordKinds = map[string]bool{RecordInvite: true, RecordJoin: true, RecordRecoveryStart: true, RecordRecoveryCancel: true, RecordRecoveryDone: true}
+var recordKinds = map[string]bool{RecordInvite: true, RecordJoin: true, RecordPasskeyJoin: true}
 
 var (
 	// ErrTeamStale is an entry that isn't the head's next: a replay, a list
@@ -66,8 +65,8 @@ type TeamEntry struct {
 	Hash   string          `json:"hash"`
 }
 
-// TeamRecord admits a device, or marks a step of a recovery, under one
-// member, on a proof its kind's builder checked.
+// TeamRecord admits a device under one member, on a proof its kind's builder
+// checked and every client checks again.
 type TeamRecord struct {
 	Kind    string `json:"kind"`
 	Seq     uint64 `json:"seq"`
@@ -185,6 +184,10 @@ func (s *teamState) applyRecord(r TeamRecord, team, aud string) error {
 		}
 	case RecordJoin:
 		if err := checkJoinProof(s, aud, team, r, m); err != nil {
+			return err
+		}
+	case RecordPasskeyJoin:
+		if err := checkPasskeyJoinProof(s, aud, team, r, m); err != nil {
 			return err
 		}
 	}
@@ -416,8 +419,8 @@ func listMemberOf(l TeamList, device, aud string) *ListMember {
 // and, for a kind that admits one, device. It fills in the number, the chain
 // and the time. proof checks rec's proof against the state before it, under
 // the same locks, and is the caller's: the invite secret and verified email,
-// a listed device's approval, the passkey and the wait. The caller is the
-// device being admitted, or for recovery-cancel the one cancelling.
+// a listed device's approval, the passkey. The caller is the device being
+// admitted.
 func (c *Coordinator) appendRecord(caller Caller, team string, rec TeamRecord, proof func(*teamState, *Member) error) (uint64, error) {
 	unlock := c.lockTeam(team, nil)
 	defer unlock()
@@ -454,7 +457,7 @@ func (c *Coordinator) appendRecordLocked(caller Caller, team string, prior *team
 	case checkID("account", rec.Account) != nil:
 		return 0, refuse("the record's account isn't an id")
 	}
-	if rec.Kind != RecordRecoveryCancel && rec.Account != caller.Account {
+	if rec.Account != caller.Account {
 		return 0, refuse("the record is for another account than the caller's")
 	}
 	for _, o := range prior.members {

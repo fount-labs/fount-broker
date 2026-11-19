@@ -31,8 +31,7 @@ import (
 //     appends a join record whose proof is the approval, which any client
 //     checks against the state before it, and seals the new device its wraps.
 //
-// The passkey path (recovery-start, the 72-hour wait, recovery-done) is H's,
-// on the same records.
+// The other way in is the member's passkey, at once (passkeyjoin.go).
 
 const (
 	JoinContext     = "fount-team-join-v1\x00"

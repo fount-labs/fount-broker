@@ -41,13 +41,11 @@ var opRoles = map[string]Role{
 	"POST /teams/{team}/log":               RoleAdmin,
 	// Taking a worker's threads, mail and files away (backupexport.go).
 	"GET /workers/{id}/export": RoleAdmin,
-	// Passkey recovery (recovery.go): the recovering device isn't a member
-	// yet, so each route checks its caller and the record its proof.
-	"GET /recovery/teams":                      roleCaller,
-	"GET /teams/{team}/recovery":               roleCaller,
-	"POST /teams/{team}/recovery":              roleCaller,
-	"POST /teams/{team}/recovery/{seq}/cancel": roleCaller,
-	"POST /teams/{team}/recovery/{seq}/done":   roleCaller,
+	// A member's new device with their passkey (passkeyjoin.go): the device
+	// isn't listed yet, so each route checks its caller and the record its
+	// proof.
+	"POST /teams/{team}/passkey-join/challenge": roleCaller,
+	"POST /teams/{team}/passkey-join":           roleCaller,
 	// Authorized by their proof: an invite's secret and verified email, or
 	// the device's own request to join as its account's member.
 	"GET /teams": roleCaller,
