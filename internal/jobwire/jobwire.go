@@ -9,11 +9,16 @@
 //	{"kind":"workspace"}  body: the next piece of the workspace as a filetree stream; an empty body ends it
 //	{"kind":"index"}      the kept index, the same way
 //
+// An intake job ("mode":"intake") has no job file, no credentials and no
+// index: its first frame's body is empty, and its workspace is the email's
+// intake folder (message.eml, check.json, request.json, instructions.md).
+//
 // Supervisor to coordinator:
 //
 //	{"kind":"stdout"}, {"kind":"stderr"}  body: the runner's output as it comes
 //	{"kind":"exit","exitCode":0,"seconds":1.5,"peakBytes":N,"oomKills":0}
-//	{"kind":"workspace"} …  an agent job's workspace once its sandbox is gone
+//	{"kind":"workspace"} …  an agent job's workspace once its sandbox is gone,
+//	                        or an intake job's out/ folder
 //	{"kind":"index"} …      or, from the index step, the index it built
 //	{"kind":"end"}
 //	{"kind":"error","message":"…"}  in place of anything still to come
@@ -59,7 +64,20 @@ const (
 	// ModeIndex brings the kept index up to date with the workspace and runs
 	// nothing else. Only the index comes back.
 	ModeIndex Mode = "index"
+	// ModeIntake parses one received email: fount-runner --mode intake, with
+	// no keys, no network and no index. Only its out/ folder comes back, as a
+	// workspace stream.
+	ModeIntake Mode = "intake"
 )
+
+// Sends is the trees the coordinator streams in after the first frame, in
+// order.
+func (m Mode) Sends() []Kind {
+	if m == ModeIntake {
+		return []Kind{KindWorkspace}
+	}
+	return []Kind{KindWorkspace, KindIndex}
+}
 
 // Returns is the one tree a job of this mode sends back.
 func (m Mode) Returns() Kind {
@@ -117,13 +135,21 @@ func DecodeJob(f frame.Frame, hop Hop) (Job, error) {
 	if j.Kind != KindJob {
 		return Job{}, fmt.Errorf("%w: first frame is %q, not a job", ErrMalformed, j.Kind)
 	}
-	if j.Mode != ModeAgent && j.Mode != ModeIndex {
+	if j.Mode != ModeAgent && j.Mode != ModeIndex && j.Mode != ModeIntake {
 		return Job{}, fmt.Errorf("%w: mode %q", ErrMalformed, j.Mode)
 	}
 	if !accountPattern.MatchString(j.Account) {
 		return Job{}, fmt.Errorf("%w: account %q", ErrMalformed, j.Account)
 	}
-	if len(f.Body) == 0 || len(f.Body) > MaxJobFile {
+	if j.Mode == ModeIntake {
+		// Intake reads a stranger's email: it holds nothing to steal.
+		if len(f.Body) != 0 {
+			return Job{}, fmt.Errorf("%w: intake takes no job file", ErrMalformed)
+		}
+		if j.Credentials != nil {
+			return Job{}, fmt.Errorf("%w: intake takes no credentials", ErrMalformed)
+		}
+	} else if len(f.Body) == 0 || len(f.Body) > MaxJobFile {
 		return Job{}, fmt.Errorf("%w: job file must be 1 to %d bytes", ErrMalformed, MaxJobFile)
 	}
 	switch hop {

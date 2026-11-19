@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/fount-labs/fount-broker/internal/jobwire"
@@ -83,6 +84,47 @@ func TestThreadsAreAFairShareOfTheCores(t *testing.T) {
 	} {
 		if got := Threads(c.cpus, c.cores, c.jobs); got != c.want {
 			t.Errorf("Threads(%v, %d, %d) = %d, want %d", c.cpus, c.cores, c.jobs, got, c.want)
+		}
+	}
+}
+
+func TestIntakeSeesOnlyTheEmail(t *testing.T) {
+	img := &Image{Entrypoint: []string{"/opt/fount/bin/fount-runner", "--data", "/data", "--node", "/n"}}
+	s := &Supervisor{Image: img, Confinement: "off", Limits: Limits{Threads: 2}}
+	job := Job{ID: "j1", Mode: jobwire.ModeIntake, Workspace: "/w"}
+	args := s.args(job)
+	want := []string{"/opt/fount/bin/fount-runner", "--mode", "intake", "--workspace", "/work"}
+	if strings.Join(args, " ") != strings.Join(want, " ") {
+		t.Errorf("args %v", args)
+	}
+	data, err := jobSpec("/rootfs", img, 10001, 10001, Limits{MemoryBytes: 1 << 30, Pids: 64, TmpBytes: 1 << 20}, job, args, "/g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec runtimeSpec
+	json.Unmarshal(data, &spec)
+	var binds []string
+	for _, m := range spec.Mounts {
+		if m.Type == "bind" {
+			binds = append(binds, m.Destination+"="+m.Source)
+		}
+	}
+	if strings.Join(binds, " ") != "/work=/w" {
+		t.Errorf("intake binds %v", binds)
+	}
+	ok := &Supervisor{Image: img, UID: 1, GID: 1, Limits: Limits{MemoryBytes: 1, Pids: 1, TmpBytes: 1}}
+	if err := ok.check(Job{ID: "j1", Mode: jobwire.ModeIntake, Workspace: "/"}); err != nil {
+		t.Errorf("intake refused: %v", err)
+	}
+	// A socket, index or job file is refused, not mounted.
+	for _, extra := range []Job{
+		{ID: "j1", Mode: jobwire.ModeIntake, Workspace: "/", SocketDir: "/"},
+		{ID: "j1", Mode: jobwire.ModeIntake, Workspace: "/", Index: "/"},
+		{ID: "j1", Mode: jobwire.ModeIntake, Workspace: "/", JobFile: "/etc/hosts"},
+	} {
+		s := &Supervisor{Image: img, UID: 1, GID: 1, Limits: Limits{MemoryBytes: 1, Pids: 1, TmpBytes: 1}}
+		if err := s.check(extra); err == nil {
+			t.Errorf("intake with %+v passed", extra)
 		}
 	}
 }

@@ -28,6 +28,8 @@ type fakeSandbox struct {
 	t      *testing.T
 	sawJob chan supervisor.Job
 	block  bool
+	// intake, if set, runs in place of an agent job's checks.
+	intake func(job supervisor.Job, stdout io.Writer) (supervisor.Result, error)
 }
 
 func (f *fakeSandbox) Run(ctx context.Context, job supervisor.Job, stdout, stderr io.Writer) (supervisor.Result, error) {
@@ -35,6 +37,9 @@ func (f *fakeSandbox) Run(ctx context.Context, job supervisor.Job, stdout, stder
 	if f.block {
 		<-ctx.Done()
 		return supervisor.Result{ExitCode: -1}, ctx.Err()
+	}
+	if f.intake != nil {
+		return f.intake(job, stdout)
 	}
 	in, err := os.ReadFile(filepath.Join(job.Workspace, "files", "in.md"))
 	if err != nil {

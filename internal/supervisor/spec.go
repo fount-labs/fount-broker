@@ -136,11 +136,16 @@ func jobSpec(rootfs string, img *Image, uid, gid uint32, limits Limits, job Job,
 		{Destination: "/sys", Type: "sysfs", Source: "sysfs", Options: []string{"nosuid", "noexec", "nodev", "ro"}},
 		{Destination: "/tmp", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "nodev", "size=" + strconv.FormatInt(limits.TmpBytes, 10)}},
 		{Destination: sandboxWork, Type: "bind", Source: job.Workspace, Options: []string{"rbind", "rw"}},
-		{Destination: sandboxData, Type: "bind", Source: job.Data, Options: []string{"rbind", "rw"}},
-		{Destination: sandboxIndex, Type: "bind", Source: job.Index, Options: []string{"rbind", index}},
-		{Destination: sandboxJob, Type: "bind", Source: job.JobFile, Options: []string{"rbind", "ro"}},
 	}
-	if job.SocketDir != "" {
+	// Intake sees only the email's folder.
+	if job.Mode != jobwire.ModeIntake {
+		mounts = append(mounts,
+			specMount{Destination: sandboxData, Type: "bind", Source: job.Data, Options: []string{"rbind", "rw"}},
+			specMount{Destination: sandboxIndex, Type: "bind", Source: job.Index, Options: []string{"rbind", index}},
+			specMount{Destination: sandboxJob, Type: "bind", Source: job.JobFile, Options: []string{"rbind", "ro"}},
+		)
+	}
+	if job.SocketDir != "" && job.Mode != jobwire.ModeIntake {
 		mounts = append(mounts, specMount{Destination: sandboxBroker, Type: "bind", Source: job.SocketDir, Options: []string{"rbind", "rw"}})
 	}
 	none := []string{}
