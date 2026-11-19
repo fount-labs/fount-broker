@@ -27,10 +27,13 @@ import (
 //	GET  /v0/workers/{id}/threads/{tid}   a thread's display form; ?since=N, what changed after N
 //	POST /v0/workers/{id}/threads/{tid}/ops  a thread operation (threadops.go)
 //	POST /v0/workers/{id}/ops             a worker operation: startThread
+//	PUT  /v0/workers/{id}/mail            {mailbox, requesters?}: the address and its keys, until A
+//	GET  /v0/workers/{id}/mail            the worker's mail settings, without keys
 func (c *Coordinator) Handler() http.Handler {
 	a := &api{c: c}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v0/workers", a.createWorker)
+	mux.HandleFunc("PUT /v0/workers/{id}/mail", a.putMailbox)
 	a.routes(mux, "/v0")
 	return mux
 }
@@ -91,6 +94,7 @@ func (a *api) routes(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc("GET "+prefix+"/workers/{id}/threads/{tid}", a.getThread)
 	mux.HandleFunc("POST "+prefix+"/workers/{id}/threads/{tid}/ops", a.threadOp)
 	mux.HandleFunc("POST "+prefix+"/workers/{id}/ops", a.workerOp)
+	mux.HandleFunc("GET "+prefix+"/workers/{id}/mail", a.getMail)
 }
 
 // worker is the request's worker, if this API may touch it. Another account's,
@@ -482,12 +486,12 @@ func decodeStrict(body io.Reader, max int64, v any) error {
 
 func statusOf(err error) int {
 	switch {
-	case errors.Is(err, ErrNoWorker), errors.Is(err, ErrNoJob), errors.Is(err, ErrNotFound), errors.Is(err, ErrNoThread):
+	case errors.Is(err, ErrNoWorker), errors.Is(err, ErrNoJob), errors.Is(err, ErrNotFound), errors.Is(err, ErrNoThread), errors.Is(err, ErrNoMailbox):
 		return http.StatusNotFound
 	case errors.Is(err, ErrWriteOnce), errors.Is(err, ErrNotGranted), errors.Is(err, ErrGrantSeq),
 		errors.Is(err, ErrDEKChanged), errors.Is(err, ErrBusy):
 		return http.StatusConflict
-	case errors.Is(err, ErrGrantRefused):
+	case errors.Is(err, ErrGrantRefused), errors.Is(err, ErrNotAllowed):
 		return http.StatusForbidden
 	case errors.Is(err, ErrTooManyUngranted):
 		return http.StatusTooManyRequests

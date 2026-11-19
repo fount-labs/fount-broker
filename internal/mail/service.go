@@ -173,21 +173,10 @@ func (s *Service) list(ctx context.Context, k *Keys, mailbox string) (any, error
 	if err != nil {
 		return nil, err
 	}
-	msgs := l.Messages
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delivered := map[string]bool{}
-	for _, id := range s.ledger(mailbox).Delivered {
-		delivered[id] = true
-	}
-	p := map[string]bool{}
-	for _, m := range msgs {
-		if !delivered[m.ID] {
-			p[m.ID] = true
-		}
-	}
-	s.pending[mailbox] = p
-	out := map[string]any{"messages": msgs}
+	s.notePending(mailbox, l.Messages)
+	out := map[string]any{"messages": l.Messages}
 	if l.Paused != nil {
 		out["paused"] = *l.Paused
 	}

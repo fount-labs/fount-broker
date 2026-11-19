@@ -59,6 +59,12 @@ type Config struct {
 	// starts, passed to the runner unread. Empty refuses those operations
 	// with NO_MODEL.
 	JobConfig json.RawMessage
+	// Mail runs each Cloud worker's mail loop (mailloop.go, RunMail). Zero
+	// runs none.
+	Mail MailConfig
+	// Gate is Teams' role check on each operation (mailops.go). Nil allows
+	// every device a worker lists.
+	Gate OpGate
 }
 
 type Coordinator struct {
@@ -78,6 +84,8 @@ type Coordinator struct {
 	wake    chan struct{}
 	// running counts jobs started and not yet ended, for Wait.
 	running sync.WaitGroup
+	// mail is the mail loop's, nil without Config.Mail.
+	mail *mailLoop
 }
 
 func New(cfg Config) (*Coordinator, error) {
@@ -100,7 +108,7 @@ func New(cfg Config) (*Coordinator, error) {
 	if len(cfg.JobConfig) > 0 && (cfg.JobConfig[0] != '{' || len(cfg.JobConfig) > maxConfigBytes || !json.Valid(cfg.JobConfig)) {
 		return nil, fmt.Errorf("coordinator config: JobConfig must be a JSON object of at most %d bytes", maxConfigBytes)
 	}
-	c := &Coordinator{cfg: cfg, state: state, busy: map[string]bool{}, accountJobs: map[string]int{}, locks: map[string]*sync.Mutex{}, cancels: map[string]context.CancelFunc{}, wake: make(chan struct{}, 1)}
+	c := &Coordinator{cfg: cfg, state: state, busy: map[string]bool{}, accountJobs: map[string]int{}, locks: map[string]*sync.Mutex{}, cancels: map[string]context.CancelFunc{}, wake: make(chan struct{}, 1), mail: newMailLoop(cfg.Mail)}
 	if err := c.state.Save(cfg.StateDir); err != nil {
 		return nil, err
 	}

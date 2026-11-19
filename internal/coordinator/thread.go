@@ -43,7 +43,7 @@ const (
 var ErrNoThread = errors.New("no such thread")
 
 // ThreadStatus is thread-operations.md §3's, first match wins. A Cloud thread
-// has no questions, drafts or held mail yet, so it is working or idle.
+// has no questions or drafts yet, so it is working, held or idle.
 type ThreadStatus string
 
 const (
@@ -58,9 +58,13 @@ type threadRecord struct {
 	Schema   int    `json:"schema"`
 	ID       string `json:"id"`
 	WorkerID string `json:"workerId"`
-	// Origin is "app": a thread started by startThread. Mail threads come
-	// with intake.
+	// Origin is "app", a thread started by startThread, or "mail", one an
+	// email started (mailthread.go).
 	Origin string `json:"origin"`
+	// Handle is the thread's reply-token handle, once it has one, and
+	// Participants the requesters on a mail thread.
+	Handle       string   `json:"handle,omitempty"`
+	Participants []string `json:"participants,omitempty"`
 	// SessionID is the runner's session for every job on the thread, so
 	// each turn continues the last.
 	SessionID string       `json:"sessionId"`
@@ -82,6 +86,7 @@ const (
 	entryNote  = "note"
 	entryTurn  = "turn"
 	entryEvent = "event"
+	entryMail  = "mail"
 )
 
 const (
@@ -115,6 +120,8 @@ type threadEntry struct {
 	// An event's code and arguments: fixed text, filled in when shown.
 	Code string            `json:"code,omitempty"`
 	Args map[string]string `json:"args,omitempty"`
+	// A received email's.
+	Mail *mailEntry `json:"mail,omitempty"`
 }
 
 type threadJob struct {
@@ -194,8 +201,11 @@ func (th *threadRecord) finish(rev uint64, now time.Time) {
 }
 
 func (th *threadRecord) status() ThreadStatus {
-	if slices.ContainsFunc(th.Jobs, threadJob.unfinished) {
+	if slices.ContainsFunc(th.Jobs, threadJob.unfinished) || th.intakePending() {
 		return StatusWorking
+	}
+	if th.holding() {
+		return StatusHeld
 	}
 	return StatusIdle
 }
@@ -476,7 +486,7 @@ func (th *threadRecord) summary() ThreadSummary {
 func (th *threadRecord) header() ThreadHeader {
 	return ThreadHeader{
 		ID: th.ID, Revision: th.Revision, Subject: th.Subject, Status: th.Status,
-		ReplyMode: "off", Participants: []any{}, Viewers: []string{},
+		ReplyMode: "off", Participants: th.participantViews(), Viewers: []string{},
 	}
 }
 
@@ -530,6 +540,8 @@ func (th *threadRecord) display(since uint64) []DisplayEntry {
 		case entryEvent:
 			head.Kind = "event"
 			out = append(out, eventView{entryHead: head, Code: e.Code, Text: eventText(e.Code, e.Args)})
+		case entryMail:
+			out = append(out, mailIn(head, e))
 		}
 	}
 	return out

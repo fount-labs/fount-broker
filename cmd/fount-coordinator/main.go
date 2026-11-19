@@ -9,7 +9,7 @@
 //	  [--wrapping-key vault --vaults <host,host> --vault-repo <owner/repo> --keyset-commitment <hex>
 //	   --status-listen 0.0.0.0:8791]
 //	  [--client-listen 0.0.0.0:8792 --account-keys <base64 SPKI,...> [--client-attestation tinfoil]
-//	   [--cloud-credentials-only]]
+//	   [--cloud-credentials-only]] [--mail]
 //	fount-coordinator health [http://127.0.0.1:8790/health]
 //
 // The runner command is started once per job with fount-runner's --workspace,
@@ -89,6 +89,8 @@ import (
 	"github.com/fount-labs/fount-broker/internal/coordinator"
 	"github.com/fount-labs/fount-broker/internal/healthcheck"
 	"github.com/fount-labs/fount-broker/internal/jobcred"
+	"github.com/fount-labs/fount-broker/internal/mail"
+	"github.com/fount-labs/fount-broker/internal/route"
 )
 
 func main() {
@@ -130,6 +132,7 @@ func run() error {
 	accountKeys := flag.String("account-keys", "", "with --client-listen: fount-infra's device-credential keys, SPKI DER as base64, comma-separated (default $"+accountKeysEnv+")")
 	clientAttest := flag.String("client-attestation", attestTinfoil, "with --client-listen: how the coordinator proves itself: tinfoil, or unattested in a dev build")
 	cloudOnly := flag.Bool("cloud-credentials-only", false, "with --client-listen: take only hour-long Cloud credentials, not device credentials")
+	mailLoop := flag.Bool("mail", false, "receive Cloud workers' mail from the mail edge: each worker with a mailbox gets its requests as thread turns")
 	audience := flag.String("client-audience", os.Getenv("FOUNT_CLIENT_AUDIENCE"), "with --client-listen: the coordinator's origin, https://<host>, which worker grants must name")
 	flag.Parse()
 	if *dir == "" || (flag.NArg() == 0) == (*runnerAddr == "") {
@@ -241,11 +244,15 @@ func run() error {
 		Audience:    *audience,
 		AccountJobs: *accountJobs,
 		JobConfig:   config,
+		Mail:        mailConfig(*mailLoop),
 	})
 	if err != nil {
 		return err
 	}
 	jobs.Store(c)
+	if *mailLoop {
+		go c.RunMail(ctx)
+	}
 
 	if clients != nil {
 		clients.Handler = handler(c)
@@ -381,4 +388,14 @@ func readJobConfig(value string) (json.RawMessage, error) {
 		return nil, fmt.Errorf("--job-config: not a JSON object: %w", err)
 	}
 	return json.RawMessage(data), nil
+}
+
+// mailConfig is the mail loop's, against the attested mail edge. Until fount-
+// infra issues Cloud mailbox entitlements and the edge lists changes in one
+// call, it polls each mailbox and doesn't renew.
+func mailConfig(on bool) coordinator.MailConfig {
+	if !on {
+		return coordinator.MailConfig{}
+	}
+	return coordinator.MailConfig{Service: mail.New(route.NewMailEdge(), coordinator.NoLocalCheck{})}
 }

@@ -1,0 +1,277 @@
+package coordinator
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+// Each part of the mail settings has its own revision (decision 5): a stale
+// base is refused, and changes to different parts don't refuse each other.
+func TestMailSettingsOpsNameTheirRevision(t *testing.T) {
+	r := newMailRig(t, MailConfig{})
+	w, _ := r.worker()
+	s := r.settings(w.ID)
+	if s.AutoRunRev != 1 || s.RequestersRev != 1 || s.AcknowledgeRev != 0 || s.AutoRunSince.IsZero() {
+		t.Fatalf("%+v", s)
+	}
+	// Two reviewers, both having seen the same settings.
+	if res := r.workerOp(w.ID, "op_a", "addRequester", requesterArgs{Address: "lee@client.example", BaseRevision: 1}); !res.OK || res.Revision != 2 {
+		t.Fatalf("addRequester: %+v", res)
+	}
+	if res := r.workerOp(w.ID, "op_b", "setAutoRun", switchArgs{On: false, BaseRevision: 1}); !res.OK || res.Revision != 2 {
+		t.Fatalf("setAutoRun on another part: %+v", res)
+	}
+	if res := r.workerOp(w.ID, "op_c", "addRequester", requesterArgs{Address: "kim@client.example", BaseRevision: 1}); res.OK || res.Code != CodeWorkerChanged || res.Revision != 2 {
+		t.Fatalf("a stale base: %+v", res)
+	}
+	if res := r.workerOp(w.ID, "op_a", "addRequester", requesterArgs{Address: "lee@client.example", BaseRevision: 1}); !res.OK || res.Revision != 2 {
+		t.Fatalf("a retry answers as the first time: %+v", res)
+	}
+	if res := r.workerOp(w.ID, "op_a", "addRequester", requesterArgs{Address: "kim@client.example", BaseRevision: 2}); res.Code != CodeOpIDReused {
+		t.Fatalf("an opId reused: %+v", res)
+	}
+	for _, tc := range []struct {
+		address string
+		code    OpCode
+	}{
+		{"lee@client.example", CodeAlreadyRequester},
+		{"other@fountbox.com", CodeFountboxAddress},
+	} {
+		if res := r.workerOp(w.ID, "op_"+strings.Split(tc.address, "@")[0], "addRequester", requesterArgs{Address: tc.address, BaseRevision: 2}); res.Code != tc.code {
+			t.Errorf("%s: %+v, want %s", tc.address, res, tc.code)
+		}
+	}
+	raw, _ := json.Marshal(requesterArgs{Address: "not an address", BaseRevision: 2})
+	if _, err := r.c.applyWorkerOp(anyDevice, w.ID, workerOpEnvelope{OpID: "op_x", Kind: "addRequester", Args: raw}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a bad address: %v", err)
+	}
+	if res := r.workerOp(w.ID, "op_saved", "routingSaved", routingSavedArgs{RequestersRevision: 2}); !res.OK {
+		t.Fatalf("routingSaved: %+v", res)
+	}
+	if s := r.settings(w.ID); s.RoutingUnsent || s.AutoRun || s.requester("lee@client.example") == nil {
+		t.Fatalf("%+v", s)
+	}
+
+	bare, _ := r.c.CreateWorker("acct_1", nil)
+	if res := r.workerOp(bare.ID, "op_1", "setAutoRun", switchArgs{On: true}); res.Code != CodeNoMailbox {
+		t.Fatalf("no mailbox: %+v", res)
+	}
+}
+
+type denyGate struct{ kinds map[string]bool }
+
+func (g denyGate) MayApply(_, _, kind string) error {
+	if g.kinds[kind] {
+		return errors.New("reviewers can't")
+	}
+	return nil
+}
+
+func TestTheGateChecksEachMailOp(t *testing.T) {
+	r := newMailRig(t, MailConfig{})
+	w, mb := r.worker()
+	r.c.cfg.Gate = denyGate{kinds: map[string]bool{"setAutoRun": true, "runHeldMail": true}}
+	r.c.mu.Lock()
+	r.c.state.Workers[w.ID].Devices = append(r.c.state.Workers[w.ID].Devices, Device{ID: "dev_1"})
+	r.c.mu.Unlock()
+	raw, _ := json.Marshal(switchArgs{On: false, BaseRevision: 1})
+	if _, err := r.c.applyWorkerOp("dev_2", w.ID, workerOpEnvelope{OpID: "op_0", Kind: "setAutoRun", Args: raw}); !errors.Is(err, ErrNoWorker) {
+		t.Fatalf("a device the worker doesn't list is refused before its role is asked: %v", err)
+	}
+	if _, err := r.c.applyWorkerOp("dev_1", w.ID, workerOpEnvelope{OpID: "op_1", Kind: "setAutoRun", Args: raw}); !errors.Is(err, ErrNotAllowed) || statusOf(err) != 403 {
+		t.Fatalf("setAutoRun: %v", err)
+	}
+	r.edge.deliver(mb, email{from: "eve@else.example", to: testWorkerAddr})
+	r.pass()
+	th := onlyThread(t, r.threads(w.ID))
+	raw, _ = json.Marshal(heldMailArgs{MailID: th.Entries[0].ID})
+	if _, err := r.c.applyThreadOp("dev_1", w.ID, th.ID, opEnvelope{OpID: "op_2", ThreadID: th.ID, Kind: "runHeldMail", Args: raw}); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("runHeldMail: %v", err)
+	}
+	// The coordinator's own device isn't gated: mail arriving isn't an
+	// operation.
+	if res := r.workerOp(w.ID, "op_3", "setAutoRun", switchArgs{On: false, BaseRevision: 1}); !res.OK {
+		t.Fatalf("%+v", res)
+	}
+}
+
+func TestPairingByReply(t *testing.T) {
+	r := newMailRig(t, MailConfig{})
+	w, mb := r.worker()
+	if res := r.workerOp(w.ID, "op_p", "pairingStart", pairingStartArgs{Requester: "Lee@Client.example", ExpiresAt: time.Now().Add(48 * time.Hour).UnixMilli()}); !res.OK || res.Revision != 1 {
+		t.Fatalf("pairingStart: %+v", res)
+	}
+	s := r.settings(w.ID)
+	if p := s.Pairing; p == nil || p.Requester != "lee@client.example" || p.ExpiresAt.After(time.Now().Add(connectLifetime+time.Minute)) {
+		t.Fatalf("the pairing, its expiry capped at a day: %+v", s.Pairing)
+	}
+	other := r.edge.deliver(mb, email{from: "kim@client.example", to: testWorkerAddr, inReplyTo: "<c.1700000000.abc123@fountbox.com>"})
+	reply := r.edge.deliver(mb, email{from: "lee@client.example", to: testWorkerAddr, inReplyTo: "<c.1700000000.abc123@fountbox.com>"})
+	r.pass()
+
+	s = r.settings(w.ID)
+	q := s.requester("lee@client.example")
+	if q == nil || !q.AutoRun || q.DKIMDomain != "client.example" || q.PairedBy != "reply" {
+		t.Fatalf("the requester the reply paired: %+v", s.Requesters)
+	}
+	if !s.RoutingUnsent || len(s.Proofs) != 1 || s.Proofs[0] != (ConnectProof{Owner: "lee@client.example", MessageID: "<c.1700000000.abc123@fountbox.com>"}) {
+		t.Fatalf("the proof for the device's PUT /routing: %+v", s)
+	}
+	if p := s.Pairing; p.Paired == nil || len(p.Untokened) != 1 || p.Untokened[0].Message != other {
+		t.Fatalf("pairing: %+v", p)
+	}
+	l := r.ledger(w.ID)
+	if l.Acted[reply].Outcome != outcomePaired || l.Acted[other].Outcome != outcomeHeld {
+		t.Fatalf("ledger: %+v", l.Acted)
+	}
+	// The pairing's reply makes no thread; kim's email waits on one.
+	onlyThread(t, r.threads(w.ID))
+	if res := r.workerOp(w.ID, "op_c", "pairingConfirm", pairingConfirmArgs{MailID: other, BaseRevision: s.PairingRev}); res.Code != CodePairingClosed {
+		t.Fatalf("confirm after pairing: %+v", res)
+	}
+}
+
+func TestPairingConfirmedInTheApp(t *testing.T) {
+	r := newMailRig(t, MailConfig{})
+	w, mb := r.worker()
+	r.workerOp(w.ID, "op_p", "pairingStart", pairingStartArgs{Requester: "lee@client.example", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()})
+	// From lee, but no reply to the connect email.
+	id := r.edge.deliver(mb, email{from: "lee@client.example", to: testWorkerAddr, unsigned: true})
+	r.pass()
+	s := r.settings(w.ID)
+	if len(s.Pairing.Untokened) != 1 || s.requester("lee@client.example") != nil {
+		t.Fatalf("%+v", s)
+	}
+	if res := r.workerOp(w.ID, "op_c0", "pairingConfirm", pairingConfirmArgs{MailID: "nope", BaseRevision: s.PairingRev}); res.Code != CodeNotFound {
+		t.Fatalf("another email: %+v", res)
+	}
+	if res := r.workerOp(w.ID, "op_c1", "pairingConfirm", pairingConfirmArgs{MailID: id, BaseRevision: s.PairingRev - 1}); res.Code != CodeWorkerChanged {
+		t.Fatalf("stale: %+v", res)
+	}
+	if res := r.workerOp(w.ID, "op_c2", "pairingConfirm", pairingConfirmArgs{MailID: id, BaseRevision: s.PairingRev}); !res.OK {
+		t.Fatalf("pairingConfirm: %+v", res)
+	}
+	q := r.settings(w.ID).requester("lee@client.example")
+	if q == nil || q.AutoRun || q.PairedBy != "confirmed" || q.DKIMDomain != "" {
+		t.Fatalf("%+v", q)
+	}
+}
+
+func TestConnectIDs(t *testing.T) {
+	for id, want := range map[string]bool{
+		"<c.1700000000.abc123@fountbox.com>": true,
+		"c.1.Z9@FOUNTBOX.COM":                true,
+		"<c.x.abc@fountbox.com>":             false,
+		"<c.1.ab-c@fountbox.com>":            false,
+		"<c.1.abc@example.com>":              false,
+		"<fm.1.abc@fountbox.com>":            false,
+	} {
+		if got := isConnectID(id, "@fountbox.com"); got != want {
+			t.Errorf("%s: %v", id, got)
+		}
+	}
+	if got := connectIDIn("<a@b.c> <c.1.ab@fountbox.com>", "@fountbox.com"); got != "<c.1.ab@fountbox.com>" {
+		t.Errorf("%q", got)
+	}
+}
+
+type fakeEntitlements struct {
+	issued []EntitlementRequest
+	err    error
+}
+
+func (f *fakeEntitlements) Issue(_ context.Context, req EntitlementRequest) (Entitlement, error) {
+	f.issued = append(f.issued, req)
+	if f.err != nil {
+		return Entitlement{}, f.err
+	}
+	return Entitlement{Token: "ent-" + req.MailboxID[:8], IssuedAt: time.Now()}, nil
+}
+
+func TestCloudMailboxesRenewDaily(t *testing.T) {
+	ents := &fakeEntitlements{err: errors.New("fount-infra is down")}
+	r := newMailRig(t, MailConfig{Entitlements: ents})
+	w, mb := r.worker()
+	now := time.Now()
+	sweep := func(at time.Time) {
+		r.c.mail.mu.Lock()
+		r.c.mail.lastSweep = time.Time{}
+		r.c.mail.mu.Unlock()
+		r.c.mailPass(context.Background(), at)
+	}
+	sweep(now)
+	if len(ents.issued) != 1 || len(r.edge.renews) != 0 {
+		t.Fatalf("%d issued, %d presented", len(ents.issued), len(r.edge.renews))
+	}
+	keys, _ := mb.keys()
+	if req := ents.issued[0]; req.Account != "acct_1" || req.WorkerID != w.ID || !req.SigningKey.Equal(keys.SigningPublic()) {
+		t.Fatalf("%+v", req)
+	}
+	v, _ := r.c.mailView(anyDevice, w.ID)
+	if v.Renewal == nil || v.Renewal.Error == "" {
+		t.Fatalf("the failure is kept: %+v", v.Renewal)
+	}
+	sweep(now.Add(time.Minute))
+	if len(ents.issued) != 1 {
+		t.Fatal("a failure is retried within the hour")
+	}
+	ents.err = nil
+	sweep(now.Add(renewRetry))
+	if len(ents.issued) != 2 || len(r.edge.renews) != 1 || r.edge.renews[0] != "ent-"+mb.MailboxID[:8] {
+		t.Fatalf("renewed: %d %v", len(ents.issued), r.edge.renews)
+	}
+	v, _ = r.c.mailView(anyDevice, w.ID)
+	if v.Renewal.Error != "" || v.Renewal.ExpiresAt.Unix() != r.edge.expiry {
+		t.Fatalf("%+v", v.Renewal)
+	}
+	sweep(now.Add(renewRetry + time.Hour))
+	if len(ents.issued) != 2 {
+		t.Fatal("renewed again within the day")
+	}
+	r.start()
+	r.pass()
+	if len(ents.issued) != 2 {
+		t.Fatal("a restart renewed again within the day")
+	}
+	sweep(now.Add(renewRetry + renewAfter + time.Minute))
+	if len(ents.issued) != 3 {
+		t.Fatal("not renewed after a day")
+	}
+}
+
+func TestTheMailboxThroughTheDevAPI(t *testing.T) {
+	r := newMailRig(t, MailConfig{})
+	w, err := r.c.CreateWorker("acct_1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(r.c.Handler())
+	defer srv.Close()
+	mb := newMailbox(t, "AP@fountbox.com")
+	body, _ := json.Marshal(putMailboxBody{Mailbox: mb, Requesters: []Requester{{Address: "dana@example.com"}}})
+	code, out := do(t, srv, "PUT", "/v0/workers/"+w.ID+"/mail", string(body))
+	if code != 200 || out["address"] != "ap@fountbox.com" || out["signingKey"] != nil || out["requestersRevision"] != float64(1) {
+		t.Fatalf("PUT: %d %v", code, out)
+	}
+	if got, _ := r.c.Worker(w.ID); got.Mailbox != mb.MailboxID {
+		t.Fatalf("the volume's mailbox: %+v", got)
+	}
+	if code, out := do(t, srv, "GET", "/v0/workers/"+w.ID+"/mail", ""); code != 200 || out["autoRun"] != false {
+		t.Fatalf("GET: %d %v", code, out)
+	}
+	bad := mb
+	bad.SigningKey = []byte{1}
+	body, _ = json.Marshal(putMailboxBody{Mailbox: bad})
+	if code, _ := do(t, srv, "PUT", "/v0/workers/"+w.ID+"/mail", string(body)); code != 400 {
+		t.Fatalf("bad keys: %d", code)
+	}
+	other, _ := r.c.CreateWorker("acct_1", nil)
+	if code, _ := do(t, srv, "GET", "/v0/workers/"+other.ID+"/mail", ""); code != 404 {
+		t.Fatalf("no mailbox: %d", code)
+	}
+}

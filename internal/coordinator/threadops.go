@@ -23,7 +23,9 @@ import (
 // channel's device, never a field of the body.
 //
 // Built: startThread (a worker operation), sendNote, cancelJob, and
-// acceptProposal and discardProposal, Cloud's own. Every other
+// acceptProposal and discardProposal, Cloud's own, and the mail operations
+// (mailops.go): runHeldMail and addRequester on a thread, and the worker's
+// mail settings. Every other
 // operation Desktop knows is ErrUnsupported, by name, so a client can tell
 // "not here yet" from a bad request.
 
@@ -117,8 +119,6 @@ var unsupportedThreadOps = map[string]string{
 	"forwardQuestion":    "questions and sending mail from Cloud",
 	"approveDraft":       "drafts from a job's final answer, and sending mail from Cloud",
 	"discardDraft":       "drafts from a job's final answer",
-	"runHeldMail":        "mail intake",
-	"addRequester":       "mail intake and the worker's requesters",
 	"keepFileAsCopy":     "drafts from a job's final answer",
 	"redoOnLatest":       "drafts from a job's final answer",
 	"sendAgain":          "sending mail from Cloud",
@@ -127,12 +127,9 @@ var unsupportedThreadOps = map[string]string{
 }
 
 var unsupportedWorkerOps = map[string]string{
-	"addRequester":     "the worker's requesters, moved in with worker.json",
 	"removeRequester":  "the worker's requesters, moved in with worker.json",
 	"setRequesterMode": "the worker's requesters, moved in with worker.json",
 	"setDefaultMode":   "the worker's settings, moved in with worker.json",
-	"setAutoRun":       "mail intake",
-	"pairingConfirm":   "mail intake",
 }
 
 // noteArgs are sendNote's and startThread's. files is accepted and, as on
@@ -209,6 +206,10 @@ func parseThreadOp(env opEnvelope, threadID string) (args any, hash string, err 
 		a.accept = env.Kind == "acceptProposal"
 		args, err = a, cmp.Or(checkID("job", a.JobID), checkPath(a.Path))
 	default:
+		var mailOp bool
+		if args, mailOp, err = parseMailThreadOp(env); mailOp {
+			break
+		}
 		if needs, ok := unsupportedThreadOps[env.Kind]; ok {
 			return nil, "", fmt.Errorf("%s: %w; it needs %s", env.Kind, ErrUnsupported, needs)
 		}
@@ -342,11 +343,17 @@ type effects struct {
 	cancel []string
 	jobID  string
 	spec   JobSpec
+	// mail is set when the operation left its worker's mail owing something
+	// (intake.go), for the mail loop to do now.
+	mail bool
 }
 
 func (c *Coordinator) runEffects(device, workerID string, e effects) {
 	for _, id := range e.cancel {
 		c.cancel(id)
+	}
+	if e.mail && c.mail != nil {
+		c.mail.kick(workerID)
 	}
 	if e.jobID == "" {
 		return
@@ -400,6 +407,10 @@ func (c *Coordinator) applyThreadOp(device, workerID, threadID string, env opEnv
 			fx, err = cancelJob(th, a, rev)
 		case proposalArgs:
 			err = decideProposal(t, th, a, rev)
+		case heldMailArgs:
+			fx, err = c.runHeldMail(t, th, device, a, rev)
+		case mailRequesterArgs:
+			err = c.addRequesterFromMail(t, th, device, a, rev, now)
 		}
 		var r refusal
 		if errors.As(err, &r) {
@@ -528,6 +539,9 @@ func loadBases(t *Tree, jobID string) (map[string]string, error) {
 // applyWorkerOp checks and applies a worker operation: startThread, a new
 // thread with the note as its first entry and a job working from it.
 func (c *Coordinator) applyWorkerOp(device, workerID string, env workerOpEnvelope) (OpResult, error) {
+	if isMailWorkerOp(env.Kind) {
+		return c.applyMailWorkerOp(device, workerID, env)
+	}
 	args, hash, err := parseWorkerOp(env)
 	if err != nil {
 		return OpResult{}, err
