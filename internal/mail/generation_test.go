@@ -145,6 +145,9 @@ func TestTheFenceAfterEnrolling(t *testing.T) {
 	if err := s.AdvanceGeneration(ctx); !errors.Is(err, ErrStaleGeneration) {
 		t.Fatalf("stale advance: %v", err)
 	}
+	if _, err := s.Changes(ctx, "", 0); !errors.Is(err, ErrStaleGeneration) {
+		t.Fatalf("stale changes: %v", err)
+	}
 	if _, err := newer.List(ctx, v.MailboxID); err != nil {
 		t.Fatal(err)
 	}

@@ -110,3 +110,20 @@ func (c *Coordinator) fenced(ctx context.Context, mailbox string, err error) boo
 	}
 	return true
 }
+
+// EdgeChanges is MailChanges over the edge's POST /coordinator/changes,
+// signed with the Service's generation. It lists only enrolled mailboxes, so
+// a loop using it needs MailConfig.Generations.
+type EdgeChanges struct{ Service *mail.Service }
+
+func (e EdgeChanges) Changes(ctx context.Context, cursor string, limit int) (ChangesPage, error) {
+	p, err := e.Service.Changes(ctx, cursor, limit)
+	if err != nil {
+		return ChangesPage{}, err
+	}
+	out := ChangesPage{Cursor: p.Cursor, More: p.More, Reset: p.Reset}
+	for _, c := range p.Changes {
+		out.Changes = append(out.Changes, MailboxChange{MailboxID: c.MailboxID, Changed: c.Changed, Sequence: c.Sequence, Paused: c.Paused, Lapsed: c.Lapsed})
+	}
+	return out, nil
+}

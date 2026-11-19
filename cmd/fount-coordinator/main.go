@@ -408,8 +408,8 @@ func readJobConfig(value string) (json.RawMessage, error) {
 // mailConfig is the mail loop's, against the attested mail edge. Until fount-
 // infra issues Cloud mailbox entitlements it doesn't renew. Until the vault
 // issues generation certificates (decision 18), only a dev coordinator has a
-// generation, from --mail-generation-authority; without one the loop names
-// none, and polls each mailbox.
+// generation, from --mail-generation-authority, and reads the edge's changes
+// feed; without one the loop names none, and polls each mailbox.
 func mailConfig(on bool, authority, keyMode, dir string) (coordinator.MailConfig, error) {
 	if !on {
 		if authority != "" {
@@ -432,6 +432,8 @@ func mailConfig(on bool, authority, keyMode, dir string) (coordinator.MailConfig
 	key := ed25519.NewKeyFromSeed(seed)
 	log.Printf("mail: dev generation certificates are signed by %s (the dev edge's COORDINATOR_AUTHORITY_KEY)", base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey)))
 	cfg.Generations = &mail.DevGenerations{Authority: key, Path: filepath.Join(dir, "state", "mail-generation")}
+	// With a generation the edge's changes feed says which mailboxes to read.
+	cfg.Changes = coordinator.EdgeChanges{Service: cfg.Service}
 	return cfg, nil
 }
 

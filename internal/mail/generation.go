@@ -265,12 +265,12 @@ var ErrNoGeneration = errors.New("mail: the coordinator has no generation")
 
 // coordinatorCall is a call on a coordinator route: signed by the current
 // generation's key, Fount-Key-Id its hex, with Fount-Generation.
-func (s *Service) coordinatorCall(ctx context.Context, path string, body []byte) ([]byte, error) {
+func (s *Service) coordinatorCall(ctx context.Context, path string, body []byte, limit int64) ([]byte, error) {
 	g := s.c.gen.Load()
 	if g == nil {
 		return nil, ErrNoGeneration
 	}
-	out, _, err := s.c.do(ctx, "POST", path, "", body, maxJSON, func(h http.Header) {
+	out, _, err := s.c.do(ctx, "POST", path, "", body, limit, func(h http.Header) {
 		sign(h, g.Key, g.KeyID(), "POST", path, body, s.c.now(), g.Number)
 	})
 	return out, err
@@ -289,7 +289,7 @@ func (s *Service) AdvanceGeneration(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	data, err := s.coordinatorCall(ctx, "/coordinator/generation", body)
+	data, err := s.coordinatorCall(ctx, "/coordinator/generation", body, maxJSON)
 	if err != nil {
 		return err
 	}
@@ -396,4 +396,69 @@ func (s *Service) SentQuery(ctx context.Context, mailbox string, messageIDs []st
 		return nil, fmt.Errorf("%w: POST /sent/query answered %d records for %d ids", ErrEdge, len(out.Records), len(messageIDs))
 	}
 	return out.Records, nil
+}
+
+// Change is one enrolled mailbox in the changes feed: its record changed at
+// routing version Changed (new mail moves Sequence; pause, lapse, keys,
+// owners, entitlement and enrollment are changes too).
+type Change struct {
+	MailboxID string `json:"mailbox_id"`
+	Changed   uint64 `json:"changed"`
+	Sequence  uint64 `json:"sequence"`
+	Paused    bool   `json:"paused"`
+	Lapsed    bool   `json:"lapsed"`
+}
+
+// ChangesPage is one page of POST /coordinator/changes.
+type ChangesPage struct {
+	Changes []Change `json:"changes"`
+	// Cursor is the one to ask from next; More says another page is
+	// waiting now. Reset says the edge didn't know the cursor asked from
+	// (empty, from before a restore, or ahead of it) and listed from the
+	// start.
+	Cursor string `json:"cursor"`
+	More   bool   `json:"more"`
+	Reset  bool   `json:"reset"`
+}
+
+const (
+	maxChangesLimit = 1000
+	maxCursor       = 64
+	// maxChangesBody bounds one page: a page may run past its limit when
+	// one write changed many mailboxes.
+	maxChangesBody = 16 << 20
+)
+
+// Changes reads one page of the edge's changes feed after cursor (empty for
+// the start), across every mailbox enrolled under the coordinator: POST
+// /coordinator/changes, signed by the generation's key. limit is 1 to 1000,
+// or 0 for the edge's default.
+func (s *Service) Changes(ctx context.Context, cursor string, limit int) (ChangesPage, error) {
+	if limit < 0 || limit > maxChangesLimit || len(cursor) > maxCursor {
+		return ChangesPage{}, fmt.Errorf("%w: a changes limit is 0 to %d and a cursor at most %d bytes", ErrRequest, maxChangesLimit, maxCursor)
+	}
+	body, err := json.Marshal(struct {
+		Cursor string `json:"cursor"`
+		Limit  int    `json:"limit"`
+	}{cursor, limit})
+	if err != nil {
+		return ChangesPage{}, err
+	}
+	data, err := s.coordinatorCall(ctx, "/coordinator/changes", body, maxChangesBody)
+	if err != nil {
+		return ChangesPage{}, err
+	}
+	var page ChangesPage
+	if err := strictJSON(data, &page); err != nil {
+		return ChangesPage{}, err
+	}
+	if page.Cursor == "" || len(page.Cursor) > maxCursor {
+		return ChangesPage{}, fmt.Errorf("%w: the changes feed answered cursor %q", ErrEdge, page.Cursor)
+	}
+	for _, c := range page.Changes {
+		if !validHex(c.MailboxID, 32) {
+			return ChangesPage{}, fmt.Errorf("%w: the changes feed named mailbox %q", ErrEdge, c.MailboxID)
+		}
+	}
+	return page, nil
 }

@@ -271,7 +271,9 @@ func (c *Coordinator) SetMailbox(workerID string, mb Mailbox, requesters []Reque
 	}
 	if c.mail != nil {
 		c.mail.service.PutKeys(keys)
-		c.mail.poke()
+		// Synced now, which enrolls it: the changes feed lists only
+		// enrolled mailboxes.
+		c.mail.kick(workerID)
 	}
 	return nil
 }

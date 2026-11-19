@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fount-labs/fount-broker/internal/mail"
 )
@@ -115,4 +116,39 @@ func TestANewerGenerationStopsTheMailLoop(t *testing.T) {
 		close(done)
 	}()
 	<-done
+}
+
+// The loop reads the edge's own changes feed, signed with the generation:
+// only the mailbox with new mail is listed, and a restore of the edge's
+// routing object sweeps.
+func TestTheEdgesChangesFeedPicksTheMailboxes(t *testing.T) {
+	r := genRig(t, MailConfig{SweepInterval: time.Hour})
+	r.c.mail.cfg.Changes = EdgeChanges{Service: r.c.mail.service}
+	w1, mb1 := r.worker()
+	_, mb2 := r.worker()
+	now := time.Now()
+	ctx := context.Background()
+	r.c.mailPass(ctx, now) // the first pass sweeps, which enrolls
+	r.c.mailPass(ctx, now.Add(time.Second))
+	r.c.mailPass(ctx, now.Add(2*time.Second))
+	l1, l2 := r.edge.listCalls(mb1.MailboxID), r.edge.listCalls(mb2.MailboxID)
+	r.c.mailPass(ctx, now.Add(3*time.Second))
+	if r.edge.listCalls(mb1.MailboxID) != l1 || r.edge.listCalls(mb2.MailboxID) != l2 {
+		t.Fatal("a pass with no changes listed a mailbox")
+	}
+	id := r.edge.deliver(mb1, email{from: "dana@example.com", to: testWorkerAddr})
+	r.c.mailPass(ctx, now.Add(4*time.Second))
+	if r.edge.listCalls(mb1.MailboxID) != l1+1 || r.edge.listCalls(mb2.MailboxID) != l2 {
+		t.Fatalf("listed %d/%d and %d/%d", r.edge.listCalls(mb1.MailboxID), l1, r.edge.listCalls(mb2.MailboxID), l2)
+	}
+	if r.ledger(w1.ID).Acted[id].Outcome != outcomeJob {
+		t.Fatal("the changed mailbox's mail wasn't acted on")
+	}
+	waitJob(t, r.c, mailJobID(id))
+
+	r.edge.coord.Restore()
+	r.c.mailPass(ctx, now.Add(5*time.Second))
+	if r.edge.listCalls(mb2.MailboxID) != l2+1 {
+		t.Fatal("a reset didn't sweep")
+	}
 }
