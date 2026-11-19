@@ -23,9 +23,12 @@ import (
 //	POST v1/workers/{id}/threads/{tid}/ops  POST v1/workers/{id}/ops
 //	GET  v1/workers/{id}/mail             PUT  v1/workers/{id}/mail
 //	GET  v1/teams/{team}/log[?since=N]    POST v1/teams/{team}/log
-//	POST v1/teams
+//	POST v1/teams                         GET  v1/teams
 //	PUT  v1/workers/{id}/threads/{tid}/drafts/{draft}/files/{path...}?rev=N
-//	POST v1/teams/{team}/invites/{invite}/send
+//	POST v1/teams/{team}/invites/{invite}/{open,accept,send}
+//	POST v1/teams/{team}/joins            GET  v1/teams/{team}/joins
+//	GET  v1/teams/{team}/joins/{join}     POST v1/teams/{team}/joins/{join}/{approve,deny,accept}
+//	POST v1/teams/{team}/passkey-join     POST v1/teams/{team}/passkey-join/challenge
 //
 // The v2 grant and revoke routes stay, so Desktop hears they are retired
 // (410) rather than that the broker refused them.
@@ -58,11 +61,9 @@ func checkRequest(method, target string) (*url.URL, error) {
 		case seg[1] == "workers" && len(seg) == 2:
 			ok = method == http.MethodPost || method == http.MethodGet
 		case seg[1] == "teams" && len(seg) == 2:
-			ok = method == http.MethodPost
-		case seg[1] == "teams" && len(seg) == 6 && teamID.MatchString(seg[2]) && seg[3] == "invites" && teamID.MatchString(seg[4]) && seg[5] == "send":
-			ok = method == http.MethodPost
-		case seg[1] == "teams" && len(seg) == 4 && teamID.MatchString(seg[2]) && seg[3] == "log":
-			ok, changes = method == http.MethodGet || method == http.MethodPost, method == http.MethodGet
+			ok = method == http.MethodPost || method == http.MethodGet
+		case seg[1] == "teams" && len(seg) >= 4 && teamID.MatchString(seg[2]):
+			ok, changes = teamOp(method, seg[3:])
 		case seg[1] == "jobs" && len(seg) == 3:
 			ok = method == http.MethodGet && jobID.MatchString(seg[2])
 		case seg[1] == "workers" && workerID.MatchString(seg[2]):
@@ -108,6 +109,29 @@ func checkRequest(method, target string) (*url.URL, error) {
 		u.RawQuery = q.Encode()
 	}
 	return u, nil
+}
+
+// teamOp is one of a team's routes, after v1/teams/{team}/; changes is a
+// team log's read, which takes since.
+func teamOp(method string, rest []string) (ok, changes bool) {
+	post := method == http.MethodPost
+	switch {
+	case len(rest) == 1 && rest[0] == "log":
+		return post || method == http.MethodGet, method == http.MethodGet
+	case len(rest) == 3 && rest[0] == "invites" && teamID.MatchString(rest[1]):
+		return post && (rest[2] == "open" || rest[2] == "accept" || rest[2] == "send"), false
+	case len(rest) == 1 && rest[0] == "joins":
+		return post || method == http.MethodGet, false
+	case len(rest) == 2 && rest[0] == "joins" && teamID.MatchString(rest[1]):
+		return method == http.MethodGet, false
+	case len(rest) == 3 && rest[0] == "joins" && teamID.MatchString(rest[1]):
+		return post && (rest[2] == "approve" || rest[2] == "deny" || rest[2] == "accept"), false
+	case len(rest) == 1 && rest[0] == "passkey-join":
+		return post, false
+	case len(rest) == 2 && rest[0] == "passkey-join" && rest[1] == "challenge":
+		return post, false
+	}
+	return false, false
 }
 
 var (
