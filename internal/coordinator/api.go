@@ -50,6 +50,7 @@ func (c *Coordinator) Handler() http.Handler {
 //	GET  /v1/teams/{team}/log?since=N     the team's membership log after entry N, for any member
 //	POST /v1/teams/{team}/log             {"v":3,"list","deks"}: a list an admin device signed (teamlog.go)
 //	POST /v1/workers/{id}/grant, /revoke  the retired v2 grants: 410
+//	PUT  /v1/workers/{id}/mail            {"v":1,"sealed"}: the address, its keys and the worker's setup, under its DEK (mailsetup.go)
 //
 // A caller without an account or device panics: it would be no one's API,
 // and never the dev API's every account.
@@ -76,6 +77,7 @@ func (a *api) accountRoutes(mux router) {
 	mux.HandleFunc("POST /v1/teams", a.mintTeam)
 	mux.HandleFunc("GET /v1/teams/{team}/log", a.teamLog)
 	mux.HandleFunc("POST /v1/teams/{team}/log", a.appendTeamList)
+	mux.HandleFunc("PUT /v1/workers/{id}/mail", a.setUpMail)
 	a.routes(mux, "/v1")
 }
 
@@ -315,6 +317,10 @@ func (a *api) listFiles(rw http.ResponseWriter, r *http.Request) {
 func (a *api) getFile(rw http.ResponseWriter, r *http.Request) {
 	if _, err := a.worker(r); err != nil {
 		fail(rw, statusOf(err), err)
+		return
+	}
+	if a.caller != nil && !readableByClients(r.PathValue("path")) {
+		fail(rw, http.StatusNotFound, ErrNotFound)
 		return
 	}
 	data, err := a.c.readFile(a.device(), r.PathValue("id"), r.PathValue("path"))
