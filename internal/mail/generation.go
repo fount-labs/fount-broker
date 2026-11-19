@@ -462,3 +462,49 @@ func (s *Service) Changes(ctx context.Context, cursor string, limit int) (Change
 	}
 	return page, nil
 }
+
+// LapseState is POST /coordinator/lapse's answer.
+type LapseState struct {
+	Lapsed bool
+	// HoldUntil is when the edge stops holding the worker's mail and
+	// bounces it: the entitlement's expiry plus 30 days. Zero when the
+	// entitlement has no expiry, or when not lapsed.
+	HoldUntil time.Time
+}
+
+// Lapse pauses or resumes an enrolled worker for a lapsed payment (decision
+// 11, POST /coordinator/lapse): while lapsed it can't send, and the edge holds
+// its mail instead of bouncing it, until HoldUntil. ErrNotCoordinated is a
+// mailbox that isn't enrolled.
+func (s *Service) Lapse(ctx context.Context, mailbox string, lapsed bool) (LapseState, error) {
+	if !validHex(mailbox, 32) {
+		return LapseState{}, fmt.Errorf("%w: mailbox must be 64 lowercase hex characters", ErrRequest)
+	}
+	body, err := json.Marshal(struct {
+		MailboxID string `json:"mailbox_id"`
+		Lapsed    bool   `json:"lapsed"`
+	}{mailbox, lapsed})
+	if err != nil {
+		return LapseState{}, err
+	}
+	data, err := s.coordinatorCall(ctx, "/coordinator/lapse", body, maxJSON)
+	if err != nil {
+		return LapseState{}, err
+	}
+	var out struct {
+		MailboxID string `json:"mailbox_id"`
+		Lapsed    bool   `json:"lapsed"`
+		HoldUntil int64  `json:"hold_until"`
+	}
+	if err := strictJSON(data, &out); err != nil {
+		return LapseState{}, err
+	}
+	if out.MailboxID != mailbox || out.Lapsed != lapsed {
+		return LapseState{}, fmt.Errorf("%w: POST /coordinator/lapse answered %s lapsed=%t", ErrEdge, out.MailboxID, out.Lapsed)
+	}
+	st := LapseState{Lapsed: out.Lapsed}
+	if out.HoldUntil > 0 {
+		st.HoldUntil = time.Unix(out.HoldUntil, 0).UTC()
+	}
+	return st, nil
+}

@@ -99,3 +99,32 @@ func TestChangesFeedRefusesABadPage(t *testing.T) {
 		}
 	}
 }
+
+func TestLapse(t *testing.T) {
+	s, f, _, v := newService(t)
+	ctx := context.Background()
+	s.SetGeneration(f.generation(t, 1))
+	if err := s.AdvanceGeneration(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Lapse(ctx, v.MailboxID, true); !errors.Is(err, ErrNotCoordinated) {
+		t.Fatalf("not enrolled: %v", err)
+	}
+	if err := s.Enroll(ctx, v.MailboxID); err != nil {
+		t.Fatal(err)
+	}
+	st, err := s.Lapse(ctx, v.MailboxID, true)
+	if err != nil || !st.Lapsed || st.HoldUntil.IsZero() || !f.coord.Mailbox(v.MailboxID).Lapsed {
+		t.Fatalf("%+v %v", st, err)
+	}
+	l, err := s.List(ctx, v.MailboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Lapsed == nil || !*l.Lapsed || l.HoldUntil != st.HoldUntil.Unix() {
+		t.Fatalf("listing %+v", l)
+	}
+	if st, err = s.Lapse(ctx, v.MailboxID, false); err != nil || st.Lapsed || !st.HoldUntil.IsZero() {
+		t.Fatalf("resume %+v %v", st, err)
+	}
+}

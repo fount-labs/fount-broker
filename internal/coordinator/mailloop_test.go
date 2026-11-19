@@ -114,6 +114,9 @@ func (f *fakeMailEdge) serve(w http.ResponseWriter, r *http.Request) {
 		if f.paused != nil {
 			body["paused"] = *f.paused
 		}
+		if c := f.coord.Mailbox(mb); c.Lapsed {
+			body["lapsed"], body["hold_until"] = true, c.HoldUntil
+		}
 		json.NewEncoder(w).Encode(body)
 	case r.Method == "GET" && r.URL.Path == "/gaps":
 		w.Write([]byte(`{"records":[]}`))

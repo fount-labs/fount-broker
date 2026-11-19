@@ -45,6 +45,9 @@ type MailConfig struct {
 	// Entitlements is fount-infra's issuer of Cloud mailboxes' entitlements
 	// (decision 12). Nil renews nothing.
 	Entitlements Entitlements
+	// Notices emails owners about problems (decision 10): here, a lapsed
+	// payment (lapse.go). D's notices fill it. Nil tells no one.
+	Notices OwnerNotices
 	// Generations is the vault's coordinator generation (decision 18,
 	// mailgen.go). Nil names none, which an edge refuses for any mailbox
 	// another coordinator enrolled.
@@ -353,6 +356,9 @@ func (c *Coordinator) syncMail(ctx context.Context, w Worker, now time.Time) err
 		return fmt.Errorf("listing: %w", err)
 	}
 	paused := pauseOf(listing.Paused)
+	if listing.Lapsed != nil && *listing.Lapsed || m.isLapsed(w.ID) {
+		paused = pauseLapsed
+	}
 	var fetched []*mail.Message
 	for _, l := range listing.Messages {
 		if acted[l.ID] {
@@ -408,6 +414,8 @@ const (
 	pauseRunning pause = iota
 	pausePaused
 	pauseUnknown
+	// pauseLapsed is a worker paused for a lapsed payment (lapse.go).
+	pauseLapsed
 )
 
 func pauseOf(edge *bool) pause {
@@ -871,6 +879,8 @@ func moveHeldFolder(t *Tree, threadID, folder string) error {
 // it does: autorun.rs plan's reasons, in its order.
 func (c *Coordinator) whyNotRun(s *MailSettings, l *mailLedger, th *threadRecord, sender string, msg *mail.Message, paused pause, now time.Time) string {
 	switch {
+	case paused == pauseLapsed:
+		return "the account's payment lapsed"
 	case !s.AutoRun:
 		return "automatic runs are off"
 	case time.UnixMilli(msg.ReceivedAt).Before(s.AutoRunSince):

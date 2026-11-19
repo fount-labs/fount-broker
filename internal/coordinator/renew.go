@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"log"
+	"maps"
 	"time"
 )
 
@@ -32,10 +33,13 @@ type EntitlementRequest struct {
 }
 
 // Entitlement is the token the edge takes in Fount-Entitlement, and when it
-// was issued.
+// was issued. GraceEnds is set while the account is past_due: the worker keeps
+// working until then (decision 11, lapse.go). Once grace has ended, Issue
+// refuses with an error wrapping ErrAccountLapsed.
 type Entitlement struct {
-	Token    string
-	IssuedAt time.Time
+	Token     string
+	IssuedAt  time.Time
+	GraceEnds time.Time
 }
 
 // Renewed is a mailbox's last renewal, kept in the worker's tree: when its
@@ -46,6 +50,12 @@ type Renewed struct {
 	ExpiresAt time.Time `json:"expiresAt,omitzero"`
 	TriedAt   time.Time `json:"triedAt,omitzero"`
 	Error     string    `json:"error,omitempty"`
+	// GraceEnds is when the account's past_due grace ends, as last issued;
+	// the renewal is asked again then. Lapsed is the worker paused for a
+	// lapsed payment, and Notices the owner notices sent, by step.
+	GraceEnds time.Time             `json:"graceEnds,omitzero"`
+	Lapsed    *Lapse                `json:"lapsed,omitempty"`
+	Notices   map[NoticeKind]string `json:"notices,omitempty"`
 }
 
 const (
@@ -62,6 +72,9 @@ const (
 func (r Renewed) due(now time.Time) bool {
 	if r.Error != "" && now.Sub(r.TriedAt) < renewRetry {
 		return false
+	}
+	if r.Lapsed != nil || !r.GraceEnds.IsZero() && !now.Before(r.GraceEnds) {
+		return true
 	}
 	return r.IssuedAt.IsZero() || !now.Before(r.IssuedAt.Add(renewAfter))
 }
@@ -83,7 +96,15 @@ func (c *Coordinator) renewDue(ctx context.Context, w Worker, now time.Time) {
 			return
 		}
 	}
+	r.Notices = maps.Clone(r.Notices)
 	if !r.due(now) {
+		sent := maps.Clone(r.Notices)
+		r = c.holdNotices(ctx, w, r, now)
+		if !maps.Equal(sent, r.Notices) {
+			if err := c.change(w.ID, anyDevice, func(t *Tree) error { return writeJSON(t, renewedPath, r) }); err != nil {
+				log.Printf("worker %s: couldn't keep its mailbox's renewal", w.ID)
+			}
+		}
 		m.mu.Lock()
 		m.renewed[w.ID] = r
 		m.mu.Unlock()
@@ -124,6 +145,9 @@ func (c *Coordinator) renew(ctx context.Context, w Worker, last Renewed, now tim
 		return failed(last, now, err), err
 	}
 	ent, err := m.cfg.Entitlements.Issue(ctx, EntitlementRequest{Account: w.Account, WorkerID: w.ID, MailboxID: w.Mailbox, SigningKey: signing})
+	if errors.Is(err, ErrAccountLapsed) {
+		return c.lapsed(ctx, w, last, now, err), err
+	}
 	if err == nil && ent.Token == "" {
 		err = errors.New("fount-infra issued an empty entitlement")
 	}
@@ -134,7 +158,17 @@ func (c *Coordinator) renew(ctx context.Context, w Worker, last Renewed, now tim
 	if err != nil {
 		return failed(last, now, err), err
 	}
-	return Renewed{IssuedAt: ent.IssuedAt.UTC(), ExpiresAt: renewal.ExpiresAt, TriedAt: now.UTC()}, nil
+	next := last
+	next.IssuedAt, next.ExpiresAt, next.TriedAt, next.Error = ent.IssuedAt.UTC(), renewal.ExpiresAt, now.UTC(), ""
+	next.GraceEnds = ent.GraceEnds.UTC()
+	if ent.GraceEnds.IsZero() {
+		next.GraceEnds = time.Time{}
+	}
+	next = c.resumed(ctx, w, next, now)
+	if !next.GraceEnds.IsZero() {
+		c.notice(ctx, w, &next, NoticePastDue, next.GraceEnds, next.GraceEnds)
+	}
+	return next, nil
 }
 
 func failed(last Renewed, now time.Time, err error) Renewed {

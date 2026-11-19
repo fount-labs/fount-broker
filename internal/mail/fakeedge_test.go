@@ -212,7 +212,11 @@ func (f *fakeEdge) listing() string {
 			out = append(out, listed{m.EdgeID, len(o)})
 		}
 	}
-	b, _ := json.Marshal(map[string]any{"messages": out, "paused": f.paused})
+	body := map[string]any{"messages": out, "paused": f.paused, "lapsed": false}
+	if m := f.coord.Mailbox(f.v.MailboxID); m.Lapsed {
+		body["lapsed"], body["hold_until"] = true, m.HoldUntil
+	}
+	b, _ := json.Marshal(body)
 	return string(b)
 }
 
