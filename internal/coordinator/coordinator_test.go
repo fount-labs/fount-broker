@@ -438,8 +438,15 @@ func TestTheAccountAPIServesOnlyItsAccount(t *testing.T) {
 	}
 	id := w["id"].(string)
 	dek := mustDEK(t)
-	if code, out := do(t, acme, "POST", "/v1/workers/"+id+"/grant", me.grantBody(t, "acme", id, 1, dek)); code != http.StatusOK || out["granted"] != true {
-		t.Fatalf("grant: %d %v", code, out)
+	tt := newTestTeam(t, c, "acme")
+	tt.set("m_owner", "acme", RoleAdmin, me)
+	tt.workers[id] = DEKCommitment(id, dek)
+	body, _ := json.Marshal(map[string]any{"v": TeamListVersion, "list": me.sign(t, tt.list()), "deks": map[string][]byte{id: dek[:]}})
+	if code, out := do(t, acme, "POST", "/v1/teams/acme/log", string(body)); code != http.StatusOK || out["seq"] != 1.0 {
+		t.Fatalf("the team's first list: %d %v", code, out)
+	}
+	if code, out := do(t, acme, "GET", "/v1/workers/"+id, ""); code != http.StatusOK || out["granted"] != true || out["role"] != "admin" {
+		t.Fatalf("the worker: %d %v", code, out)
 	}
 	code, j := do(t, acme, "POST", "/v1/workers/"+id+"/jobs", `{"threadId":"t1","sessionId":"s1","instruction":"hi","config":{}}`)
 	if code != http.StatusAccepted {
@@ -458,9 +465,10 @@ func TestTheAccountAPIServesOnlyItsAccount(t *testing.T) {
 		{"GET", "/v1/workers/" + id + "/files/root/instructions.md", "", 200, 404},
 		{"POST", "/v1/workers/" + id + "/jobs", `{"threadId":"t2","sessionId":"s2","instruction":"hi","config":{}}`, 202, 404},
 		{"GET", "/v1/jobs/" + jobID, "", 200, 404},
-		{"POST", "/v1/workers/" + id + "/grant", `{"v":2,"dek":"` + strings.Repeat("A", 43) + `=","grant":"x.y"}`, 403, 404},
-		{"POST", "/v1/workers/" + id + "/grant", `{"v":1,"dek":"` + strings.Repeat("A", 43) + `=","grant":"x.y"}`, 400, 400},
-		{"POST", "/v1/workers/" + id + "/grant", `{"v":3,"dek":"` + strings.Repeat("A", 43) + `="}`, 400, 400},
+		{"GET", "/v1/teams/acme/log", "", 200, 404},
+		{"POST", "/v1/teams/acme/log", `{"v":2,"list":"x.y"}`, 400, 400},
+		{"POST", "/v1/teams/acme/log", `{"v":3,"list":"x.y"}`, 403, 403},
+		{"POST", "/v1/workers/" + id + "/grant", `{"v":2}`, 410, 410},
 		{"GET", "/v0/workers/" + id, "", 404, 404},
 	} {
 		for name, srv := range map[string]*httptest.Server{"other": other, "mine": mine} {

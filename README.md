@@ -291,12 +291,15 @@ decided one noted Accepted or Discarded.
 
 Its parse surfaces are the JobSpec, the API's small JSON bodies (operations
 are strict JSON of at most 512 KiB), its own thread records and, over the
-client channel, a worker's DEK grant: claims signed by a device key
-([`grant.go`](internal/coordinator/grant.go)) naming the devices that may act
-for the worker from then on, each with an inclusion it signed itself
-([`devicekey.go`](internal/coordinator/devicekey.go)). File contents,
-everything a runner leaves behind, and the DEK as Desktop wraps it to each
-device (HPKE, to the device's X25519 key) are stored as opaque bytes.
+client channel, a team's membership log: lists signed by an admin's device
+key ([`teamlist.go`](internal/coordinator/teamlist.go),
+[`teamlog.go`](internal/coordinator/teamlog.go)) naming the members, their
+roles and devices, and the team's workers, each device with an inclusion it
+signed itself; every route and operation needs a role on the worker
+([`members.go`](internal/coordinator/members.go),
+[docs/membership-list.md](docs/membership-list.md)). File contents,
+everything a runner leaves behind, and each device's wrap of a worker's DEK
+(HPKE, to the device's X25519 key) are stored as opaque bytes.
 
 The coordinator never checks a sender itself. It reads mail only in format 3,
 takes who sent it from the edge's sealed check, and decides what the mail may do

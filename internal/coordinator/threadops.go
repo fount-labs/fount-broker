@@ -408,9 +408,9 @@ func (c *Coordinator) applyThreadOp(device, workerID, threadID string, env opEnv
 		case proposalArgs:
 			err = decideProposal(t, th, a, rev)
 		case heldMailArgs:
-			fx, err = c.runHeldMail(t, th, device, a, rev)
+			fx, err = c.runHeldMail(t, th, a, rev)
 		case mailRequesterArgs:
-			err = c.addRequesterFromMail(t, th, device, a, rev, now)
+			err = c.addRequesterFromMail(t, th, a, rev, now)
 		}
 		var r refusal
 		if errors.As(err, &r) {

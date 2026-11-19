@@ -21,6 +21,10 @@ import (
 //	GET  v1/workers/{id}/files/{path...}  GET  v1/jobs/{id}
 //	GET  v1/workers/{id}/threads          GET  v1/workers/{id}/threads/{tid}[?since=N]
 //	POST v1/workers/{id}/threads/{tid}/ops  POST v1/workers/{id}/ops
+//	GET  v1/teams/{team}/log[?since=N]    POST v1/teams/{team}/log
+//
+// The v2 grant and revoke routes stay, so Desktop hears they are retired
+// (410) rather than that the broker refused them.
 //
 // The coordinator checks every path again; this keeps the broker from
 // carrying anything else.
@@ -49,6 +53,8 @@ func checkRequest(method, target string) (*url.URL, error) {
 		switch {
 		case seg[1] == "workers" && len(seg) == 2:
 			ok = method == http.MethodPost || method == http.MethodGet
+		case seg[1] == "teams" && len(seg) == 4 && teamID.MatchString(seg[2]) && seg[3] == "log":
+			ok, changes = method == http.MethodGet || method == http.MethodPost, method == http.MethodGet
 		case seg[1] == "jobs" && len(seg) == 3:
 			ok = method == http.MethodGet && jobID.MatchString(seg[2])
 		case seg[1] == "workers" && workerID.MatchString(seg[2]):
@@ -84,7 +90,7 @@ func checkRequest(method, target string) (*url.URL, error) {
 		case listing && len(q["prefix"]) == 1:
 		case changes && len(q["since"]) == 1 && revision.MatchString(q.Get("since")):
 		default:
-			return nil, fmt.Errorf("path %q: only a file listing takes a query, prefix, and a thread, since", target)
+			return nil, fmt.Errorf("path %q: only a file listing takes a query, prefix, and a thread or team log, since", target)
 		}
 		u.RawQuery = q.Encode()
 	}
@@ -96,4 +102,7 @@ var (
 	jobID    = regexp.MustCompile(`^j_[0-9a-f]{24}$`)
 	threadID = regexp.MustCompile(`^thr_[0-9a-f]{24}$`)
 	revision = regexp.MustCompile(`^[0-9]{1,20}$`)
+	// teamID is coordinator.checkID's: a team's id is its account's or one
+	// the coordinator made.
+	teamID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 )

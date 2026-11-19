@@ -64,9 +64,6 @@ type Config struct {
 	// Mail runs each Cloud worker's mail loop (mailloop.go, RunMail). Zero
 	// runs none.
 	Mail MailConfig
-	// Gate is Teams' role check on each operation (mailops.go). Nil allows
-	// every device a worker lists.
-	Gate OpGate
 }
 
 type Coordinator struct {

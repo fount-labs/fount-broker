@@ -22,6 +22,10 @@ type State struct {
 	Jobs    map[string]*Job    `json:"jobs"`
 	// Seq orders jobs, so the queue is first in, first out.
 	Seq uint64 `json:"seq"`
+	// Teams are the teams' membership logs (teamlog.go), and SecuritySeq
+	// counts the changes to them (commitSecurity).
+	Teams       map[string]*Team `json:"teams,omitempty"`
+	SecuritySeq uint64           `json:"securitySeq,omitempty"`
 }
 
 type Worker struct {
@@ -32,12 +36,13 @@ type Worker struct {
 	WrappedDEK []byte    `json:"wrappedDek"`
 	Version    uint64    `json:"version"`
 	Created    time.Time `json:"created"`
-	// Devices may act for the worker over the client channel, and GrantSeq
-	// numbers the last grant that set them. DEKCommitment is the one the
-	// grants signed, which a device opening its wrap checks. A worker the dev
-	// API made has none.
+	// Team is the team whose log decides who may act for the worker, empty
+	// until a list adds it; a team worker's Account is its team. Devices may
+	// act for it over the client channel, derived from that log (members.go),
+	// and DEKCommitment is the one the list signed, which a device opening
+	// its wrap checks. A worker the dev API made has none.
+	Team          string   `json:"team,omitempty"`
 	Devices       []Device `json:"devices,omitempty"`
-	GrantSeq      uint64   `json:"grantSeq,omitempty"`
 	DEKCommitment string   `json:"dekCommitment,omitempty"`
 	// Mailbox is the worker's mailbox id at the edge, once it has an
 	// address, so the mail loop knows to read it (mailbox.go). Its keys are
@@ -96,7 +101,7 @@ func statePath(dir string) string { return filepath.Join(dir, "state.json") }
 // LoadState reads the volume's state, or starts empty. A job that was running
 // when the coordinator stopped is failed, not run again: it may have sent mail.
 func LoadState(dir string) (*State, error) {
-	s := &State{Workers: map[string]*Worker{}, Jobs: map[string]*Job{}}
+	s := &State{Workers: map[string]*Worker{}, Jobs: map[string]*Job{}, Teams: map[string]*Team{}}
 	data, err := os.ReadFile(statePath(dir))
 	if errors.Is(err, fs.ErrNotExist) {
 		return s, nil
@@ -112,6 +117,9 @@ func LoadState(dir string) (*State, error) {
 	}
 	if s.Jobs == nil {
 		s.Jobs = map[string]*Job{}
+	}
+	if s.Teams == nil {
+		s.Teams = map[string]*Team{}
 	}
 	for _, j := range s.Jobs {
 		switch {

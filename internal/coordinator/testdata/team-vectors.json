@@ -1,0 +1,22 @@
+{
+  "comment": "Team inclusion, team list and DEK wrap vectors (internal/coordinator/teamlist.go, devicekey.go). Bytes are hex. Test keys only. Rewrite: TEAM_VECTORS_WRITE=1 go test -run TestTeamVectors ./internal/coordinator",
+  "ed25519_seed": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+  "ed25519_public": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664",
+  "x25519_private": "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
+  "x25519_public": "5869aff450549732cbaaed5e5df9b30a6da31cb0e5742bad5ad4a1a768f1a67b",
+  "device": "65b60673d6ed884bf01c2c222d82ada0",
+  "audience": "https://coordinator.example",
+  "team": "acct_vectors",
+  "account": "acct_vectors",
+  "worker": "w_0123456789abcdef01234567",
+  "dek": "4142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f60",
+  "dek_commitment": "xGwAkaak6WCSFJwTATH_qA1rIk8mHZ0lMTfjtkz0Ye8",
+  "inclusion_claims": "{\"v\":1,\"typ\":\"fount-team-device\",\"aud\":\"https://coordinator.example\",\"team\":\"acct_vectors\",\"acct\":\"acct_vectors\",\"dev\":\"65b60673d6ed884bf01c2c222d82ada0\",\"key\":\"ebVWLo_mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ\",\"enc\":\"WGmv9FBUlzLLqu1eXfmzCm2jHLDldCutWtShp2jxpns\",\"seq\":1}",
+  "inclusion": "eyJ2IjoxLCJ0eXAiOiJmb3VudC10ZWFtLWRldmljZSIsImF1ZCI6Imh0dHBzOi8vY29vcmRpbmF0b3IuZXhhbXBsZSIsInRlYW0iOiJhY2N0X3ZlY3RvcnMiLCJhY2N0IjoiYWNjdF92ZWN0b3JzIiwiZGV2IjoiNjViNjA2NzNkNmVkODg0YmYwMWMyYzIyMmQ4MmFkYTAiLCJrZXkiOiJlYlZXTG9fbVZQbEFlTEVTNkttTHA1QWZoVHJtbGI3WDRPT1JDNjBFbG1RIiwiZW5jIjoiV0dtdjlGQlVsekxMcXUxZVhmbXpDbTJqSExEbGRDdXRXdFNocDJqeHBucyIsInNlcSI6MX0.FfYC97LggGJa48ZIa2WD9YwmKxEqtEutTnkdQqu7gCYxklfwc5kBKwwEjK8dSk-ZlcM_ZWwixoP5dphVH3sBBw",
+  "list_claims": "{\"v\":3,\"typ\":\"fount-team-members\",\"aud\":\"https://coordinator.example\",\"team\":\"acct_vectors\",\"seq\":1,\"prev\":\"\",\"dev\":\"65b60673d6ed884bf01c2c222d82ada0\",\"iat\":1798761600,\"members\":[{\"id\":\"m_owner\",\"account\":\"acct_vectors\",\"email\":\"owner@example.com\",\"role\":\"admin\",\"devices\":[\"eyJ2IjoxLCJ0eXAiOiJmb3VudC10ZWFtLWRldmljZSIsImF1ZCI6Imh0dHBzOi8vY29vcmRpbmF0b3IuZXhhbXBsZSIsInRlYW0iOiJhY2N0X3ZlY3RvcnMiLCJhY2N0IjoiYWNjdF92ZWN0b3JzIiwiZGV2IjoiNjViNjA2NzNkNmVkODg0YmYwMWMyYzIyMmQ4MmFkYTAiLCJrZXkiOiJlYlZXTG9fbVZQbEFlTEVTNkttTHA1QWZoVHJtbGI3WDRPT1JDNjBFbG1RIiwiZW5jIjoiV0dtdjlGQlVsekxMcXUxZVhmbXpDbTJqSExEbGRDdXRXdFNocDJqeHBucyIsInNlcSI6MX0.FfYC97LggGJa48ZIa2WD9YwmKxEqtEutTnkdQqu7gCYxklfwc5kBKwwEjK8dSk-ZlcM_ZWwixoP5dphVH3sBBw\"]}],\"workers\":[{\"id\":\"w_0123456789abcdef01234567\",\"dek\":\"xGwAkaak6WCSFJwTATH_qA1rIk8mHZ0lMTfjtkz0Ye8\"}]}",
+  "list": "eyJ2IjozLCJ0eXAiOiJmb3VudC10ZWFtLW1lbWJlcnMiLCJhdWQiOiJodHRwczovL2Nvb3JkaW5hdG9yLmV4YW1wbGUiLCJ0ZWFtIjoiYWNjdF92ZWN0b3JzIiwic2VxIjoxLCJwcmV2IjoiIiwiZGV2IjoiNjViNjA2NzNkNmVkODg0YmYwMWMyYzIyMmQ4MmFkYTAiLCJpYXQiOjE3OTg3NjE2MDAsIm1lbWJlcnMiOlt7ImlkIjoibV9vd25lciIsImFjY291bnQiOiJhY2N0X3ZlY3RvcnMiLCJlbWFpbCI6Im93bmVyQGV4YW1wbGUuY29tIiwicm9sZSI6ImFkbWluIiwiZGV2aWNlcyI6WyJleUoySWpveExDSjBlWEFpT2lKbWIzVnVkQzEwWldGdExXUmxkbWxqWlNJc0ltRjFaQ0k2SW1oMGRIQnpPaTh2WTI5dmNtUnBibUYwYjNJdVpYaGhiWEJzWlNJc0luUmxZVzBpT2lKaFkyTjBYM1psWTNSdmNuTWlMQ0poWTJOMElqb2lZV05qZEY5MlpXTjBiM0p6SWl3aVpHVjJJam9pTmpWaU5qQTJOek5rTm1Wa09EZzBZbVl3TVdNeVl6SXlNbVE0TW1Ga1lUQWlMQ0pyWlhraU9pSmxZbFpYVEc5ZmJWWlFiRUZsVEVWVE5rdHRUSEExUVdab1ZISnRiR0kzV0RSUFQxSkROakJGYkcxUklpd2laVzVqSWpvaVYwZHRkamxHUWxWc2VreE1jWFV4WlZobWJYcERiVEpxU0V4RWJHUkRkWFJYZEZOb2NESnFlSEJ1Y3lJc0luTmxjU0k2TVgwLkZmWUM5N0xnZ0dKYTQ4WklhMldEOVl3bUt4RXF0RXV0VG5rZFFxdTdnQ1l4a2xmd2M1a0JLd3dFaks4ZFNrLVpsY01fWld3aXhvUDVkcGhWSDNzQkJ3Il19XSwid29ya2VycyI6W3siaWQiOiJ3XzAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2NyIsImRlayI6InhHd0FrYWFrNldDU0ZKd1RBVEhfcUExcklrOG1IWjBsTVRmanRrejBZZTgifV19.f3d76rfFJE8_6Z0KAT7v0ZJvc1DkVY1O4Ks-gG0VRUm63CLlPEzlKz_boxpSQ7_YBqY2UGbsrKZJsS-Tj_rsDw",
+  "list_hash": "KyJtRCB1ROlDUO6x20m-mYmZfrX3ly0f9OLzxFqlR0k",
+  "wrap_info": "fount-worker-dek-wrap-v1",
+  "wrap_aad": "666f756e742d776f726b65722d64656b2d777261702d6161642d763100000c616363745f766563746f7273001a775f30313233343536373839616263646566303132333435363700203635623630363733643665643838346266303163326332323264383261646130002b784777416b61616b36574353464a77544154485f71413172496b386d485a306c4d54666a746b7a30596538",
+  "wrap": "2a92b7344e112cbbc2c1674b413a5a35399a978e14abc40dfd36b4affbe24264bcb5db34874ea11a82f210311c7b5305a1b387e75afc78997984785febdd838a271edc0759894fa7a8561fca7e39c69e"
+}

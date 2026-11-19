@@ -22,26 +22,9 @@ import (
 //	pairingConfirm  {mailId, baseRevision}        the pairing's; mailId is an untokened email's edge id
 //	routingSaved    {requestersRevision}          a device wrote that list to the edge
 
-// OpGate is the role check Teams (T) puts on every operation: whether device
-// may apply an operation of kind to the worker. Nil lets every device the
-// worker lists apply all of them. The coordinator's own changes (mail
-// arriving, jobs ending) aren't operations and aren't gated.
-type OpGate interface {
-	MayApply(device, workerID, kind string) error
-}
-
-// ErrNotAllowed is an operation the gate refused for the device's role.
-var ErrNotAllowed = errors.New("not allowed for this device's role")
-
-func (c *Coordinator) gate(device, workerID, kind string) error {
-	if c.cfg.Gate == nil || device == anyDevice {
-		return nil
-	}
-	if err := c.cfg.Gate.MayApply(device, workerID, kind); err != nil {
-		return fmt.Errorf("%s: %w: %v", kind, ErrNotAllowed, err)
-	}
-	return nil
-}
+// Who may apply each of these is opRoles' (members.go): the account API
+// checks the caller's role on the worker before any operation is applied. The
+// coordinator's own changes (mail arriving, jobs ending) aren't operations.
 
 const (
 	CodeAlreadyRun          OpCode = "ALREADY_RUN"
@@ -111,10 +94,7 @@ func heldMail(th *threadRecord, id string) (*threadEntry, error) {
 // runHeldMail is §5.8: run held mail once. The sender doesn't join the
 // thread: running a stranger's email once doesn't make them someone the
 // worker emails.
-func (c *Coordinator) runHeldMail(t *Tree, th *threadRecord, device string, a heldMailArgs, rev uint64) (effects, error) {
-	if err := c.gate(device, th.WorkerID, "runHeldMail"); err != nil {
-		return effects{}, err
-	}
+func (c *Coordinator) runHeldMail(t *Tree, th *threadRecord, a heldMailArgs, rev uint64) (effects, error) {
 	e, err := heldMail(th, a.MailID)
 	if err != nil {
 		return effects{}, err
@@ -150,10 +130,7 @@ func (c *Coordinator) runHeldMail(t *Tree, th *threadRecord, device string, a he
 // addRequesterFromMail is §5.9 from held mail: the address must be the
 // email's checked sender. They join the list with auto-run off and the
 // email's aligned domain, and join the thread.
-func (c *Coordinator) addRequesterFromMail(t *Tree, th *threadRecord, device string, a mailRequesterArgs, rev uint64, now time.Time) error {
-	if err := c.gate(device, th.WorkerID, "addRequester"); err != nil {
-		return err
-	}
+func (c *Coordinator) addRequesterFromMail(t *Tree, th *threadRecord, a mailRequesterArgs, rev uint64, now time.Time) error {
 	e, err := heldMail(th, a.MailID)
 	if err != nil {
 		return err
@@ -255,9 +232,6 @@ func (c *Coordinator) applyMailWorkerOp(device, workerID string, env workerOpEnv
 	hash := argsHash("", env.Kind, args)
 	var result OpResult
 	err := c.changeThen(workerID, device, func(t *Tree) error {
-		if err := c.gate(device, workerID, env.Kind); err != nil {
-			return err
-		}
 		ops, err := loadOpLog(t, workerOps)
 		if err != nil {
 			return err

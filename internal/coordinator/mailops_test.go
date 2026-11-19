@@ -63,40 +63,79 @@ func TestMailSettingsOpsNameTheirRevision(t *testing.T) {
 	}
 }
 
-type denyGate struct{ kinds map[string]bool }
+// Every mail operation is role-checked against the worker's team log: the
+// requester list, automatic runs, the acknowledgement and pairing are an
+// admin's; running held mail is any reviewer's who reaches the worker.
+func TestMailOpsCheckTheRole(t *testing.T) {
+	f := newTeamFixture(t)
+	if err := f.c.SetMailbox(f.w1.ID, newMailbox(t, testWorkerAddr), nil); err != nil {
+		t.Fatal(err)
+	}
+	reviewer, admin := f.api(t, f.reviewer, "maria"), f.api(t, f.admin, "dev")
+	base := "/v1/workers/" + f.w1.ID
+	op := func(id, kind string, args any) string {
+		raw, _ := json.Marshal(args)
+		return `{"opId":"` + id + `","kind":"` + kind + `","args":` + string(raw) + `}`
+	}
+	for _, tc := range []struct {
+		kind string
+		args any
+	}{
+		{"setAutoRun", switchArgs{On: true}},
+		{"setAcknowledge", switchArgs{On: true}},
+		{"addRequester", requesterArgs{Address: "lee@client.example"}},
+		{"pairingStart", pairingStartArgs{Requester: "lee@client.example", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}},
+		{"pairingConfirm", pairingConfirmArgs{MailID: "e_1"}},
+		{"routingSaved", routingSavedArgs{}},
+	} {
+		if code, out := do(t, reviewer, "POST", base+"/ops", op("op_r_"+tc.kind, tc.kind, tc.args)); code != 403 {
+			t.Errorf("reviewer %s: %d %v", tc.kind, code, out)
+		}
+		if code, out := do(t, admin, "POST", base+"/ops", op("op_a_"+tc.kind, tc.kind, tc.args)); code != 200 {
+			t.Errorf("admin %s: %d %v", tc.kind, code, out)
+		}
+	}
+	v, err := f.c.mailView(anyDevice, f.w1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := v.MailSettings; !s.AutoRun || !s.Acknowledge || s.requester("lee@client.example") == nil {
+		t.Fatalf("the admin's operations didn't apply: %+v", v.MailSettings)
+	}
+	if code, out := do(t, reviewer, "GET", base+"/mail", ""); code != 200 || out["address"] != testWorkerAddr {
+		t.Errorf("the reviewer reads the mail settings: %d %v", code, out)
+	}
 
-func (g denyGate) MayApply(_, _, kind string) error {
-	if g.kinds[kind] {
-		return errors.New("reviewers can't")
+	// Held mail: the reviewer may run it, not add its sender.
+	f.c.cfg.JobConfig = json.RawMessage(`{"model":"m"}`)
+	th, err := newMailThread(f.w1.ID, "hello", time.Now())
+	if err != nil {
+		t.Fatal(err)
 	}
-	return nil
-}
-
-func TestTheGateChecksEachMailOp(t *testing.T) {
-	r := newMailRig(t, MailConfig{})
-	w, mb := r.worker()
-	r.c.cfg.Gate = denyGate{kinds: map[string]bool{"setAutoRun": true, "runHeldMail": true}}
-	r.c.mu.Lock()
-	r.c.state.Workers[w.ID].Devices = append(r.c.state.Workers[w.ID].Devices, Device{ID: "dev_1"})
-	r.c.mu.Unlock()
-	raw, _ := json.Marshal(switchArgs{On: false, BaseRevision: 1})
-	if _, err := r.c.applyWorkerOp("dev_2", w.ID, workerOpEnvelope{OpID: "op_0", Kind: "setAutoRun", Args: raw}); !errors.Is(err, ErrNoWorker) {
-		t.Fatalf("a device the worker doesn't list is refused before its role is asked: %v", err)
+	entry := &mailEntry{EdgeID: "e_9", Sender: "eve@else.example", Verdict: "unknown", Held: heldWaiting, Folder: "2026-11-19-e_9"}
+	if err := f.c.change(f.w1.ID, anyDevice, func(tr *Tree) error {
+		if _, err := threadHandle(tr, th); err != nil {
+			return err
+		}
+		if _, err := th.push(1, time.Now(), threadEntry{Kind: entryMail, Mail: entry}); err != nil {
+			return err
+		}
+		th.finish(1, time.Now())
+		return saveThread(tr, th)
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := r.c.applyWorkerOp("dev_1", w.ID, workerOpEnvelope{OpID: "op_1", Kind: "setAutoRun", Args: raw}); !errors.Is(err, ErrNotAllowed) || statusOf(err) != 403 {
-		t.Fatalf("setAutoRun: %v", err)
+	tops := base + "/threads/" + th.ID + "/ops"
+	threadOp := func(id, kind string, args any) string {
+		raw, _ := json.Marshal(args)
+		return `{"opId":"` + id + `","threadId":"` + th.ID + `","baseRevision":1,"kind":"` + kind + `","args":` + string(raw) + `}`
 	}
-	r.edge.deliver(mb, email{from: "eve@else.example", to: testWorkerAddr})
-	r.pass()
-	th := onlyThread(t, r.threads(w.ID))
-	raw, _ = json.Marshal(heldMailArgs{MailID: th.Entries[0].ID})
-	if _, err := r.c.applyThreadOp("dev_1", w.ID, th.ID, opEnvelope{OpID: "op_2", ThreadID: th.ID, Kind: "runHeldMail", Args: raw}); !errors.Is(err, ErrNotAllowed) {
-		t.Fatalf("runHeldMail: %v", err)
+	mailID := th.Entries[0].ID
+	if code, out := do(t, reviewer, "POST", tops, threadOp("op_add", "addRequester", mailRequesterArgs{MailID: mailID, Address: "eve@else.example"})); code != 403 {
+		t.Errorf("reviewer addRequester from held mail: %d %v", code, out)
 	}
-	// The coordinator's own device isn't gated: mail arriving isn't an
-	// operation.
-	if res := r.workerOp(w.ID, "op_3", "setAutoRun", switchArgs{On: false, BaseRevision: 1}); !res.OK {
-		t.Fatalf("%+v", res)
+	if code, out := do(t, reviewer, "POST", tops, threadOp("op_run", "runHeldMail", heldMailArgs{MailID: mailID})); code != 200 || out["ok"] != true {
+		t.Errorf("reviewer runHeldMail: %d %v", code, out)
 	}
 }
 

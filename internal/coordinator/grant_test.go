@@ -4,13 +4,12 @@ import (
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -48,10 +47,11 @@ func (d testDevice) caller(account string) Caller {
 	return Caller{Account: account, Device: d.id(), DeviceKey: d.pub()}
 }
 
-// include is d's inclusion in a worker, listed from grant since.
-func (d testDevice) include(t *testing.T, account, workerID string, since uint64, dek DEK) string {
+// include is d's inclusion in a team, under account, admitted from entry
+// since.
+func (d testDevice) include(t *testing.T, team, account string, since uint64) string {
 	t.Helper()
-	token, err := SignInclusion(d.key, d.enc.PublicKey().Bytes(), InclusionClaims{Aud: testAudience, Acct: account, Worker: workerID, DEK: DEKCommitment(workerID, dek), Seq: since})
+	token, err := SignTeamInclusion(d.key, d.enc.PublicKey().Bytes(), TeamInclusion{Aud: testAudience, Team: team, Acct: account, Seq: since})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,79 +67,146 @@ func (d testDevice) wrap(t *testing.T, account, workerID string, dek DEK) []byte
 	return wrap
 }
 
-// testGrant is a grant request's parts.
-type testGrant struct {
-	token      string
-	inclusions []string
-	wraps      map[string][]byte
-}
-
-// grant signs a grant of dek naming devices, or the signer alone, each with
-// an inclusion for this grant and a wrap.
-func (d testDevice) grant(t *testing.T, account, workerID string, seq uint64, dek DEK, devices ...testDevice) testGrant {
+// sign signs l as d, now.
+func (d testDevice) sign(t *testing.T, l TeamList) string {
 	t.Helper()
-	return d.grantSince(t, account, workerID, seq, dek, nil, devices...)
-}
-
-// grantSince is grant with the devices already listed on inclusions from the
-// grants since names.
-func (d testDevice) grantSince(t *testing.T, account, workerID string, seq uint64, dek DEK, since map[string]uint64, devices ...testDevice) testGrant {
-	t.Helper()
-	if len(devices) == 0 {
-		devices = []testDevice{d}
+	if l.Iat == 0 {
+		l.Iat = time.Now().Unix()
 	}
-	g := testGrant{wraps: map[string][]byte{}}
-	var keys, ids []string
-	for _, dev := range devices {
-		keys, ids = append(keys, dev.b64()), append(ids, dev.id())
-		s, ok := since[dev.id()]
-		if !ok {
-			s = seq
-		}
-		g.inclusions = append(g.inclusions, dev.include(t, account, workerID, s, dek))
-		g.wraps[dev.id()] = dev.wrap(t, account, workerID, dek)
-	}
-	digest, err := WrapsDigest(ids, g.wraps)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if g.token, err = SignGrant(d.key, GrantClaims{Op: OpGrant, Aud: testAudience, Acct: account, Worker: workerID, Seq: seq, DEK: DEKCommitment(workerID, dek), Devices: keys, Wraps: digest, Iat: time.Now().Unix()}); err != nil {
-		t.Fatal(err)
-	}
-	return g
-}
-
-func (g testGrant) to(c *Coordinator, caller Caller, workerID string, dek DEK) (Worker, error) {
-	return c.Grant(caller, workerID, dek, g.token, g.inclusions, g.wraps)
-}
-
-func (g testGrant) body(dek DEK) string {
-	body, _ := json.Marshal(map[string]any{"v": GrantBodyVersion, "dek": dek[:], "grant": g.token, "inclusions": g.inclusions, "wraps": g.wraps})
-	return string(body)
-}
-
-func (d testDevice) revoke(t *testing.T, account, workerID string, seq uint64) string {
-	t.Helper()
-	token, err := SignGrant(d.key, GrantClaims{Op: OpRevoke, Aud: testAudience, Acct: account, Worker: workerID, Seq: seq, Iat: time.Now().Unix()})
+	token, err := SignTeamList(d.key, l)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return token
 }
 
-func (d testDevice) grantBody(t *testing.T, account, workerID string, seq uint64, dek DEK, devices ...testDevice) string {
-	t.Helper()
-	return d.grant(t, account, workerID, seq, dek, devices...).body(dek)
+// testTeam is a team as Desktop keeps it: its members, their devices and
+// its workers, from which it signs the list after the coordinator's head.
+type testTeam struct {
+	t       *testing.T
+	c       *Coordinator
+	id      string
+	members map[string]ListMember
+	devices map[string][]testDevice
+	workers map[string]string
+	// since is each listed device's inclusion number, as the last list
+	// the coordinator took had it.
+	since map[string]uint64
 }
 
-// granted is a worker made by me over the channel and granted dek.
-func granted(t *testing.T, c *Coordinator, me testDevice, dek DEK) Worker {
-	t.Helper()
-	w, err := c.CreateWorkerFor(me.caller("acme"))
+func newTestTeam(t *testing.T, c *Coordinator, id string) *testTeam {
+	return &testTeam{t: t, c: c, id: id, members: map[string]ListMember{}, devices: map[string][]testDevice{}, workers: map[string]string{}, since: map[string]uint64{}}
+}
+
+// set lists a member; a reviewer reaches every worker unless given some.
+func (tt *testTeam) set(id, account string, role Role, devices ...testDevice) *ListMember {
+	m := ListMember{ID: id, Account: account, Role: role}
+	if role == RoleReviewer {
+		m.Workers = []string{allWorkers}
+	}
+	tt.members[id], tt.devices[id] = m, devices
+	return &m
+}
+
+func (tt *testTeam) update(id string, f func(*ListMember)) {
+	m := tt.members[id]
+	f(&m)
+	tt.members[id] = m
+}
+
+func (tt *testTeam) drop(id string) {
+	delete(tt.members, id)
+	delete(tt.devices, id)
+}
+
+func (tt *testTeam) head() (uint64, string) {
+	tt.c.mu.Lock()
+	defer tt.c.mu.Unlock()
+	v := tt.c.teamLogView(tt.id, ^uint64(0))
+	return v.Seq, v.Head
+}
+
+// list is the next list, unsigned.
+func (tt *testTeam) list() TeamList {
+	seq, head := tt.head()
+	l := TeamList{Aud: testAudience, Team: tt.id, Seq: seq + 1, Prev: head}
+	for _, id := range slices.Sorted(maps.Keys(tt.members)) {
+		m := tt.members[id]
+		devices := slices.Clone(tt.devices[id])
+		slices.SortFunc(devices, func(a, b testDevice) int { return strings.Compare(a.id(), b.id()) })
+		m.Devices = nil
+		for _, d := range devices {
+			since, ok := tt.since[d.id()]
+			if !ok {
+				since = seq + 1
+			}
+			m.Devices = append(m.Devices, d.include(tt.t, tt.id, m.Account, since))
+		}
+		l.Members = append(l.Members, m)
+	}
+	for _, id := range slices.Sorted(maps.Keys(tt.workers)) {
+		l.Workers = append(l.Workers, ListWorker{ID: id, DEK: tt.workers[id]})
+	}
+	return l
+}
+
+// push signs the next list as by, of account, and appends it.
+func (tt *testTeam) push(by testDevice, account string, deks map[string]DEK) error {
+	tt.t.Helper()
+	l := tt.list()
+	return tt.pushList(by.caller(account), by.sign(tt.t, l), l, deks)
+}
+
+func (tt *testTeam) pushList(caller Caller, token string, l TeamList, deks map[string]DEK) error {
+	if _, err := tt.c.AppendTeamList(caller, tt.id, token, deks); err != nil {
+		return err
+	}
+	tt.since = map[string]uint64{}
+	for _, m := range l.Members {
+		for _, token := range m.Devices {
+			d, err := parseTeamInclusion(token, testAudience, tt.id, m.Account)
+			if err != nil {
+				tt.t.Fatal(err)
+			}
+			tt.since[d.ID] = d.Since
+		}
+	}
+	return nil
+}
+
+// addWorker makes a worker over the channel as by and adds it to the team
+// with dek.
+func (tt *testTeam) addWorker(by testDevice, account string, dek DEK) (Worker, error) {
+	tt.t.Helper()
+	w, err := tt.c.CreateWorkerFor(by.caller(account))
 	if err != nil {
+		tt.t.Fatal(err)
+	}
+	tt.workers[w.ID] = DEKCommitment(w.ID, dek)
+	if err := tt.push(by, account, map[string]DEK{w.ID: dek}); err != nil {
+		delete(tt.workers, w.ID)
+		return Worker{}, err
+	}
+	return tt.c.Worker(w.ID)
+}
+
+// soloTeam is account's team of one, with me as its admin.
+func soloTeam(t *testing.T, c *Coordinator, account string, me testDevice) *testTeam {
+	t.Helper()
+	tt := newTestTeam(t, c, account)
+	tt.set("m_owner", account, RoleAdmin, me)
+	if err := tt.push(me, account, nil); err != nil {
 		t.Fatal(err)
 	}
-	if w, err = me.grant(t, "acme", w.ID, 1, dek).to(c, me.caller("acme"), w.ID, dek); err != nil {
+	return tt
+}
+
+// granted is a worker made by me over the channel and put in acme's team of
+// one with dek.
+func granted(t *testing.T, c *Coordinator, me testDevice, dek DEK) Worker {
+	t.Helper()
+	w, err := soloTeam(t, c, "acme", me).addWorker(me, "acme", dek)
+	if err != nil {
 		t.Fatal(err)
 	}
 	return w
@@ -148,19 +215,24 @@ func granted(t *testing.T, c *Coordinator, me testDevice, dek DEK) Worker {
 func TestAWorkerRunsOnlyOnceItsDEKIsGranted(t *testing.T) {
 	c, _ := newTestCoordinator(t, "ok", 0)
 	me := newTestDevice(t)
+	tt := soloTeam(t, c, "acme", me)
 	w, err := c.CreateWorkerFor(me.caller("acme"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := c.PutFile(w.ID, "instructions.md", []byte("x")); !errors.Is(err, ErrNotGranted) {
-		t.Errorf("a file before the grant: %v", err)
+		t.Errorf("a file before the list: %v", err)
 	}
 	if _, err := c.Enqueue(w.ID, spec("t1")); !errors.Is(err, ErrNotGranted) {
-		t.Errorf("a job before the grant: %v", err)
+		t.Errorf("a job before the list: %v", err)
 	}
 	dek := mustDEK(t)
-	if w, err = me.grant(t, "acme", w.ID, 1, dek).to(c, me.caller("acme"), w.ID, dek); err != nil || w.GrantSeq != 1 {
-		t.Fatalf("grant: %v %+v", err, w)
+	tt.workers[w.ID] = DEKCommitment(w.ID, dek)
+	if err := tt.push(me, "acme", map[string]DEK{w.ID: dek}); err != nil {
+		t.Fatal(err)
+	}
+	if w, _ = c.Worker(w.ID); w.Team != "acme" || w.Account != "acme" || len(w.Devices) != 1 {
+		t.Fatalf("the worker: %+v", w)
 	}
 	if err := c.PutFile(w.ID, "instructions.md", []byte("be brief")); err != nil {
 		t.Fatal(err)
@@ -180,190 +252,25 @@ func TestAWorkerRunsOnlyOnceItsDEKIsGranted(t *testing.T) {
 	if data, err := tree.Read(prefixRoot + "threads/t1/outputs/" + j.ID + "/reply.md"); err != nil || !strings.Contains(string(data), "be brief") {
 		t.Errorf("the reply under the granted DEK: %q %v", data, err)
 	}
+	// The coordinator sealed my wrap, which opens to that DEK.
+	if got, err := OpenWrap(me.enc.Bytes(), "acme", w.ID, me.id(), w.DEKCommitment, w.Devices[0].Wrap); err != nil || got != dek {
+		t.Errorf("my wrap: %v", err)
+	}
 }
 
-func TestAGrantIsCheckedAgainstItsSignerAndTheWorker(t *testing.T) {
+func TestTheV2GrantRoutesAreRetired(t *testing.T) {
 	c, _ := newTestCoordinator(t, "ok", 0)
-	me, other := newTestDevice(t), newTestDevice(t)
-	w, _ := c.CreateWorkerFor(me.caller("acme"))
-	dek, otherDEK := mustDEK(t), mustDEK(t)
-	signed := func(c GrantClaims) testGrant {
-		g := me.grant(t, "acme", w.ID, 1, dek)
-		c.Op, c.Aud, c.Acct, c.Worker, c.Seq, c.DEK = OpGrant, testAudience, "acme", w.ID, 1, DEKCommitment(w.ID, dek)
-		ids := []string{}
-		for _, k := range c.Devices {
-			key, _ := b64.DecodeString(k)
-			ids = append(ids, deviceID(key))
-		}
-		c.Wraps, _ = WrapsDigest(ids, g.wraps)
-		if c.Iat == 0 {
-			c.Iat = time.Now().Unix()
-		}
-		g.token, _ = SignGrant(me.key, c)
-		return g
-	}
-	expired := signed(GrantClaims{Devices: []string{me.b64()}, Iat: time.Now().Add(-2 * MaxGrantAge).Unix()})
-	twice := signed(GrantClaims{Devices: []string{me.b64(), me.b64()}})
-	none := signed(GrantClaims{})
-	withoutMe := other.grant(t, "acme", w.ID, 1, dek)
-	withoutMe.token = signed(GrantClaims{Devices: []string{other.b64()}}).token
-	revoke := me.grant(t, "acme", w.ID, 1, dek)
-	revoke.token = me.revoke(t, "acme", w.ID, 1)
-	for _, tc := range []struct {
-		name   string
-		caller Caller
-		dek    DEK
-		g      testGrant
-		want   error
-	}{
-		{"signed by another device", me.caller("acme"), dek, other.grant(t, "acme", w.ID, 1, dek, me), ErrGrantRefused},
-		{"from a device the worker doesn't list", other.caller("acme"), dek, other.grant(t, "acme", w.ID, 1, dek), ErrNoWorker},
-		{"for another account", me.caller("acme"), dek, me.grant(t, "other", w.ID, 1, dek), ErrGrantRefused},
-		{"for another worker", me.caller("acme"), dek, me.grant(t, "acme", "w_0123456789abcdef01234567", 1, dek), ErrGrantRefused},
-		{"of another DEK", me.caller("acme"), otherDEK, me.grant(t, "acme", w.ID, 1, dek), ErrGrantRefused},
-		{"a revoke", me.caller("acme"), dek, revoke, ErrGrantRefused},
-		{"too old", me.caller("acme"), dek, expired, ErrGrantRefused},
-		{"a device twice", me.caller("acme"), dek, twice, ErrGrantRefused},
-		{"no devices", me.caller("acme"), dek, none, ErrGrantRefused},
-		{"not naming its signer", me.caller("acme"), dek, withoutMe, ErrGrantRefused},
-		{"not the next number", me.caller("acme"), dek, me.grant(t, "acme", w.ID, 2, dek), ErrGrantSeq},
-	} {
-		if _, err := tc.g.to(c, tc.caller, w.ID, tc.dek); !errors.Is(err, tc.want) {
-			t.Errorf("%s: %v, want %v", tc.name, err, tc.want)
+	me := newTestDevice(t)
+	w := granted(t, c, me, mustDEK(t))
+	api := httptest.NewServer(c.AccountHandler(me.caller("acme")))
+	defer api.Close()
+	for _, path := range []string{"/v1/workers/" + w.ID + "/grant", "/v1/workers/" + w.ID + "/revoke"} {
+		if code, out := do(t, api, "POST", path, `{"v":2,"grant":"x.y"}`); code != http.StatusGone {
+			t.Errorf("%s: %d %v", path, code, out)
 		}
 	}
-	if got, _ := c.Worker(w.ID); got.WrappedDEK != nil || got.GrantSeq != 0 {
-		t.Fatalf("a refused grant changed the worker: %+v", got)
-	}
-	g := me.grant(t, "acme", w.ID, 1, dek)
-	if _, err := g.to(c, me.caller("acme"), w.ID, dek); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := g.to(c, me.caller("acme"), w.ID, dek); !errors.Is(err, ErrGrantSeq) {
-		t.Errorf("a replayed grant: %v", err)
-	}
-}
-
-func TestReGrantsChangeTheDevicesButNeverTheDEK(t *testing.T) {
-	c, _ := newTestCoordinator(t, "ok", 0)
-	me, admin, stranger := newTestDevice(t), newTestDevice(t), newTestDevice(t)
-	dek := mustDEK(t)
-	w := granted(t, c, me, dek)
-
-	since := map[string]uint64{me.id(): 1}
-	if _, err := me.grantSince(t, "acme", w.ID, 2, mustDEK(t), since).to(c, me.caller("acme"), w.ID, mustDEK(t)); !errors.Is(err, ErrGrantRefused) {
-		t.Errorf("a grant whose signature covers another DEK: %v", err)
-	}
-	other := mustDEK(t)
-	if _, err := me.grantSince(t, "acme", w.ID, 2, other, since).to(c, me.caller("acme"), w.ID, other); !errors.Is(err, ErrDEKChanged) {
-		t.Errorf("a signed grant of another DEK: %v", err)
-	}
-
-	srv := func(d testDevice) *httptest.Server {
-		s := httptest.NewServer(c.AccountHandler(d.caller("acme")))
-		t.Cleanup(s.Close)
-		return s
-	}
-	adminAPI, strangerAPI := srv(admin), srv(stranger)
-	if code, _ := do(t, adminAPI, "GET", "/v1/workers/"+w.ID, ""); code != http.StatusNotFound {
-		t.Errorf("an admin device before it is named: %d", code)
-	}
-
-	// A version 1 body, with no inclusions, is refused.
-	v1, _ := json.Marshal(map[string]any{"v": 1, "dek": dek[:], "grant": me.grantSince(t, "acme", w.ID, 2, dek, since, me, admin).token})
-	if code, _ := do(t, srv(me), "POST", "/v1/workers/"+w.ID+"/grant", string(v1)); code != http.StatusBadRequest {
-		t.Errorf("a version 1 grant: %d", code)
-	}
-	// Name the admin device, which signs its inclusion for grant 2.
-	body := me.grantSince(t, "acme", w.ID, 2, dek, since, me, admin).body(dek)
-	if code, out := do(t, srv(me), "POST", "/v1/workers/"+w.ID+"/grant", body); code != http.StatusOK || out["grantSeq"] != 2.0 || len(out["devices"].([]any)) != 2 || len(out["inclusions"].([]any)) != 2 {
-		t.Fatalf("naming an admin: %d %v", code, out)
-	}
-	code, out := do(t, adminAPI, "GET", "/v1/workers/"+w.ID, "")
-	if code != http.StatusOK {
-		t.Fatalf("the admin's view: %d %v", code, out)
-	}
-	wrap, _ := base64.StdEncoding.DecodeString(out["wrap"].(string))
-	if got, err := OpenWrap(admin.enc.Bytes(), "acme", w.ID, admin.id(), out["dekCommitment"].(string), wrap); err != nil || got != dek {
-		t.Fatalf("the admin's wrap: %v", err)
-	}
-	if code, _ := do(t, adminAPI, "PUT", "/v1/workers/"+w.ID+"/root/instructions.md", "from the admin"); code != http.StatusNoContent {
-		t.Errorf("the admin's write: %d", code)
-	}
-	// Any device of the account that the grant doesn't name, as one
-	// fount-infra could vouch for on its own, sees nothing.
-	if code, _ := do(t, strangerAPI, "GET", "/v1/workers/"+w.ID+"/files/root/instructions.md", ""); code != http.StatusNotFound {
-		t.Errorf("an unnamed device: %d", code)
-	}
-
-	// The admin removes the first device.
-	if code, out := do(t, adminAPI, "POST", "/v1/workers/"+w.ID+"/grant", admin.grantSince(t, "acme", w.ID, 3, dek, map[string]uint64{admin.id(): 2}).body(dek)); code != http.StatusOK {
-		t.Fatalf("the admin's grant: %d %v", code, out)
-	}
-	if code, _ := do(t, srv(me), "GET", "/v1/workers/"+w.ID, ""); code != http.StatusNotFound {
-		t.Errorf("a removed device: %d", code)
-	}
-	if code, out := do(t, srv(me), "GET", "/v1/workers", ""); len(out["workers"].([]any)) != 0 {
-		t.Errorf("a removed device's list: %d %v", code, out)
-	}
-
-	// The list and the DEK outlive a restart.
-	c2, err := New(c.cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, _ := c2.Worker(w.ID)
-	if got.GrantSeq != 3 || !got.authorizes(admin.id()) || got.authorizes(me.id()) {
-		t.Errorf("after a restart: %+v", got)
-	}
-	if data, err := c2.ReadFile(w.ID, prefixRoot+"instructions.md"); err != nil || string(data) != "from the admin" {
-		t.Errorf("after a restart: %q %v", data, err)
-	}
-}
-
-func TestRevokeMovesTheWorkerBack(t *testing.T) {
-	c, cancel := newTestCoordinator(t, "hang", time.Minute)
-	me, admin := newTestDevice(t), newTestDevice(t)
-	dek := mustDEK(t)
-	w := granted(t, c, me, dek)
-	if _, err := me.grantSince(t, "acme", w.ID, 2, dek, map[string]uint64{me.id(): 1}, me, admin).to(c, me.caller("acme"), w.ID, dek); err != nil {
-		t.Fatal(err)
-	}
-	c.PutFile(w.ID, "instructions.md", []byte("be brief"))
-	running, _ := c.Enqueue(w.ID, spec("t1"))
-	queued, _ := c.Enqueue(w.ID, spec("t2"))
-	deadline := time.Now().Add(10 * time.Second)
-	for j, _ := c.Job(running.ID); j.State != JobRunning && time.Now().Before(deadline); j, _ = c.Job(running.ID) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if err := c.Revoke(admin.caller("acme"), w.ID, admin.revoke(t, "acme", w.ID, 3)); !errors.Is(err, ErrBusy) {
-		t.Fatalf("a revoke while a job runs: %v", err)
-	}
-	if err := c.Revoke(newTestDevice(t).caller("acme"), w.ID, admin.revoke(t, "acme", w.ID, 3)); !errors.Is(err, ErrGrantRefused) {
-		t.Errorf("a revoke the caller didn't sign: %v", err)
-	}
-	cancel()
-	c.running.Wait()
-
-	if err := c.Revoke(admin.caller("acme"), w.ID, admin.revoke(t, "acme", w.ID, 2)); !errors.Is(err, ErrGrantSeq) {
-		t.Errorf("a revoke not numbered next: %v", err)
-	}
-	if err := c.Revoke(admin.caller("acme"), w.ID, admin.revoke(t, "acme", w.ID, 3)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.Worker(w.ID); !errors.Is(err, ErrNoWorker) {
-		t.Errorf("the worker after a revoke: %v", err)
-	}
-	for _, id := range []string{running.ID, queued.ID} {
-		if _, err := c.Job(id); !errors.Is(err, ErrNoJob) {
-			t.Errorf("job %s after a revoke: %v", id, err)
-		}
-	}
-	if left, _ := os.ReadDir(filepath.Join(c.cfg.Store.(DirStore).Root, w.ID)); len(left) != 0 {
-		t.Errorf("%d objects left", len(left))
-	}
-	if _, err := New(c.cfg); err != nil {
-		t.Errorf("boot after a revoke: %v", err)
+	if got, _ := c.Worker(w.ID); got.Team != "acme" {
+		t.Errorf("the worker after: %+v", got)
 	}
 }
 
@@ -383,9 +290,12 @@ func TestTheChannelNeverOpensADevAPIWorker(t *testing.T) {
 	if code, _ := do(t, api, "GET", "/v1/workers/"+w.ID, ""); code != http.StatusNotFound {
 		t.Errorf("a dev API worker over the channel: %d", code)
 	}
+	// A list can't take a dev API worker into a team.
+	tt := soloTeam(t, c, "acme", me)
 	dek := mustDEK(t)
-	if code, _ := do(t, api, "POST", "/v1/workers/"+w.ID+"/grant", me.grantBody(t, "acme", w.ID, 1, dek)); code != http.StatusNotFound {
-		t.Errorf("a grant of a dev API worker: %d", code)
+	tt.workers[w.ID] = DEKCommitment(w.ID, dek)
+	if err := tt.push(me, "acme", map[string]DEK{w.ID: dek}); !errors.Is(err, ErrListRefused) {
+		t.Errorf("a list taking a dev API worker: %v", err)
 	}
 	if _, list := do(t, api, "GET", "/v1/workers", ""); len(list["workers"].([]any)) != 1 {
 		t.Errorf("the device's workers: %v", list)
@@ -429,7 +339,7 @@ func TestTheDevAPINeverOpensAChannelWorker(t *testing.T) {
 	}
 }
 
-// Any device of the account that the worker doesn't list, as fount-infra
+// Any device of the account that the team doesn't admit, as fount-infra
 // could vouch for on its own, finds nothing on any route.
 func TestAnUnlistedDeviceFindsNothing(t *testing.T) {
 	c, _ := newTestCoordinator(t, "ok", 0)
@@ -441,37 +351,50 @@ func TestAnUnlistedDeviceFindsNothing(t *testing.T) {
 	waitJob(t, c, j.ID)
 	api := httptest.NewServer(c.AccountHandler(stranger.caller("acme")))
 	defer api.Close()
-	revoke, _ := json.Marshal(map[string]any{"v": 1, "grant": stranger.revoke(t, "acme", w.ID, 2)})
-	for _, r := range []struct{ method, path, body string }{
-		{"GET", "/v1/workers/" + w.ID, ""},
-		{"PUT", "/v1/workers/" + w.ID + "/root/instructions.md", "x"},
-		{"GET", "/v1/workers/" + w.ID + "/files", ""},
-		{"GET", "/v1/workers/" + w.ID + "/files/root/instructions.md", ""},
-		{"POST", "/v1/workers/" + w.ID + "/jobs", `{"threadId":"t2","sessionId":"s2","instruction":"hi","config":{}}`},
-		{"GET", "/v1/jobs/" + j.ID, ""},
-		{"POST", "/v1/workers/" + w.ID + "/grant", stranger.grantBody(t, "acme", w.ID, 2, dek, stranger, me)},
-		{"POST", "/v1/workers/" + w.ID + "/revoke", string(revoke)},
+	tt := newTestTeam(t, c, "acme")
+	tt.set("m_owner", "acme", RoleAdmin, me, stranger)
+	tt.workers[w.ID] = w.DEKCommitment
+	l := tt.list()
+	body, _ := json.Marshal(map[string]any{"v": TeamListVersion, "list": stranger.sign(t, l)})
+	for _, r := range []struct {
+		method, path, body string
+		want               int
+	}{
+		{"GET", "/v1/workers/" + w.ID, "", 404},
+		{"PUT", "/v1/workers/" + w.ID + "/root/instructions.md", "x", 404},
+		{"GET", "/v1/workers/" + w.ID + "/files", "", 404},
+		{"GET", "/v1/workers/" + w.ID + "/files/root/instructions.md", "", 404},
+		{"POST", "/v1/workers/" + w.ID + "/jobs", `{"threadId":"t2","sessionId":"s2","instruction":"hi","config":{}}`, 404},
+		{"GET", "/v1/jobs/" + j.ID, "", 404},
+		{"GET", "/v1/teams/acme/log", "", 404},
+		// Its own list adding itself: it isn't an admin's device.
+		{"POST", "/v1/teams/acme/log", string(body), 403},
 	} {
-		if code, out := do(t, api, r.method, r.path, r.body); code != http.StatusNotFound {
+		if code, out := do(t, api, r.method, r.path, r.body); code != r.want {
 			t.Errorf("%s %s: %d %v", r.method, r.path, code, out)
 		}
 	}
 	if _, list := do(t, api, "GET", "/v1/workers", ""); len(list["workers"].([]any)) != 0 {
 		t.Errorf("the stranger's workers: %v", list)
 	}
-	if got, _ := c.Worker(w.ID); got.GrantSeq != 1 || len(got.Devices) != 1 {
+	if got, _ := c.Worker(w.ID); len(got.Devices) != 1 {
 		t.Errorf("the worker after: %+v", got)
 	}
 }
 
-// A request that passed the API's check but waited for the tree while a
-// grant removed its device fails.
-func TestARequestRacingARegrantThatRemovesItsDeviceFails(t *testing.T) {
+// A request that passed the API's check but waited for the tree while a list
+// removed its device fails.
+func TestARequestRacingAListThatRemovesItsDeviceFails(t *testing.T) {
 	c, _ := newTestCoordinator(t, "ok", 0)
 	me, admin := newTestDevice(t), newTestDevice(t)
 	dek := mustDEK(t)
-	w := granted(t, c, me, dek)
-	if _, err := me.grantSince(t, "acme", w.ID, 2, dek, map[string]uint64{me.id(): 1}, me, admin).to(c, me.caller("acme"), w.ID, dek); err != nil {
+	tt := soloTeam(t, c, "acme", me)
+	tt.set("m_admin", "acme2", RoleAdmin, admin)
+	if err := tt.push(me, "acme", nil); err != nil {
+		t.Fatal(err)
+	}
+	w, err := tt.addWorker(me, "acme", dek)
+	if err != nil {
 		t.Fatal(err)
 	}
 	c.PutFile(w.ID, "instructions.md", []byte("be brief"))
@@ -484,23 +407,32 @@ func TestARequestRacingARegrantThatRemovesItsDeviceFails(t *testing.T) {
 	}()
 	go func() { write <- c.putFile(me.id(), w.ID, "instructions.md", []byte("from a removed device")) }()
 	time.Sleep(50 * time.Millisecond)
-	// The admin's grant, removing me, lands first, as if it had taken the
+	// The admin's list, removing me, lands first, as if it had taken the
 	// lock just before them.
-	c.mu.Lock()
-	c.state.Workers[w.ID].Devices = c.state.Workers[w.ID].Devices[1:]
-	c.mu.Unlock()
+	tt.drop("m_owner")
+	l := tt.list()
+	appended := make(chan error, 1)
+	go func() { appended <- tt.pushList(admin.caller("acme2"), admin.sign(t, l), l, nil) }()
+	time.Sleep(50 * time.Millisecond)
 	lock.Unlock()
-	if err := <-read; !errors.Is(err, ErrNoWorker) {
+	if err := <-read; err != nil && !errors.Is(err, ErrNoWorker) {
 		t.Errorf("the read: %v", err)
 	}
-	if err := <-write; !errors.Is(err, ErrNoWorker) {
+	if err := <-appended; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-write; err != nil && !errors.Is(err, ErrNoWorker) {
 		t.Errorf("the write: %v", err)
+	}
+	// Whichever got the lock first, nothing of mine passes after the list.
+	if _, err := c.readFile(me.id(), w.ID, prefixRoot+"instructions.md"); !errors.Is(err, ErrNoWorker) {
+		t.Errorf("a read after: %v", err)
+	}
+	if err := c.putFile(me.id(), w.ID, "instructions.md", []byte("again")); !errors.Is(err, ErrNoWorker) {
+		t.Errorf("a write after: %v", err)
 	}
 	if _, err := c.enqueue(me.id(), w.ID, spec("t1")); !errors.Is(err, ErrNoWorker) {
 		t.Errorf("a job: %v", err)
-	}
-	if data, _ := c.ReadFile(w.ID, prefixRoot+"instructions.md"); string(data) != "be brief" {
-		t.Errorf("the file: %q", data)
 	}
 }
 
@@ -538,17 +470,19 @@ func TestUngrantedWorkersAreCappedAndExpire(t *testing.T) {
 	if _, err := c.CreateWorkerFor(last.caller("other")); err != nil {
 		t.Errorf("another account: %v", err)
 	}
-	// A granted worker no longer counts.
+	// A worker in a team no longer counts.
 	dek := mustDEK(t)
 	me := devices[0]
-	if _, err := me.grant(t, "acme", first.ID, 1, dek).to(c, me.caller("acme"), first.ID, dek); err != nil {
+	tt := soloTeam(t, c, "acme", me)
+	tt.workers[first.ID] = DEKCommitment(first.ID, dek)
+	if err := tt.push(me, "acme", map[string]DEK{first.ID: dek}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := c.CreateWorkerFor(me.caller("acme")); err != nil {
-		t.Errorf("after a grant: %v", err)
+		t.Errorf("after a list: %v", err)
 	}
 
-	// Past UngrantedTTL the rest go, and can't be granted.
+	// Past UngrantedTTL the rest go, and can't join a team.
 	c.mu.Lock()
 	var stale string
 	for id, w := range c.state.Workers {
@@ -558,9 +492,11 @@ func TestUngrantedWorkersAreCappedAndExpire(t *testing.T) {
 		}
 	}
 	c.mu.Unlock()
-	if _, err := me.grant(t, "acme", stale, 1, dek).to(c, me.caller("acme"), stale, dek); !errors.Is(err, ErrNoWorker) {
-		t.Errorf("granting an expired worker: %v", err)
+	tt.workers[stale] = DEKCommitment(stale, dek)
+	if err := tt.push(me, "acme", map[string]DEK{stale: dek}); !errors.Is(err, ErrListRefused) {
+		t.Errorf("adding an expired worker: %v", err)
 	}
+	delete(tt.workers, stale)
 	c.ExpireUngranted()
 	c2, err := New(c.cfg)
 	if err != nil {
@@ -574,6 +510,6 @@ func TestUngrantedWorkersAreCappedAndExpire(t *testing.T) {
 		}
 	}
 	if _, err := c2.Worker(first.ID); err != nil {
-		t.Errorf("the granted worker: %v", err)
+		t.Errorf("the team's worker: %v", err)
 	}
 }
