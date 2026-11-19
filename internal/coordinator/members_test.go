@@ -511,6 +511,7 @@ func TestEveryOperationHasARole(t *testing.T) {
 	}
 	kinds := opKindsIn(t, "threadops.go")
 	kinds = append(kinds, opKindsIn(t, "mailops.go")...)
+	kinds = append(kinds, opKindsIn(t, "question.go")...)
 	for k := range mailWorkerOps {
 		kinds = append(kinds, k)
 	}
@@ -520,7 +521,7 @@ func TestEveryOperationHasARole(t *testing.T) {
 	for k := range unsupportedWorkerOps {
 		kinds = append(kinds, k)
 	}
-	if !slices.Contains(kinds, "sendNote") || !slices.Contains(kinds, "startThread") || !slices.Contains(kinds, "runHeldMail") {
+	if !slices.Contains(kinds, "sendNote") || !slices.Contains(kinds, "startThread") || !slices.Contains(kinds, "runHeldMail") || !slices.Contains(kinds, "answerQuestion") {
 		t.Fatalf("the walk found %v", kinds)
 	}
 	for _, k := range kinds {

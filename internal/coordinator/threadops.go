@@ -23,9 +23,9 @@ import (
 // channel's device, never a field of the body.
 //
 // Built: startThread (a worker operation), sendNote, cancelJob, and
-// acceptProposal and discardProposal, Cloud's own, and the mail operations
+// acceptProposal and discardProposal, Cloud's own, the mail operations
 // (mailops.go): runHeldMail and addRequester on a thread, and the worker's
-// mail settings. Every other
+// mail settings, and the questions (question.go). Every other
 // operation Desktop knows is ErrUnsupported, by name, so a client can tell
 // "not here yet" from a bad request.
 
@@ -114,9 +114,6 @@ func (r refusal) Error() string { return string(r.code) }
 // unsupportedThreadOps are the thread operations Desktop's Op has that Cloud
 // doesn't apply yet, and what each waits on.
 var unsupportedThreadOps = map[string]string{
-	"answerQuestion":     "questions: the runner reporting an ask, and resuming its wait",
-	"dismissQuestion":    "questions: the runner reporting an ask, and resuming its wait",
-	"forwardQuestion":    "questions and sending mail from Cloud",
 	"approveDraft":       "drafts from a job's final answer, and sending mail from Cloud",
 	"discardDraft":       "drafts from a job's final answer",
 	"keepFileAsCopy":     "drafts from a job's final answer",
@@ -206,8 +203,11 @@ func parseThreadOp(env opEnvelope, threadID string) (args any, hash string, err 
 		a.accept = env.Kind == "acceptProposal"
 		args, err = a, cmp.Or(checkID("job", a.JobID), checkPath(a.Path))
 	default:
-		var mailOp bool
-		if args, mailOp, err = parseMailThreadOp(env); mailOp {
+		var known bool
+		if args, known, err = parseMailThreadOp(env); known {
+			break
+		}
+		if args, known, err = parseQuestionOp(env); known {
 			break
 		}
 		if needs, ok := unsupportedThreadOps[env.Kind]; ok {
@@ -411,6 +411,8 @@ func (c *Coordinator) applyThreadOp(device, workerID, threadID string, env opEnv
 			fx, err = c.runHeldMail(t, th, a, rev)
 		case mailRequesterArgs:
 			err = c.addRequesterFromMail(t, th, a, rev, now)
+		case questionArgs:
+			ids, fx, err = c.applyQuestion(t, th, device, a, rev, now)
 		}
 		var r refusal
 		if errors.As(err, &r) {
@@ -435,7 +437,9 @@ func (c *Coordinator) applyThreadOp(device, workerID, threadID string, env opEnv
 // sendNote is §5.1: a note entry and a job on the thread with the note as its
 // instruction. Like a reply, a note takes over open work: a queued or running
 // job is cancelled (job_replaced) and the note's job starts after it stops.
-// A Cloud thread has no questions yet, so no note is held.
+// A note on a thread whose job waits on a question closes the question: the
+// note's job takes the session on, so the wait is never resumed. (Desktop
+// holds the note until the question is answered.)
 func (c *Coordinator) sendNote(th *threadRecord, device string, a noteArgs, rev uint64, now time.Time) ([]string, effects, error) {
 	text, err := noteText(a.Text)
 	if err != nil {
@@ -461,6 +465,7 @@ func (c *Coordinator) sendNote(th *threadRecord, device string, a noteArgs, rev 
 			return nil, effects{}, err
 		}
 	}
+	th.closeQuestions(rev)
 	th.Jobs = append(th.Jobs, threadJob{ID: jobID, State: JobQueued, Rev: rev})
 	return []string{note}, effects{cancel: open, jobID: jobID, spec: spec}, nil
 }

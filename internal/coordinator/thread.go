@@ -132,6 +132,9 @@ type threadEntry struct {
 	// that asked it in JobID.
 	WaitID string `json:"waitId,omitempty"`
 	Detail string `json:"detail,omitempty"`
+	// Once settled, how (question.go); Forward once forwarded.
+	Answer  *questionAnswer  `json:"answer,omitempty"`
+	Forward *questionForward `json:"forward,omitempty"`
 	// A received email's.
 	Mail *mailEntry `json:"mail,omitempty"`
 }
@@ -493,15 +496,6 @@ type turnView struct {
 	Live  bool             `json:"live,omitempty"`
 }
 
-// questionView is Desktop's Question entry: what a job ended waiting on.
-type questionView struct {
-	entryHead
-	WaitID   string `json:"waitId,omitempty"`
-	State    string `json:"state"`
-	Question string `json:"question"`
-	Detail   string `json:"detail,omitempty"`
-}
-
 type attachmentView struct {
 	Name string `json:"name"`
 	Note string `json:"note,omitempty"`
@@ -596,7 +590,7 @@ func (th *threadRecord) display(since uint64) []DisplayEntry {
 			out = append(out, eventView{entryHead: head, Code: e.Code, Text: eventText(e.Code, e.Args)})
 		case entryQuestion:
 			head.Kind = "question"
-			out = append(out, questionView{entryHead: head, WaitID: e.WaitID, State: e.State, Question: e.Text, Detail: e.Detail})
+			out = append(out, questionIn(head, e))
 		case entryMail:
 			out = append(out, mailIn(head, th.ID, e))
 		}

@@ -30,6 +30,9 @@ type JobSpec struct {
 	// runner tells the turn where the email is and that it's data, and starts
 	// it once each attachment has been indexed or has failed to.
 	Message string `json:"message,omitempty"`
+	// Resume makes the job continue the session's saved wait with an
+	// answer (question.go), with no instruction of its own.
+	Resume *ResumeSpec `json:"resume,omitempty"`
 }
 
 const (
@@ -67,7 +70,14 @@ func (s JobSpec) check() error {
 	if err := checkID("session", s.SessionID); err != nil {
 		return err
 	}
-	if s.Instruction == "" || len(s.Instruction) > maxInstruction {
+	if s.Resume != nil {
+		if s.Instruction != "" || s.Message != "" {
+			return fmt.Errorf("%w: a resume has no instruction or message of its own", ErrInvalid)
+		}
+		if err := s.Resume.check(); err != nil {
+			return err
+		}
+	} else if s.Instruction == "" || len(s.Instruction) > maxInstruction {
 		return fmt.Errorf("%w: instruction must be 1 to %d bytes", ErrInvalid, maxInstruction)
 	}
 	if len(s.Config) == 0 || s.Config[0] != '{' || len(s.Config) > maxConfigBytes {
@@ -93,8 +103,11 @@ type runnerJob struct {
 	Config    json.RawMessage `json:"config"`
 	Script    json.RawMessage `json:"script,omitempty"`
 	Message   string          `json:"message,omitempty"`
+	// Resume is the JobSpec's: fount-runner answers the session's saved
+	// wait and runs the turn it queues, with an empty prompt.
+	Resume *ResumeSpec `json:"resume,omitempty"`
 }
 
 func (s JobSpec) runnerJob() ([]byte, error) {
-	return json.Marshal(runnerJob{SessionID: s.SessionID, Prompt: s.Instruction, Config: s.Config, Script: s.Script, Message: s.Message})
+	return json.Marshal(runnerJob{SessionID: s.SessionID, Prompt: s.Instruction, Config: s.Config, Script: s.Script, Message: s.Message, Resume: s.Resume})
 }
