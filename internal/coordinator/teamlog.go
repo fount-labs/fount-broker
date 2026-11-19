@@ -100,7 +100,7 @@ func (c *Coordinator) teamState(id string) (*teamState, error) {
 // last list and the records after it. The log holds only entries that were
 // checked when they were appended, so a failure here is a damaged volume.
 func reduceTeam(team, aud string, log []TeamEntry) (*teamState, error) {
-	st := &teamState{usedInvites: map[string]bool{}, byID: map[string]*Member{}, byDevice: map[string]*Member{}, workers: map[string]string{}}
+	st := &teamState{usedInvites: map[string]bool{}, passkeyCounts: map[string]uint32{}, byID: map[string]*Member{}, byDevice: map[string]*Member{}, workers: map[string]string{}}
 	head := ""
 	for i, e := range log {
 		if e.Seq != uint64(i+1) {
@@ -187,8 +187,12 @@ func (s *teamState) applyRecord(r TeamRecord, team, aud string) error {
 			return err
 		}
 	case RecordPasskeyJoin:
-		if err := checkPasskeyJoinProof(s, aud, team, r, m); err != nil {
+		count, err := checkPasskeyJoinProof(s, aud, team, r, m)
+		if err != nil {
 			return err
+		}
+		if count != 0 {
+			s.passkeyCounts[m.Rec.Pub] = count
 		}
 	}
 	if r.Kind == RecordInvite {

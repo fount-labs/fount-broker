@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -221,7 +222,7 @@ func (c *Coordinator) PasskeyJoin(caller Caller, team string, req PasskeyJoinReq
 		}
 		r := rec
 		r.Prev = st.head
-		if err := checkPasskeyJoinProof(st, c.cfg.Audience, team, r, m); err != nil {
+		if _, err := checkPasskeyJoinProof(st, c.cfg.Audience, team, r, m); err != nil {
 			return fmt.Errorf("%w: %v", ErrListRefused, err)
 		}
 		return nil
@@ -245,34 +246,44 @@ func (c *Coordinator) PasskeyJoin(caller Caller, team string, req PasskeyJoinReq
 // against the state before it, and reduceTeam on replay: the assertion is by
 // the passkey the list names for the member, over PasskeyJoinChallenge for
 // the record's prev and the admitted device's keys.
-func checkPasskeyJoinProof(st *teamState, aud, team string, r TeamRecord, m *Member) error {
+func checkPasskeyJoinProof(st *teamState, aud, team string, r TeamRecord, m *Member) (uint32, error) {
 	var p PasskeyJoinProof
 	if err := decodeStrictJSON(r.Proof, &p); err != nil {
-		return fmt.Errorf("a passkey-join record's proof: %v", err)
+		return 0, fmt.Errorf("a passkey-join record's proof: %v", err)
 	}
 	if m.Rec == nil || p.Cred != m.Rec.Cred {
-		return errors.New("a passkey-join record's passkey isn't the one the list names for its member")
+		return 0, errors.New("a passkey-join record's passkey isn't the one the list names for its member")
 	}
 	pub, err := b64.DecodeString(m.Rec.Pub)
 	if err != nil {
-		return errors.New("the member's passkey is malformed")
+		return 0, errors.New("the member's passkey is malformed")
 	}
 	d, err := parseTeamInclusion(r.Device, aud, team, m.Account)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	nonce, nerr := b64.DecodeString(p.Nonce)
 	auth, aerr := b64.DecodeString(p.AuthenticatorData)
 	client, cerr := b64.DecodeString(p.ClientDataJSON)
 	sig, serr := b64.DecodeString(p.Signature)
 	if nerr != nil || aerr != nil || cerr != nil || serr != nil || len(nonce) != passkeyNonceSize {
-		return errors.New("a passkey-join record's proof is malformed")
+		return 0, errors.New("a passkey-join record's proof is malformed")
 	}
 	challenge, err := PasskeyJoinChallenge(aud, team, m.ID, r.Prev, nonce, d.Key, d.Enc)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return verifyAssertion(pub, passkeyAssertion{AuthenticatorData: auth, ClientDataJSON: client, Signature: sig}, challenge, PasskeyRPID, PasskeyOrigins)
+	if err := verifyAssertion(pub, passkeyAssertion{AuthenticatorData: auth, ClientDataJSON: client, Signature: sig}, challenge, PasskeyRPID, PasskeyOrigins); err != nil {
+		return 0, err
+	}
+	// The sign count after the flags: 0 throughout from a passkey that keeps
+	// none, as synced ones do; once one counts, it must rise, or the passkey
+	// was copied.
+	count, prior := binary.BigEndian.Uint32(auth[33:37]), st.passkeyCounts[m.Rec.Pub]
+	if (count != 0 || prior != 0) && count <= prior {
+		return 0, errors.New("the passkey's sign count didn't rise: it may have been copied")
+	}
+	return count, nil
 }
 
 // passkeyAssertion is a passkey get() result.
@@ -287,8 +298,8 @@ type passkeyAssertion struct {
 // authenticatorData || SHA-256(clientDataJSON); authenticatorData is for
 // rpID, with the user present and verified; clientDataJSON is a webauthn.get
 // over challenge from one of origins, not cross-origin. The client data is
-// read as a JSON object without escapes, by exact key, the last of a repeated
-// key winning, as Desktop's Rust copy (account/team_invite.rs) reads it.
+// read by exact key, the last of a repeated key winning, as Desktop's Rust
+// copy (account/passkey_join.rs) reads it.
 func verifyAssertion(pubSEC1 []byte, a passkeyAssertion, challenge []byte, rpID string, origins []string) error {
 	if len(pubSEC1) != p256PublicSize || pubSEC1[0] != 4 {
 		return errors.New("the passkey isn't a P-256 point")
@@ -308,11 +319,17 @@ func verifyAssertion(pubSEC1 []byte, a passkeyAssertion, challenge []byte, rpID 
 	if flags := a.AuthenticatorData[32]; flags&userPresent == 0 || flags&userVerified == 0 {
 		return errors.New("the assertion has no user presence and verification")
 	}
-	// No escapes and valid UTF-8, so every JSON reader reads the same keys
-	// and strings: a platform's client data has neither.
+	// One flat object of strings, booleans and nulls, valid UTF-8 with no
+	// escapes, so every JSON reader reads the same keys and values: a
+	// platform's client data is that.
 	var cd map[string]json.RawMessage
 	if !utf8.Valid(a.ClientDataJSON) || bytes.IndexByte(a.ClientDataJSON, '\\') >= 0 || json.Unmarshal(a.ClientDataJSON, &cd) != nil || cd == nil {
 		return errors.New("the client data doesn't parse")
+	}
+	for _, v := range cd {
+		if v[0] != '"' && v[0] != 't' && v[0] != 'f' && v[0] != 'n' {
+			return errors.New("the client data doesn't parse")
+		}
 	}
 	str := func(key string) (string, bool) {
 		raw, ok := cd[key]

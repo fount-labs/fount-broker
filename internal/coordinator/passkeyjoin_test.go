@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -45,6 +46,7 @@ func (p testPasskey) rec(t *testing.T) *ListRec {
 type ceremony struct {
 	rpID, origin string
 	flags        byte
+	count        uint32
 	extra        map[string]any
 }
 
@@ -66,7 +68,7 @@ func (p testPasskey) assertRaw(t *testing.T, challenge []byte, o ceremony) passk
 	t.Helper()
 	o = o.or()
 	rp := sha256.Sum256([]byte(o.rpID))
-	auth := append(rp[:], o.flags, 0, 0, 0, 1)
+	auth := binary.BigEndian.AppendUint32(append(rp[:], o.flags), o.count)
 	cd := map[string]any{"type": "webauthn.get", "challenge": base64.RawURLEncoding.EncodeToString(challenge), "origin": o.origin}
 	for k, v := range o.extra {
 		cd[k] = v
@@ -234,7 +236,7 @@ func TestAPasskeyJoinIsForOneDeviceAndOneHead(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := checkPasskeyJoinProof(prior, testAudience, "acme", forged, prior.byID["m_reviewer"]); err == nil {
+		if _, err := checkPasskeyJoinProof(prior, testAudience, "acme", forged, prior.byID["m_reviewer"]); err == nil {
 			t.Errorf("%s: the proof replayed", name)
 		}
 	}
@@ -255,6 +257,8 @@ func TestAPasskeyJoinNeedsTheListedPasskeyFromFount(t *testing.T) {
 		"another relying party":           {r.passkey, ceremony{rpID: "evil.example"}},
 		"no user verification":            {r.passkey, ceremony{flags: 0x01}},
 		"an escaped client data":          {r.passkey, ceremony{extra: map[string]any{"note": "a\"b"}}},
+		"a nested client data":            {r.passkey, ceremony{extra: map[string]any{"tokenBinding": map[string]any{"status": "present"}}}},
+		"a number in the client data":     {r.passkey, ceremony{extra: map[string]any{"n": 1}}},
 	} {
 		ch, raw := r.challenge(t, r.newDev)
 		if _, err := r.f.c.PasskeyJoin(r.newDev.caller("maria"), "acme", c.p.request(t, ch, raw, r.newDev, "acme", "maria", c.o)); !errors.Is(err, ErrListRefused) {
@@ -301,12 +305,12 @@ func TestARevokedMembersPasskeyAddsNothing(t *testing.T) {
 	// The same proof, checked against a state whose list dropped the passkey.
 	proof, _ := json.Marshal(PasskeyJoinProof{Nonce: req.Nonce, Cred: req.Cred, AuthenticatorData: req.AuthenticatorData, ClientDataJSON: req.ClientDataJSON, Signature: req.Signature})
 	rec := TeamRecord{Kind: RecordPasskeyJoin, Seq: prior.seq + 1, Prev: prior.head, Member: "m_reviewer", Account: "maria", Device: req.Device, Proof: proof}
-	if err := checkPasskeyJoinProof(prior, testAudience, "acme", rec, prior.byID["m_reviewer"]); err != nil {
+	if _, err := checkPasskeyJoinProof(prior, testAudience, "acme", rec, prior.byID["m_reviewer"]); err != nil {
 		t.Fatalf("the proof against the state it was made for: %v", err)
 	}
 	revoked := *prior.byID["m_reviewer"]
 	revoked.Rec = nil
-	if err := checkPasskeyJoinProof(prior, testAudience, "acme", rec, &revoked); err == nil {
+	if _, err := checkPasskeyJoinProof(prior, testAudience, "acme", rec, &revoked); err == nil {
 		t.Fatal("the proof checked against a member with no passkey")
 	}
 
@@ -326,6 +330,32 @@ func TestARevokedMembersPasskeyAddsNothing(t *testing.T) {
 	}
 	if _, err := r.f.c.StartPasskeyJoin(r.newDev.caller("maria"), "acme", r.newDev.pub(), r.newDev.enc.PublicKey().Bytes()); !errors.Is(err, ErrNoTeam) {
 		t.Fatalf("a removed member's challenge: %v", err)
+	}
+}
+
+func TestAPasskeysSignCountMustRise(t *testing.T) {
+	r := newPasskeyRig(t)
+	if _, err := r.join(t, r.newDev, ceremony{count: 5}); err != nil {
+		t.Fatal(err)
+	}
+	for _, count := range []uint32{5, 4, 0} {
+		if _, err := r.join(t, newTestDevice(t), ceremony{count: count}); err == nil {
+			t.Fatalf("count %d after 5 admitted a device", count)
+		}
+	}
+	if _, err := r.join(t, newTestDevice(t), ceremony{count: 6}); err != nil {
+		t.Fatalf("count 6: %v", err)
+	}
+	if _, err := reduceTeam("acme", testAudience, r.f.team(t).Log); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+
+	// A synced passkey keeps no count: 0 every time.
+	r = newPasskeyRig(t)
+	for range 2 {
+		if _, err := r.join(t, newTestDevice(t), ceremony{}); err != nil {
+			t.Fatalf("count 0: %v", err)
+		}
 	}
 }
 

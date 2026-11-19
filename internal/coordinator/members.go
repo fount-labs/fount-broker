@@ -160,6 +160,11 @@ type teamState struct {
 	// usedInvites are the invites a record has taken, which no list may open
 	// again.
 	usedInvites map[string]bool
+	// passkeyCounts are each listed passkey's (by public key) last nonzero
+	// sign count a passkey-join record carried: a later one must carry a
+	// higher count, so a copied authenticator shows. A passkey that keeps no
+	// count, as synced ones, carries 0 throughout.
+	passkeyCounts map[string]uint32
 }
 
 // device is a device the state admits, and its member.
