@@ -807,9 +807,17 @@ func (c *Coordinator) place(t *Tree, workerID string, mb *Mailbox, s *MailSettin
 	}
 	rev := th.Revision + 1
 	if spec != nil && verdict == verdictThreadReply {
-		// Answer by email: lane E's answerByMail(th, sender, text,
-		// mailJobID(msg.ID), rev, now) goes here; a spec it returns replaces
-		// spec.
+		// Answer by email (question.go): a reply to th's waiting question
+		// resumes its job with the email as the answer, worded as Desktop's
+		// reply_arrived words it, instead of starting a turn of its own.
+		text := strings.TrimSpace(spec.Instruction + "\n\n(They answered by email: `" + spec.Message + "/`.)")
+		answer, err := c.answerByMail(th, sender, text, mailJobID(msg.ID), rev, now)
+		if err != nil {
+			return act, err
+		}
+		if answer != nil {
+			spec = answer
+		}
 	}
 	if err := writeMailFolder(t, mailFolderPath(th.ID, folder, entry.Held == heldWaiting), msg, in); err != nil {
 		return act, err

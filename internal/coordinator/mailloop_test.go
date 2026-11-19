@@ -256,6 +256,8 @@ type mailRunner struct {
 	seen [][]string
 	// events is what each agent job prints: a turn summary, say.
 	events []byte
+	// resumes is each agent job's resume, nil for a fresh turn.
+	resumes []*ResumeSpec
 }
 
 func (r *mailRunner) Run(_ context.Context, _, _ string, job JobDirs) (RunResult, error) {
@@ -271,6 +273,7 @@ func (r *mailRunner) Run(_ context.Context, _, _ string, job JobDirs) (RunResult
 	r.mu.Lock()
 	r.prompts = append(r.prompts, rj.Prompt)
 	r.messages = append(r.messages, rj.Message)
+	r.resumes = append(r.resumes, rj.Resume)
 	var seen []string
 	filepath.WalkDir(job.Workspace, func(p string, d os.DirEntry, err error) error {
 		if err == nil && !d.IsDir() {
@@ -766,6 +769,50 @@ func TestAReplyTokenPicksTheThread(t *testing.T) {
 	}
 	if a := r.ledger(w.ID).Acted[forged]; a.Thread == th.ID || a.Outcome != outcomeJob {
 		t.Fatalf("a forged token starts its own thread: %+v", a)
+	}
+}
+
+func TestAnEmailedAnswerResumesTheWaitingJob(t *testing.T) {
+	r := newMailRig(t, MailConfig{})
+	r.runner.events = eventsWith(goodSummary)
+	w, mb := r.worker()
+	first := r.edge.deliver(mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Q3"})
+	r.pass()
+	waitJob(t, r.c, mailJobID(first))
+	th := r.waitStatus(w.ID, onlyThread(t, r.threads(w.ID)).ID, StatusWaiting)
+	keys, _ := mb.keys()
+	token, err := mail.MintReplyToken(keys, th.Handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply := r.edge.deliver(mb, email{from: "dana@example.com", to: testWorkerAddr, recipient: "ap+" + token + "@fountbox.com", subject: "Re: Q3"})
+	r.pass()
+	waitJob(t, r.c, mailJobID(reply))
+
+	r.runner.mu.Lock()
+	resumes, prompts, messages := r.runner.resumes, r.runner.prompts, r.runner.messages
+	r.runner.mu.Unlock()
+	if len(resumes) != 2 || resumes[0] != nil {
+		t.Fatalf("%d agent jobs, resumes %+v", len(resumes), resumes)
+	}
+	rs := resumes[1]
+	if rs == nil || rs.WaitID != "call_7" || !strings.Contains(string(rs.Answer), "They answered by email") || prompts[1] != "" || messages[1] != "" {
+		t.Fatalf("the reply ran as a fresh turn: resume %+v, prompt %q, message %q", rs, prompts[1], messages[1])
+	}
+	th, _ = r.c.thread(anyDevice, w.ID, th.ID)
+	// The first job's question, answered; the resumed job asked again.
+	var q *threadEntry
+	for i := range th.Entries {
+		if th.Entries[i].Kind == entryQuestion {
+			q = &th.Entries[i]
+			break
+		}
+	}
+	if q == nil || q.State != questionAnswered || q.Answer == nil || q.Answer.Via != viaEmail || q.Answer.Requester != "dana@example.com" || q.Answer.JobID != mailJobID(reply) {
+		t.Fatalf("the question %+v", q)
+	}
+	if len(th.Jobs) != 2 || th.Jobs[1].ID != mailJobID(reply) {
+		t.Fatalf("jobs %+v", th.Jobs)
 	}
 }
 
