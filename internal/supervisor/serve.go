@@ -1,10 +1,12 @@
 package supervisor
 
 import (
+	"archive/tar"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"os"
@@ -132,11 +134,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	// runner's would, so its transcript isn't lost. An agent job's index never
 	// does.
 	back := jobwire.Chunks{W: w, Kind: job.Mode.Returns()}
-	dir := dirs.Workspace
-	if job.Mode == jobwire.ModeIndex {
-		dir = dirs.Index
-	}
-	if err := filetree.Pack(dir, back, s.Limits); err != nil {
+	if err := s.sendBack(dirs, back); err != nil {
 		fail(fmt.Errorf("send back the job's %s: %w", back.Kind, err))
 		return
 	}
@@ -150,6 +148,41 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	jobwire.Send(w, jobwire.Reply{Kind: jobwire.KindEnd}, nil)
 }
 
+// sendBack packs the tree the job's mode returns: an agent job's workspace,
+// the index step's index, or intake's out/ folder.
+func (s *Server) sendBack(dirs Job, back io.Writer) error {
+	switch dirs.Mode {
+	case jobwire.ModeIndex:
+		return filetree.Pack(dirs.Index, back, s.Limits)
+	case jobwire.ModeIntake:
+		// The sandbox is gone, so out/ can't change under this check. A link
+		// there would have Pack read the supervisor's own files.
+		out := filepath.Join(dirs.Workspace, IntakeOut)
+		info, err := os.Lstat(out)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			// Intake that failed before writing anything hands back an empty
+			// tree; its events say why.
+			return tar.NewWriter(back).Close()
+		case err != nil:
+			return err
+		case !info.IsDir():
+			return fmt.Errorf("intake's %s isn't a folder", IntakeOut)
+		}
+		return filetree.Pack(out, back, s.Limits)
+	default:
+		return filetree.Pack(dirs.Workspace, back, s.Limits)
+	}
+}
+
+// IntakeOut is the folder intake writes in its workspace, and the only one
+// that comes back.
+const IntakeOut = "out"
+
+// intakeInputs are the files an intake job's workspace may hold, as the
+// coordinator lays them out. message.eml is required.
+var intakeInputs = map[string]bool{"message.eml": true, "check.json": true, "request.json": true, "instructions.md": true}
+
 // prepare makes the job's folders from its first frame and the streams after
 // it.
 func (s *Server) prepare(conn net.Conn, job jobwire.Job, jobFile []byte) (Job, error) {
@@ -157,16 +190,16 @@ func (s *Server) prepare(conn net.Conn, job jobwire.Job, jobFile []byte) (Job, e
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		return Job{}, fmt.Errorf("job folder: %w", err)
 	}
-	dirs := Job{
-		ID:        job.ID,
-		Mode:      job.Mode,
-		Workspace: filepath.Join(dir, "work"),
-		Data:      filepath.Join(dir, "data"),
-		Index:     filepath.Join(dir, "index"),
-		JobFile:   filepath.Join(dir, "job.json"),
-		SocketDir: filepath.Join(s.Sockets, job.ID),
+	dirs := Job{ID: job.ID, Mode: job.Mode, Workspace: filepath.Join(dir, "work")}
+	made := []string{dirs.Workspace}
+	if job.Mode != jobwire.ModeIntake {
+		dirs.Data = filepath.Join(dir, "data")
+		dirs.Index = filepath.Join(dir, "index")
+		dirs.JobFile = filepath.Join(dir, "job.json")
+		dirs.SocketDir = filepath.Join(s.Sockets, job.ID)
+		made = append(made, dirs.Data, dirs.Index)
 	}
-	for _, d := range []string{dirs.Workspace, dirs.Data, dirs.Index} {
+	for _, d := range made {
 		if err := os.Mkdir(d, 0o755); err != nil {
 			return Job{}, err
 		}
@@ -176,25 +209,51 @@ func (s *Server) prepare(conn net.Conn, job jobwire.Job, jobFile []byte) (Job, e
 			}
 		}
 	}
-	if err := os.WriteFile(dirs.JobFile, jobFile, 0o644); err != nil {
-		return Job{}, err
+	if dirs.JobFile != "" {
+		if err := os.WriteFile(dirs.JobFile, jobFile, 0o644); err != nil {
+			return Job{}, err
+		}
 	}
 	conn.SetReadDeadline(time.Now().Add(uploadTimeout))
-	for _, t := range []struct {
-		dir  string
-		kind jobwire.Kind
-	}{{dirs.Workspace, jobwire.KindWorkspace}, {dirs.Index, jobwire.KindIndex}} {
-		in := &jobwire.Stream{R: conn, Kind: t.kind}
-		if _, err := filetree.Extract(in, t.dir, s.Limits, s.Owner); err != nil {
-			return Job{}, fmt.Errorf("the job's %s: %w", t.kind, err)
+	for _, kind := range job.Mode.Sends() {
+		target := dirs.Workspace
+		if kind == jobwire.KindIndex {
+			target = dirs.Index
+		}
+		in := &jobwire.Stream{R: conn, Kind: kind}
+		if _, err := filetree.Extract(in, target, s.Limits, s.Owner); err != nil {
+			return Job{}, fmt.Errorf("the job's %s: %w", kind, err)
 		}
 		if err := in.Drain(); err != nil {
-			return Job{}, fmt.Errorf("the job's %s: %w", t.kind, err)
+			return Job{}, fmt.Errorf("the job's %s: %w", kind, err)
 		}
 	}
 	conn.SetReadDeadline(time.Time{})
+	if job.Mode == jobwire.ModeIntake {
+		return dirs, checkIntakeInput(dirs.Workspace)
+	}
 	if info, err := os.Lstat(dirs.SocketDir); err != nil || !info.IsDir() {
 		return Job{}, fmt.Errorf("the broker hasn't opened job %s's socket", job.ID)
 	}
 	return dirs, nil
+}
+
+// checkIntakeInput allows only the intake files, as regular files, and
+// requires message.eml.
+func checkIntakeInput(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	seen := false
+	for _, e := range entries {
+		if !intakeInputs[e.Name()] || !e.Type().IsRegular() {
+			return fmt.Errorf("intake's input holds %q", e.Name())
+		}
+		seen = seen || e.Name() == "message.eml"
+	}
+	if !seen {
+		return errors.New("intake's input has no message.eml")
+	}
+	return nil
 }

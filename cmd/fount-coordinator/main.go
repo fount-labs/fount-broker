@@ -232,11 +232,11 @@ func run() error {
 		}
 		return err
 	}
-	// Intake runs on a local runner command; a runner enclave's intake is
-	// lane C's.
+	// Intake runs where jobs do: a local runner command, or the runner
+	// enclave as an intake job.
 	intake, _ := runner.(coordinator.IntakeRunner)
 	if *mailLoop && intake == nil {
-		return errors.New("--mail needs a runner command, which runs intake")
+		return errors.New("--mail needs a runner that runs intake")
 	}
 	c, err := coordinator.New(coordinator.Config{
 		StateDir: filepath.Join(*dir, "state"),

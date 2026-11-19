@@ -95,19 +95,7 @@ func (s *Supervisor) Run(ctx context.Context, job Job, stdout, stderr io.Writer)
 		return Result{}, err
 	}
 	defer os.RemoveAll(bundle)
-	args := append(append([]string{}, s.Image.Entrypoint...), "--workspace", sandboxWork)
-	if job.Mode == jobwire.ModeIndex {
-		args = append(args, "--mode", "index", "--index", sandboxIndex)
-	} else {
-		args = append(args, "--job", sandboxJob, "--index-read-only", sandboxIndex,
-			"--script-confinement", s.Confinement)
-	}
-	if job.SocketDir != "" {
-		args = append(args, "--broker-socket", sandboxBroker+"/"+jobSocket)
-	}
-	if s.Limits.Threads > 0 {
-		args = append(args, "--threads", strconv.Itoa(s.Limits.Threads))
-	}
+	args := s.args(job)
 	cgroupsPath := "/" + filepath.Join(s.CgroupParent, job.ID, "sandbox")
 	spec, err := jobSpec(s.RootFS, s.Image, s.UID, s.GID, s.Limits, job, args, cgroupsPath)
 	if err != nil {
@@ -165,6 +153,30 @@ func (s *Supervisor) Run(ctx context.Context, job Job, stdout, stderr io.Writer)
 	return s.result(group, started, code), nil
 }
 
+// args is the runner's command line in the sandbox.
+func (s *Supervisor) args(job Job) []string {
+	if job.Mode == jobwire.ModeIntake {
+		// Intake takes --workspace and nothing else, so the entrypoint's
+		// own flags (the agent's tools, --data) are left off: only the
+		// runner binary itself runs.
+		return []string{s.Image.Entrypoint[0], "--mode", "intake", "--workspace", sandboxWork}
+	}
+	args := append(append([]string{}, s.Image.Entrypoint...), "--workspace", sandboxWork)
+	if job.Mode == jobwire.ModeIndex {
+		args = append(args, "--mode", "index", "--index", sandboxIndex)
+	} else {
+		args = append(args, "--job", sandboxJob, "--index-read-only", sandboxIndex,
+			"--script-confinement", s.Confinement)
+	}
+	if job.SocketDir != "" {
+		args = append(args, "--broker-socket", sandboxBroker+"/"+jobSocket)
+	}
+	if s.Limits.Threads > 0 {
+		args = append(args, "--threads", strconv.Itoa(s.Limits.Threads))
+	}
+	return args
+}
+
 func (s *Supervisor) check(job Job) error {
 	if !jobIDPattern.MatchString(job.ID) {
 		return fmt.Errorf("job id %q isn't [a-z0-9-], up to 63 characters", job.ID)
@@ -174,6 +186,15 @@ func (s *Supervisor) check(job Job) error {
 	}
 	if s.Limits.MemoryBytes <= 0 || s.Limits.Pids <= 0 || s.Limits.TmpBytes <= 0 {
 		return errors.New("every sandbox needs memory, pids and /tmp caps")
+	}
+	if len(s.Image.Entrypoint) == 0 {
+		return errors.New("the harness image has no entrypoint")
+	}
+	if job.Mode == jobwire.ModeIntake {
+		if job.Data != "" || job.Index != "" || job.JobFile != "" || job.SocketDir != "" {
+			return errors.New("intake gets its workspace and nothing else")
+		}
+		return isDir(job.Workspace)
 	}
 	for name, dir := range map[string]string{"workspace": job.Workspace, "data": job.Data, "index": job.Index} {
 		if err := isDir(dir); err != nil {

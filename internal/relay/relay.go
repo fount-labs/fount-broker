@@ -100,36 +100,15 @@ func (r *Relay) handle(ctx context.Context, conn net.Conn) error {
 		return err
 	}
 	id := "j-" + hex.EncodeToString(b[:])
-	vault := broker.NewVault()
-	for name, value := range job.Credentials {
-		vault.Set(policy.Credential(name), value)
+	// Intake has no broker socket: it holds no credentials and reaches
+	// nothing.
+	if job.Mode != jobwire.ModeIntake {
+		stop, err := r.openSocket(ctx, id, job.Credentials)
+		if err != nil {
+			return err
+		}
+		defer stop()
 	}
-
-	dir := filepath.Join(r.Sockets, id)
-	if err := os.Mkdir(dir, 0o755); err != nil {
-		return err
-	}
-	defer os.RemoveAll(dir)
-	path := filepath.Join(dir, JobSocket)
-	l, err := net.Listen("unix", path)
-	if err != nil {
-		return err
-	}
-	// The sandbox's user isn't the broker's.
-	if err := os.Chmod(path, 0o666); err != nil {
-		l.Close()
-		return err
-	}
-	jobCtx, cancel := context.WithCancel(ctx)
-	served := make(chan struct{})
-	go func() {
-		defer close(served)
-		r.serveJob(jobCtx, l, vault)
-	}()
-	defer func() {
-		cancel()
-		<-served
-	}()
 
 	var d net.Dialer
 	sup, err := d.DialContext(ctx, "unix", filepath.Join(r.Sockets, SupervisorSocket))
@@ -166,6 +145,42 @@ func (r *Relay) handle(ctx context.Context, conn net.Conn) error {
 	<-drained
 	log.Printf("job %s: ended after %.1fs", id, time.Since(start).Seconds())
 	return nil
+}
+
+// openSocket makes job id's socket folder and serves its broker on it, with a
+// vault of the job's credentials, until stop.
+func (r *Relay) openSocket(ctx context.Context, id string, credentials map[string]string) (stop func(), err error) {
+	vault := broker.NewVault()
+	for name, value := range credentials {
+		vault.Set(policy.Credential(name), value)
+	}
+	dir := filepath.Join(r.Sockets, id)
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dir, JobSocket)
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		os.RemoveAll(dir)
+		return nil, err
+	}
+	// The sandbox's user isn't the broker's.
+	if err := os.Chmod(path, 0o666); err != nil {
+		l.Close()
+		os.RemoveAll(dir)
+		return nil, err
+	}
+	jobCtx, cancel := context.WithCancel(ctx)
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		r.serveJob(jobCtx, l, vault)
+	}()
+	return func() {
+		cancel()
+		<-served
+		os.RemoveAll(dir)
+	}, nil
 }
 
 // serveJob answers on a job's socket until ctx ends, one broker per

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,6 +36,77 @@ type RemoteRunner struct {
 }
 
 func (r RemoteRunner) Run(ctx context.Context, _, account string, job JobDirs) (RunResult, error) {
+	jobFile, err := os.ReadFile(job.JobFile)
+	if err != nil {
+		return RunResult{}, err
+	}
+	// The tree the job hands back replaces what the coordinator put there, so
+	// a file the job deleted stays deleted.
+	back := job.Workspace
+	if job.Mode == jobwire.ModeIndex {
+		back = job.Index
+	}
+	return r.run(ctx, wireJob{
+		header:  jobwire.Job{Kind: jobwire.KindJob, Mode: job.Mode, Account: account, Credentials: job.Credentials},
+		jobFile: jobFile,
+		send:    map[jobwire.Kind]string{jobwire.KindWorkspace: job.Workspace, jobwire.KindIndex: job.Index},
+		back:    back,
+	})
+}
+
+// RunIntake sends the intake folder dir to a runner enclave as an intake job,
+// which holds no credentials and no index, and puts what comes back in
+// dir/out. The tree back is held to intake's own caps, and ReadIntake checks
+// it after.
+func (r RemoteRunner) RunIntake(ctx context.Context, account, dir string) (RunResult, error) {
+	out := filepath.Join(dir, intakeOut)
+	if _, err := os.Lstat(out); err == nil {
+		return RunResult{}, fmt.Errorf("%w: %s is there before intake ran", ErrIntake, intakeOut)
+	}
+	return r.run(ctx, wireJob{
+		header: jobwire.Job{Kind: jobwire.KindJob, Mode: jobwire.ModeIntake, Account: account},
+		send:   map[jobwire.Kind]string{jobwire.KindWorkspace: dir},
+		back:   out,
+		backLimits: tighter(r.Limits, filetree.Limits{
+			MaxBytes:     maxIntakeTotalBytes,
+			MaxFileBytes: maxIntakeTotalBytes,
+			// The files ReadIntake allows, and the attachments/ folder.
+			MaxEntries: maxIntakeAttachments + 4,
+		}),
+		strict: true,
+	})
+}
+
+// tighter is the smaller of each of a's and b's caps; a zero takes the other.
+func tighter(a, b filetree.Limits) *filetree.Limits {
+	pick := func(x, y int64) int64 {
+		if x == 0 || (y != 0 && y < x) {
+			return y
+		}
+		return x
+	}
+	return &filetree.Limits{
+		MaxBytes:     pick(a.MaxBytes, b.MaxBytes),
+		MaxFileBytes: pick(a.MaxFileBytes, b.MaxFileBytes),
+		MaxEntries:   int(pick(int64(a.MaxEntries), int64(b.MaxEntries))),
+	}
+}
+
+// wireJob is one job as it crosses the wire.
+type wireJob struct {
+	header  jobwire.Job
+	jobFile []byte
+	// send is the folder of each tree the mode streams in.
+	send map[jobwire.Kind]string
+	// back is emptied and filled with the tree the job hands back.
+	back string
+	// backLimits, if set, caps the tree back in place of RemoteRunner.Limits.
+	backLimits *filetree.Limits
+	// strict refuses a tree back with anything but folders and files in it.
+	strict bool
+}
+
+func (r RemoteRunner) run(ctx context.Context, job wireJob) (RunResult, error) {
 	if r.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, r.Timeout)
@@ -63,29 +135,23 @@ func (r RemoteRunner) Run(ctx context.Context, _, account string, job JobDirs) (
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
 
-	result, err := r.exchange(conn, account, job)
+	result, err := r.exchange(conn, job)
 	if ctx.Err() != nil {
 		return result, fmt.Errorf("runner stopped: %w", ctx.Err())
 	}
 	return result, err
 }
 
-func (r RemoteRunner) exchange(conn net.Conn, account string, job JobDirs) (result RunResult, err error) {
+func (r RemoteRunner) exchange(conn net.Conn, job wireJob) (result RunResult, err error) {
 	w := frame.NewWriter(conn)
-	jobFile, err := os.ReadFile(job.JobFile)
-	if err != nil {
-		return result, err
-	}
+	mode := job.header.Mode
 	sendErr := func() error {
-		if err := jobwire.Send(w, jobwire.Job{Kind: jobwire.KindJob, Mode: job.Mode, Account: account, Credentials: job.Credentials}, jobFile); err != nil {
+		if err := jobwire.Send(w, job.header, job.jobFile); err != nil {
 			return err
 		}
-		for _, t := range []struct {
-			dir  string
-			kind jobwire.Kind
-		}{{job.Workspace, jobwire.KindWorkspace}, {job.Index, jobwire.KindIndex}} {
-			out := jobwire.Chunks{W: w, Kind: t.kind}
-			if err := filetree.Pack(t.dir, out, r.Limits); err != nil {
+		for _, kind := range mode.Sends() {
+			out := jobwire.Chunks{W: w, Kind: kind}
+			if err := filetree.Pack(job.send[kind], out, r.Limits); err != nil {
 				return err
 			}
 			if err := out.Close(); err != nil {
@@ -123,18 +189,21 @@ func (r RemoteRunner) exchange(conn net.Conn, account string, job JobDirs) (resu
 			result.ExitCode = reply.ExitCode
 			result.Seconds, result.PeakBytes, result.OOMKills = reply.Seconds, reply.PeakBytes, reply.OOMKills
 			log.Printf("runner: %s job for %s: exit %d in %.1fs, peak %d MiB, %d OOM kills",
-				cmp.Or(string(job.Mode), "agent"), account, reply.ExitCode, reply.Seconds, reply.PeakBytes>>20, reply.OOMKills)
-			// The tree the job hands back replaces what the coordinator put
-			// there, so a file the job deleted stays deleted.
-			kind, dir := job.Mode.Returns(), job.Workspace
-			if job.Mode == jobwire.ModeIndex {
-				dir = job.Index
-			}
-			if err := emptyDir(dir); err != nil {
+				cmp.Or(string(mode), "agent"), job.header.Account, reply.ExitCode, reply.Seconds, reply.PeakBytes>>20, reply.OOMKills)
+			kind := mode.Returns()
+			if err := emptyDir(job.back); err != nil {
 				return result, err
 			}
+			lim := r.Limits
+			if job.backLimits != nil {
+				lim = *job.backLimits
+			}
 			in := &jobwire.Stream{R: conn, Kind: kind}
-			if _, err := filetree.Extract(in, dir, r.Limits, nil); err != nil {
+			skipped, err := filetree.Extract(in, job.back, lim, nil)
+			if err == nil && job.strict && skipped > 0 {
+				err = fmt.Errorf("it holds %d links or other non-files", skipped)
+			}
+			if err != nil {
 				return result, fmt.Errorf("the job's %s: %w", kind, err)
 			}
 			if err := in.Drain(); err != nil {
@@ -155,4 +224,7 @@ func emptyDir(dir string) error {
 	return os.Mkdir(dir, dirMode)
 }
 
-var _ Runner = RemoteRunner{}
+var (
+	_ Runner       = RemoteRunner{}
+	_ IntakeRunner = RemoteRunner{}
+)

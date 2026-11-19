@@ -376,6 +376,14 @@ coordinator runs first whenever the worker's files changed since the last one.
 An agent job gets the index read-only, searches a private copy, and doesn't
 send it back.
 
+Intake (mode `intake`) reads one received email on the same pool. Its header
+carries no credentials and no job file, and only the email's folder goes in
+(`message.eml`, `check.json`, `request.json`, `instructions.md`). The broker
+opens no job socket for it, and the supervisor runs the harness's runner binary
+alone as `--mode intake --workspace /work`, without the entrypoint's other
+flags, with nothing else mounted. Only `out/` comes back, which the coordinator
+caps to intake's limits and checks as hostile (`internal/coordinator/intake.go`).
+
 A local run of all three, with a registry, both ends of the link unattested
 (dev builds only):
 

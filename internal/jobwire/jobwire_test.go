@@ -36,6 +36,12 @@ func TestDecodeJobPerHop(t *testing.T) {
 		{"not a job", `{"kind":"workspace","account":"a"}`, body, FromCoordinator, false},
 		{"no job file", `{"kind":"job","account":"a"}`, nil, FromCoordinator, false},
 		{"job file too big", `{"kind":"job","account":"a"}`, make([]byte, MaxJobFile+1), FromCoordinator, false},
+		{"intake", `{"kind":"job","mode":"intake","account":"a"}`, nil, FromCoordinator, true},
+		{"intake from the broker", `{"kind":"job","mode":"intake","id":"j-1","account":"a"}`, nil, FromBroker, true},
+		{"intake with credentials", `{"kind":"job","mode":"intake","account":"a","credentials":{"license":"L"}}`, nil, FromCoordinator, false},
+		{"intake with empty credentials", `{"kind":"job","mode":"intake","account":"a","credentials":{}}`, nil, FromCoordinator, false},
+		{"intake with a job file", `{"kind":"job","mode":"intake","account":"a"}`, body, FromCoordinator, false},
+		{"unknown mode", `{"kind":"job","mode":"shell","account":"a"}`, body, FromCoordinator, false},
 	}
 	for _, c := range cases {
 		_, err := DecodeJob(frame.Frame{Header: []byte(c.header), Body: c.body}, c.hop)
