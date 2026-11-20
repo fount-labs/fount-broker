@@ -686,6 +686,13 @@ func StaleRouting(err error) bool {
 	return errors.As(err, &e) && e.Status == http.StatusConflict && e.Code == "" && strings.Contains(e.Message, "routing version did not advance")
 }
 
+// OwnerLimit says err is the edge refusing a routing write that would pass
+// the license's daily new-owner cap.
+func OwnerLimit(err error) bool {
+	var e *EdgeError
+	return errors.As(err, &e) && e.Status == http.StatusTooManyRequests
+}
+
 // ProofRefused says err is the edge refusing a routing write's connect
 // proofs: one didn't verify, had expired, or named no owner in the list.
 func ProofRefused(err error) bool {

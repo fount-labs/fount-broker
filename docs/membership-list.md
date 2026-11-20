@@ -251,6 +251,17 @@ bytes. Vectors for every format here: `internal/coordinator/testdata/team-invite
   under the worker like any send, so `/sent/query` finds it and a retry posts nothing twice. A
   refusal fails the record: `invite_limit` (429) as `SEND_LIMIT`, `invite_refused` (400) as
   `BAD_MESSAGE`. Desktop's "Copy invite link" stays the fallback.
+- **Notices by email** (`reviewers.go`). Every joined member who reaches a worker hears of its
+  drafts, questions, held mail, failed jobs and bounces by email, as the owner does. The edge
+  mails only proven owners, so the mail loop puts each such member's invite address on the
+  worker's edge owner list (`POST /coordinator/routing`) as a notice owner
+  (`MailSettings.NoticeOwners`), one new one per write so the edge's daily new-owner cap holds
+  back only that member. The edge then proves them as any owner (its "Reply to turn on email
+  updates" mail, the `OwnerWait`, and a notice to the owners it has proved); the invite email
+  says to expect it. A notice owner isn't a requester: their email starts no work and is held. An
+  approval by email from one also needs them to still reach the worker when it arrives. Leaving
+  the team takes them off the edge's list on the next pass; a list change kicks the team's
+  workers.
 - **A second device** joins with the member's passkey (`passkey-join`, §2.3). The six-digit
   code join (`…/joins`) is gone (decided 2026-11-19).
 - **Admissions** email the team's owner (`member_joined`, once per entry). The cancel window is

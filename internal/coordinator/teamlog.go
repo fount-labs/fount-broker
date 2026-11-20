@@ -635,6 +635,13 @@ func (c *Coordinator) commitEntry(team string, prior *teamState, entry TeamEntry
 	for _, w := range removed {
 		delete(c.locks, w.ID)
 	}
+	if c.mail != nil {
+		// Who hears of the team's workers by email may have changed
+		// (reviewers.go): their next mail pass sends the edge the list.
+		for id := range next.workers {
+			c.mail.kick(id)
+		}
+	}
 	return removed, nil
 }
 

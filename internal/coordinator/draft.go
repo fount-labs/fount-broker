@@ -241,6 +241,15 @@ func (c *Coordinator) afterFollow(t *Tree, th *threadRecord, now time.Time) (boo
 			}
 		}
 	}
+	if cmp.Or(th.ReplyMode, modeOff) != modeOff {
+		for _, e := range th.Entries {
+			if e.Kind == entryQuestion && e.State == questionOpen {
+				if err := c.problemNotice(t, th.WorkerID, th.ID, noticeQuestion, e.ID, now); err != nil {
+					return false, err
+				}
+			}
+		}
+	}
 	if changed {
 		th.finish(rev, now)
 	}
@@ -363,10 +372,12 @@ func binding(to, paths []string, files []outFile, hash string) string {
 }
 
 // The notices (decisions 8 and 10). Each is a journal record sent at once to
-// the owner, without content except the approval email to an owner on Full,
-// with an id from what it is about, so each goes once.
+// every reviewer (reviewers.go), without content except the approval email
+// to a reviewer on Full, with an id from what it is about and to whom, so
+// each goes once.
 const (
 	noticeDraft     = "draft_ready"
+	noticeQuestion  = "question_waiting"
 	noticeJobFailed = "job_failed"
 	noticeHeld      = "mail_held"
 	noticeBounced   = "send_failed"
@@ -374,17 +385,15 @@ const (
 
 var noticeText = map[string][2]string{
 	noticeDraft:     {"A draft reply is ready in %s", "A draft reply is waiting for review in %s. Nothing is sent until someone approves it in Fount."},
+	noticeQuestion:  {"A question is waiting in %s", "A job in %s asked a question. It waits until someone answers it in Fount."},
 	noticeJobFailed: {"A job failed in %s", "A job failed in %s. Nothing was sent."},
 	noticeHeld:      {"An email is waiting in %s", "An email to %s is held until someone decides what to do with it."},
 	noticeBounced:   {"An email from %s wasn't delivered", "An email from %s didn't reach everyone it was for."},
 }
 
-// problemNotice tells the owner about kind on a thread, once per ref.
+// problemNotice tells every reviewer about kind on a thread, once per ref.
+// The owner's notice keeps the id it had before others got one.
 func (c *Coordinator) problemNotice(t *Tree, workerID, threadID, kind, ref string, now time.Time) error {
-	id := c.sendID(workerID, sendKindNotice, kind, ref)
-	if t.Has(sendPath(id)) {
-		return nil
-	}
 	rs, err := loadReplySettings(t)
 	if err != nil || rs.Owner == "" {
 		return err
@@ -403,11 +412,24 @@ func (c *Coordinator) problemNotice(t *Tree, workerID, threadID, kind, ref strin
 	if err != nil {
 		return err
 	}
-	return c.sendNotice(t, th, mb, rs, id, []string{sendKindNotice, kind, ref}, kind, now)
-}
-
-func (c *Coordinator) sendNotice(t *Tree, th *threadRecord, mb *Mailbox, rs *replySettings, id string, parts []string, kind string, now time.Time) error {
-	return c.sendNoticeTo(t, th, mb, rs, id, parts, kind, rs.Owner, now)
+	s, err := loadMailSettings(t)
+	if err != nil {
+		return err
+	}
+	for _, to := range c.reviewers(workerID, rs, s) {
+		parts := []string{sendKindNotice, kind, ref}
+		if !strings.EqualFold(to, rs.Owner) {
+			parts = append(parts, to)
+		}
+		id := c.sendID(workerID, parts...)
+		if t.Has(sendPath(id)) {
+			continue
+		}
+		if err := c.sendNoticeTo(t, th, mb, rs, id, parts, kind, to, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Coordinator) sendNoticeTo(t *Tree, th *threadRecord, mb *Mailbox, rs *replySettings, id string, parts []string, kind, to string, now time.Time) error {
@@ -442,7 +464,7 @@ func (c *Coordinator) draftNotice(t *Tree, th *threadRecord, mb *Mailbox, rs *re
 		if rs.modeOf(to) != modeFull {
 			err = c.sendNoticeTo(t, th, mb, rs, id, parts, noticeDraft, to, now)
 		} else {
-			err = c.askApproval(t, th, mb, rs, id, draftID, d, to, now)
+			err = c.askApproval(t, th, mb, rs, id, draftID, d, to, s.requester(to) != nil, now)
 		}
 		if err != nil {
 			return err

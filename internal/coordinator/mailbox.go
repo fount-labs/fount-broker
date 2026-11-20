@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -192,6 +193,10 @@ type MailSettings struct {
 	RoutingUnsent  bool           `json:"routingUnsent"`
 	Proofs         []ConnectProof `json:"proofs,omitempty"`
 	RoutingVersion uint64         `json:"routingVersion,omitempty"`
+	// NoticeOwners are the team members, not requesters, whom the edge
+	// last took on the worker's owner list, so it may mail them notices
+	// (reviewers.go). They can't start work by email.
+	NoticeOwners []string `json:"noticeOwners,omitempty"`
 	// Paused is the worker's own pause (setPaused): mail is held, not run.
 	// PauseUnsent says the edge hasn't taken it yet; until it has, the
 	// coordinator holds mail itself. The edge's pause, as its listing
@@ -225,6 +230,12 @@ func (s *MailSettings) requester(address string) *Requester {
 		}
 	}
 	return nil
+}
+
+// mailable says the edge's owner list has address, as a requester or a
+// notice owner: the edge mails no one else.
+func (s *MailSettings) mailable(address string) bool {
+	return s.requester(address) != nil || slices.ContainsFunc(s.NoticeOwners, func(a string) bool { return strings.EqualFold(a, address) })
 }
 
 func (s *MailSettings) jobsPerDay() int {
