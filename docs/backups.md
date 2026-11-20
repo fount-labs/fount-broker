@@ -14,6 +14,7 @@ decisions 15 to 18). The code is `internal/coordinator/backup*.go` and
 | S3 bucket client (`internal/s3bucket`) | Built: SigV4, write-once `Put`, paged `List`, through the S3 forwarder |
 | `--backup-bucket`, `--restore`, `--restore-dry-run` | Built, with `--wrapping-key dev` and `--dev-vault`, or `--wrapping-key vault` and `--coordinator-authority-key` |
 | The Cloud vault's generation and counter | Built in fount-mail-vault (`COORDINATOR_MODE`, `docs/COORDINATOR-COUNTER.md`); the coordinator's side is `vaultkey` (the boot) and `coordinator.WireCounter`. Not yet run against a deployed Cloud vault pair |
+| The restore drill (`scripts/restore-drill.sh`) | Built: the runbook end to end against an S3 stand-in and the vault's wire protocol, in the package and on the binary. See "Rehearsing a restore" |
 | Backups under `--wrapping-key vault` | Need `--coordinator-authority-key`. The bucket's credentials come from the vault, never from `$AWS_*` |
 
 With `--wrapping-key vault --coordinator-authority-key <key>`, the key is the
@@ -86,11 +87,82 @@ retry that meets its own bytes succeeds; other bytes are an error.
 3. **Take `--restore` off** in the next config. Leaving it on is harmless
    while the volume holds the restore: a restart logs "the volume was restored
    from …" and serves. But on a later empty volume it would restore again by
-   itself. On a volume nothing was restored onto, `--restore` refuses to start.
+   itself. On a volume nothing was restored onto, `--restore` refuses to
+   start, before it takes a generation, so a coordinator running on that
+   volume keeps running.
 
 With `--wrapping-key dev`, copy the dev key the backups were taken under to
 `<dir>/wrapping.key` first. A new one would be made otherwise, and no backup
 opens under it, so `--restore` refuses to start without the file.
+
+### Rehearsing a restore: the drill
+
+Rehearse with the drill, on any machine, before trying a restore anywhere
+else:
+
+```sh
+scripts/restore-drill.sh        # add -v for the coordinators' logs
+```
+
+It needs no AWS account, vault or mail edge, and it runs two tests:
+
+- `TestTheRestoreRunbookDrill` (`internal/coordinator/restoredrill_test.go`)
+  runs a coordinator with mail on, over a fake mail edge. Backups go through
+  the real S3 client (`internal/s3bucket`, signed requests, write-once `Put`,
+  paged `List`) to an S3 stand-in over HTTP (`internal/s3bucket/s3buckettest`).
+  The counter is the Cloud vault pair's wire protocol (`WireCounter` against
+  `cloudvaulttest`). The test makes real state: a team, a worker with a
+  mailbox, a file, and an email worked into a thread with a draft. It takes
+  a backup, makes a security change, takes another, and checks the bucket
+  holds no plaintext. Then it deletes the volume and, on a fresh one, runs
+  the steps above in order:
+  - the dry run moves nothing and writes nothing;
+  - a restore of the backup from before the security change is refused, as
+    a dry run and as a restore, and leaves the volume empty;
+  - the newest is restored under a new generation. `state.json`, less the
+    restore mark, and every file in every worker's tree are then the same,
+    byte for byte, as before the loss.
+
+  The restored coordinator then works. Mail it had already worked isn't run
+  again, the draft is approved and sent once under its Message-ID, and new
+  mail runs. Its next security change is counted under the new generation,
+  the old generation's swap is refused, and from then on even the backup it
+  was restored from counts as a rollback.
+- `TestTheRestoreRunbookOnTheBinary` (`cmd/fount-coordinator/drill_test.go`)
+  runs the coordinator binary with this page's dev flags (`--wrapping-key
+  dev --dev-vault … --backup-bucket … --restore …`) against the same S3
+  stand-in. A worker's file and a finished job are backed up on the
+  interval. A `--restore` over the live volume is refused without moving the
+  dev vault. The volume is lost, keeping `wrapping.key` and the dev vault.
+  `--restore` without the key refuses to start. The dry run names the newest
+  backup, writes nothing and moves the vault nowhere. The restore serves the
+  same files and job. A restart with `--restore` still set serves the
+  restored volume.
+
+What the drill can't cover, so the live checks below still need doing:
+
+- **A real bucket.** The stand-in honours `If-None-Match` and pages `List`
+  the way the client expects, but it is not S3. It doesn't cover S3's 409 for
+  racing conditional writes, versioning, the lifecycle rule actually
+  expiring old versions, or the forwarder and enclave egress.
+- **IAM and the bucket policy.** The stand-in checks only that each request
+  is signed by the expected access key. It doesn't check the signature, and
+  it has no policy, so it can't show that a missing key is a 404 rather than
+  a 403 under the IAM policy, that other principals are denied, or that the
+  coordinator can't read old versions.
+- **A deployed Cloud vault pair.** `cloudvaulttest` speaks the vault's wire
+  protocol over one register. Replication between the two vaults, and the
+  keyset pull that releases the wrapping key and bucket credentials to an
+  attested release (`--wrapping-key vault`), are tested in fount-mail-vault
+  and live, not here.
+- **The real mail edge.** The package drill's edge is a fake. The binary drill
+  runs without `--mail`, because a dev binary's `--mail` reaches the real
+  edge. A send in flight across an edge reboot is in `TestTheRestoreDrill`
+  (`restore_test.go`), also against the fake edge.
+- **Dev keys outside the backup.** A dev build's (`-tags dev`) `job-signing.key`
+  (`--runner-addr` without `--credentials`) lives in `--dir`, isn't backed
+  up, and is made new on the restored volume. It is logged, and a dev proxy
+  needs the new one.
 
 ### Dev, against any S3 that honours `If-None-Match` on PUT
 
@@ -194,7 +266,8 @@ probe (`tinfoil-s3-egress-probe`, fount-mail-design.md §6, fount-mail-gaps.md
   versions.
 - The restore drill on the test coordinator: back up, wipe the volume, dry
   run, restore, with a send in flight and an edge reboot between (launch
-  de-risk 2).
+  de-risk 2). `scripts/restore-drill.sh` rehearses it locally; the live run
+  is what it can't cover (above).
 - Against a deployed Cloud vault pair (`COORDINATOR_MODE`): a boot's
   certificate taken by the edge; a restore below the counter refused; an
   old-generation coordinator fenced at the counter and the edge; backups
