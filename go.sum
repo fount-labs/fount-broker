@@ -95,8 +95,8 @@ github.com/emersion/go-msgauth v0.7.0 h1:vj2hMn6KhFtW41kshIBTXvp6KgYSqpA/ZN9Pv4g
 github.com/emersion/go-msgauth v0.7.0/go.mod h1:mmS9I6HkSovrNgq0HNXTeu8l3sRAAuQ9RMvbM4KU7Ck=
 github.com/felixge/httpsnoop v1.0.4 h1:NFTV2Zj1bL4mc9sqWACXbQFVBBg2W3GPvqp8/ESS2Wg=
 github.com/felixge/httpsnoop v1.0.4/go.mod h1:m8KPJKqk1gH5J9DgRY2ASl2lWCfGKXixSwevea8zH2U=
-github.com/fount-labs/fount-mail-vault/wire v0.0.0-20261112063715-90bac8da5a3f h1:lL20fElBpNZbEcLa4n0UajqZV+t/ZKwwLl4ItuIP7yg=
-github.com/fount-labs/fount-mail-vault/wire v0.0.0-20261112063715-90bac8da5a3f/go.mod h1:PDFJGBg6SJfgoIuVpA3CBK6/ancJFMy2pFhPDBUpNFk=
+github.com/fount-labs/fount-mail-vault/wire v0.0.0-20261120184410-d36b043a53fa h1:24xGRvPshhIL2NNjMgZqWaRV7qtg7oOMuY5v/MP3pEw=
+github.com/fount-labs/fount-mail-vault/wire v0.0.0-20261120184410-d36b043a53fa/go.mod h1:PDFJGBg6SJfgoIuVpA3CBK6/ancJFMy2pFhPDBUpNFk=
 github.com/go-chi/chi/v5 v5.3.0 h1:halUjDxhshgXHMrao5bB8eNBXo/rnzwr8m5m36glehM=
 github.com/go-chi/chi/v5 v5.3.0/go.mod h1:R+tYY2hNuVUUjxoPtqUdgBqevM9s9njzkTLutVsOCto=
 github.com/go-jose/go-jose/v4 v4.1.4 h1:moDMcTHmvE6Groj34emNPLs/qtYXRVcd6S7NHbHz3kA=

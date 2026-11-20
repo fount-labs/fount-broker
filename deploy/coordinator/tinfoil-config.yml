@@ -10,7 +10,7 @@
 # one port. Its wrapping key is the dev one (--wrapping-key dev), made at boot
 # in the state volume. It must say dev: vault is the default and refuses --test-api,
 # and the real coordinators take theirs from the Cloud vaults.
-cvm-version: 0.14.18 # https://github.com/tinfoilsh/cvmimage/releases/latest, no `v`
+cvm-version: 0.14.19 # https://github.com/tinfoilsh/cvmimage/releases/latest, no `v`
 cpus: 4
 memory: 16384
 

@@ -5,7 +5,7 @@
 # TEST RUNNER from v0.2.0: its broker is the dev build (broker-dev), whose
 # jobs reach the dev proxy (FOUNT_BROKER_PROXY), and it takes jobs only from
 # the test coordinators of fount-labs/fount-cloud-coordinator. Test data only.
-cvm-version: 0.14.18 # https://github.com/tinfoilsh/cvmimage/releases/latest, no `v`
+cvm-version: 0.14.19 # https://github.com/tinfoilsh/cvmimage/releases/latest, no `v`
 cpus: 8
 memory: 32768
 

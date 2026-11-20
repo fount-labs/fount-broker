@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	blitiri.com.ar/go/spf v1.6.0
 	github.com/emersion/go-msgauth v0.7.0
-	github.com/fount-labs/fount-mail-vault/wire v0.0.0-20261112063715-90bac8da5a3f
+	github.com/fount-labs/fount-mail-vault/wire v0.0.0-20261120184410-d36b043a53fa
 	github.com/tinfoilsh/tinfoil-go v0.17.0-rc.10
 	golang.org/x/net v0.62.0
 )
@@ -94,8 +94,3 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 )
-
-// The Cloud vault's generation and counter are on fount-mail-vault's local main
-// (35f2439), not yet pushed. Before a release, push it and point the require
-// above at its pseudo-version instead.
-replace github.com/fount-labs/fount-mail-vault/wire => ../fount-mail-vault/wire
