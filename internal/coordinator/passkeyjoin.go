@@ -39,8 +39,10 @@ import (
 //
 // The head in the challenge makes an assertion good for one append, and the
 // keys for one device. Every other device of the member, and the team's
-// admins, are told after the fact, with Remove; the six-digit code from a
-// listed device (teamjoin.go) stays the other way in.
+// admins, are told after the fact, with Remove. It is the only way a
+// member's new computer joins (decided 2026-11-19): the member's passkey is
+// listed when they accept their invite (teaminvite.go), and one who lost it
+// and every computer is invited again.
 
 const (
 	// PasskeyRPID is the passkey's relying party, as Desktop's native
@@ -107,7 +109,7 @@ type PasskeyChallenge struct {
 
 var (
 	// ErrNoPasskey is a member the list names no passkey for.
-	ErrNoPasskey = errors.New("no passkey is set up for you on this team; join with a code from another of your computers")
+	ErrNoPasskey = errors.New("no passkey is set up for you on this team; ask an admin to invite you again")
 	// ErrPasskeyChallenge is a join with no live challenge: never asked,
 	// used, or past its time.
 	ErrPasskeyChallenge = errors.New("the passkey challenge is used or expired; try again")
@@ -238,7 +240,7 @@ func (c *Coordinator) PasskeyJoin(caller Caller, team string, req PasskeyJoinReq
 		email = m.Email
 	}
 	c.mu.Unlock()
-	c.deviceAdded(team, seq, email)
+	c.deviceAdded(team, seq, email, noticeDeviceAdded)
 	return v, nil
 }
 
@@ -276,14 +278,15 @@ func checkPasskeyJoinProof(st *teamState, aud, team string, r TeamRecord, m *Mem
 	if err := verifyAssertion(pub, passkeyAssertion{AuthenticatorData: auth, ClientDataJSON: client, Signature: sig}, challenge, PasskeyRPID, PasskeyOrigins); err != nil {
 		return 0, err
 	}
-	return checkSignCount(st, m, auth)
+	return signCountAfter(st.passkeyCounts[m.Rec.Pub], auth)
 }
 
-// checkSignCount is the sign count after the flags of an assertion by m's
-// listed passkey: 0 throughout from a passkey that keeps none, as synced ones
-// do; once one counts, it must rise, or the passkey was copied.
-func checkSignCount(st *teamState, m *Member, auth []byte) (uint32, error) {
-	count, prior := binary.BigEndian.Uint32(auth[33:37]), st.passkeyCounts[m.Rec.Pub]
+// signCountAfter is the sign count after the flags of an assertion by a
+// passkey whose last nonzero count in the log was prior: 0 throughout from a
+// passkey that keeps none, as synced ones do; once one counts, it must rise,
+// or the passkey was copied.
+func signCountAfter(prior uint32, auth []byte) (uint32, error) {
+	count := binary.BigEndian.Uint32(auth[33:37])
 	if (count != 0 || prior != 0) && count <= prior {
 		return 0, errors.New("the passkey's sign count didn't rise: it may have been copied")
 	}
@@ -375,6 +378,12 @@ func passkeyStatus(err error) int {
 		return http.StatusServiceUnavailable
 	}
 	return statusOf(err)
+}
+
+// joinKeys is a device's keys, as a passkey join's challenge asks for them.
+type joinKeys struct {
+	Key string `json:"key"`
+	Enc string `json:"enc"`
 }
 
 // startPasskeyJoin is POST /v1/teams/{team}/passkey-join/challenge {key, enc}.

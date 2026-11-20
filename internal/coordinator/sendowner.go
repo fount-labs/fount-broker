@@ -26,6 +26,8 @@ var accountNoticeText = map[string][2]string{
 	noticeMemberJoined: {"A new device joined %s", "Someone joined %s in Fount, by an invite or as a member's new device. If you didn't expect it, an admin can remove them in Fount, under Members.%s"},
 	// A member's passkey added a computer of theirs (passkeyjoin.go).
 	noticeDeviceAdded: {"New computer added to %s", "A new computer was added to %s in Fount with a member's passkey. If it wasn't you, remove it in Fount: on another of your computers, or an admin can under Members.%s"},
+	// A member invited again took it on a new computer (teaminvite.go).
+	noticeMemberBack: {"New computer added to %s", "A member invited again joined %s in Fount on a new computer, with a new passkey. Their old computers were removed. If it wasn't you, an admin can remove it in Fount, under Members.%s"},
 }
 
 // ownerNotices is the mail loop's OwnerNotices (lapse.go) on NotifyOwner.

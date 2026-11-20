@@ -32,6 +32,18 @@ import (
 // record keeps the secret, so the invite is used: the log is the used-token
 // store, and a restore can't reopen it (§4.2). Nobody needs to be online but
 // the invitee.
+//
+// Accepting also lists the member's passkey (decided 2026-11-19: every new
+// computer joins with the member's passkey; there is no code join). The
+// invitee's device makes a passkey for fount.sh, or uses one the account
+// already has, and it signs InvitePasskeyChallenge, over the invite and the
+// accepting device's keys. The record's proof carries the passkey (rec) and
+// the assertion, checked as a passkey join's is (verifyAssertion), here and
+// on every replay. From then on that passkey is the member's ListRec, which
+// admits their new computers (passkeyjoin.go), until an admin's list names
+// another. An existing member can be invited again (a list puts an open
+// invite on them): accepting it with a new passkey replaces their rec, which
+// is how a member who lost their passkey and every computer gets back in.
 
 const (
 	InviteCommitContext = "fount-team-invite-v1\x00"
@@ -40,7 +52,24 @@ const (
 	InviteCodePrefix = "fi1"
 	// InviteLink is where an invite code goes, in the fragment.
 	InviteLink = "https://fount.sh/join#"
+	// InvitePasskeyContext starts what the passkey listed on accepting an
+	// invite signs.
+	InvitePasskeyContext = "fount-team-invite-passkey-v1\x00"
 )
+
+// InvitePasskeyChallenge is what the invitee's passkey signs on accepting:
+// SHA-256 of the context, then the coordinator, team, member, invite id and
+// the accepting device's Ed25519 and X25519 keys, length-prefixed. It names
+// no passkey, so a passkey the account already has can sign it with one
+// prompt; the invite is used once, so it needs no nonce or head.
+func InvitePasskeyChallenge(aud, team, member, invite string, key, enc []byte) ([]byte, error) {
+	msg, err := lengthPrefixed(InvitePasskeyContext, []byte(aud), []byte(team), []byte(member), []byte(invite), key, enc)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(msg)
+	return sum[:], nil
+}
 
 // InviteCommit is the commitment a list carries for an invite's secret.
 func InviteCommit(team, member, invite string, secret []byte) (string, error) {
@@ -61,20 +90,34 @@ func InviteCode(team, member, invite string, secret []byte) string {
 }
 
 // InviteProof is an invite record's proof: the secret, revealed now that it
-// is used, and the verified email it was used under.
+// is used, and the verified email it was used under; and the member's passkey
+// with its assertion over InvitePasskeyChallenge, each base64url.
 type InviteProof struct {
 	Invite string `json:"invite"`
 	Secret string `json:"secret"`
 	Email  string `json:"email"`
+	InvitePasskey
+}
+
+// InvitePasskey is the passkey an invitee lists on accepting, and its
+// assertion. A record written before passkey-only joins has none (dev logs
+// only; see checkInvitePasskey).
+type InvitePasskey struct {
+	Rec               *ListRec `json:"rec,omitempty"`
+	AuthenticatorData string   `json:"authenticatorData,omitempty"`
+	ClientDataJSON    string   `json:"clientDataJSON,omitempty"`
+	Signature         string   `json:"signature,omitempty"`
 }
 
 // inviteRequest is what the invitee's device sends: the invite's member and
-// secret, and to accept, its team inclusion for the record's entry.
+// secret, and to accept, its team inclusion for the record's entry and its
+// passkey with the assertion.
 type inviteRequest struct {
 	Member string `json:"member"`
 	Secret string `json:"secret"`
 	Device string `json:"device,omitempty"`
 	Worker string `json:"worker,omitempty"`
+	InvitePasskey
 }
 
 // checkInvite is every check on an invite but the device: the member has
@@ -143,23 +186,42 @@ func (c *Coordinator) OpenInvite(caller Caller, team, invite, member string, sec
 	return InviteView{Team: team, Member: m.ID, Email: m.Email, Role: m.Role, Exp: m.Invite.Exp, Log: c.teamLogView(team, 0)}, nil
 }
 
+// ErrInvitePasskey is an accept that lists no passkey.
+var ErrInvitePasskey = errors.New("accepting an invite sets up your passkey, and none came with it; update Fount and try again")
+
 // AcceptInvite uses an invite: the record binds its member to the caller's
-// account and admits the caller's device, whose inclusion is for the
-// record's entry.
-func (c *Coordinator) AcceptInvite(caller Caller, team, invite, member string, secret []byte, inclusion string) (TeamLogView, error) {
-	proof, err := json.Marshal(InviteProof{Invite: invite, Secret: b64.EncodeToString(secret), Email: caller.Email})
+// account, lists pk as their passkey and admits the caller's device, whose
+// inclusion is for the record's entry.
+func (c *Coordinator) AcceptInvite(caller Caller, team, invite, member string, secret []byte, inclusion string, pk InvitePasskey) (TeamLogView, error) {
+	if pk.Rec == nil {
+		return TeamLogView{}, fmt.Errorf("%w: %w", ErrInvalid, ErrInvitePasskey)
+	}
+	proof, err := json.Marshal(InviteProof{Invite: invite, Secret: b64.EncodeToString(secret), Email: caller.Email, InvitePasskey: pk})
 	if err != nil {
 		return TeamLogView{}, err
 	}
 	rec := TeamRecord{Kind: RecordInvite, Member: member, Account: caller.Account, Device: inclusion, Proof: proof}
-	seq, err := c.appendRecord(caller, team, rec, func(st *teamState, _ *Member) error {
-		_, err := checkInvite(st, team, member, invite, secret, caller, time.Now())
-		return err
+	again, email := false, ""
+	seq, err := c.appendRecord(caller, team, rec, func(st *teamState, m *Member) error {
+		if _, err := checkInvite(st, team, member, invite, secret, caller, time.Now()); err != nil {
+			return err
+		}
+		again, email = m.Account != "", m.Email
+		r := rec
+		r.Prev = st.head
+		if _, _, err := checkInviteProof(st, c.cfg.Audience, team, r, m); err != nil {
+			return fmt.Errorf("%w: %v", ErrListRefused, err)
+		}
+		return nil
 	})
 	if err != nil {
 		return TeamLogView{}, err
 	}
-	c.admitted(team, seq)
+	if again {
+		c.deviceAdded(team, seq, email, noticeMemberBack)
+	} else {
+		c.admitted(team, seq)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.teamLogView(team, 0), nil
@@ -168,26 +230,71 @@ func (c *Coordinator) AcceptInvite(caller Caller, team, invite, member string, s
 // checkInviteProof is what a client checks of an invite record against the
 // state before it, and what reduceTeam checks on replay: the proof names the
 // member's open invite, its secret is the commit's, it was used before it
-// expired, for the member's email.
-func checkInviteProof(st *teamState, team string, r TeamRecord, m *Member) error {
+// expired, for the member's email, by the member's account if they had one;
+// and its passkey signed InvitePasskeyChallenge (checkInvitePasskey). It
+// returns the passkey the record lists, and the assertion's sign count.
+func checkInviteProof(st *teamState, aud, team string, r TeamRecord, m *Member) (*ListRec, uint32, error) {
 	var p InviteProof
 	if err := decodeStrictJSON(r.Proof, &p); err != nil {
-		return fmt.Errorf("an invite record's proof: %v", err)
+		return nil, 0, fmt.Errorf("an invite record's proof: %v", err)
 	}
 	secret, err := b64.DecodeString(p.Secret)
 	if err != nil || m.Invite == nil || m.Invite.ID != p.Invite {
-		return errors.New("an invite record's proof names no open invite")
+		return nil, 0, errors.New("an invite record's proof names no open invite")
 	}
 	commit, err := InviteCommit(team, m.ID, p.Invite, secret)
 	switch {
 	case err != nil || commit != m.Invite.Commit:
-		return errors.New("an invite record's secret isn't its invite's")
+		return nil, 0, errors.New("an invite record's secret isn't its invite's")
 	case r.At >= m.Invite.Exp:
-		return errors.New("an invite record is after its invite expired")
+		return nil, 0, errors.New("an invite record is after its invite expired")
 	case p.Email != m.Email:
-		return errors.New("an invite record is for another email than its invite's")
+		return nil, 0, errors.New("an invite record is for another email than its invite's")
+	case m.Account != "" && r.Account != m.Account:
+		return nil, 0, errors.New("an invite record binds a member to another account than theirs")
 	}
-	return nil
+	return checkInvitePasskey(st, aud, team, r, m, p)
+}
+
+// checkInvitePasskey checks the passkey an invite record lists: a passkey of
+// the shape a list allows, whose assertion is over InvitePasskeyChallenge for
+// the record's member and invite and the admitted device's keys, with the
+// strict checks of a passkey join (rp fount.sh, user present and verified,
+// origin https://fount.sh, flat client data) and a sign count that rises past
+// any this passkey carried in the log before.
+//
+// A record with no passkey is refused, on append and on replay.
+func checkInvitePasskey(st *teamState, aud, team string, r TeamRecord, m *Member, p InviteProof) (*ListRec, uint32, error) {
+	if p.Rec == nil {
+		return nil, 0, ErrInvitePasskey
+	}
+	pub, err := p.Rec.public()
+	if err != nil {
+		return nil, 0, fmt.Errorf("an invite record's passkey: %v", err)
+	}
+	d, err := parseTeamInclusion(r.Device, aud, team, r.Account)
+	if err != nil {
+		return nil, 0, err
+	}
+	auth, aerr := b64.DecodeString(p.AuthenticatorData)
+	client, cerr := b64.DecodeString(p.ClientDataJSON)
+	sig, serr := b64.DecodeString(p.Signature)
+	if aerr != nil || cerr != nil || serr != nil {
+		return nil, 0, errors.New("an invite record's assertion is malformed")
+	}
+	challenge, err := InvitePasskeyChallenge(aud, team, m.ID, p.Invite, d.Key, d.Enc)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := verifyAssertion(pub, passkeyAssertion{AuthenticatorData: auth, ClientDataJSON: client, Signature: sig}, challenge, PasskeyRPID, PasskeyOrigins); err != nil {
+		return nil, 0, err
+	}
+	count, err := signCountAfter(st.passkeyCounts[p.Rec.Pub], auth)
+	if err != nil {
+		return nil, 0, err
+	}
+	rec := *p.Rec
+	return &rec, count, nil
 }
 
 // inviteMailText is the invite email (decision 26 step 2): who invites, as
@@ -380,10 +487,12 @@ func (c *Coordinator) admitted(team string, seq uint64) {
 const noticeMemberJoined = "member_joined"
 
 // deviceAdded tells the team's owner, and the member at their own address
-// when the list has one, that a member's passkey added a device: content-
-// free, from the team's lead worker, as admitted. The member's other devices
-// and the admins see it in Fount with Remove.
-func (c *Coordinator) deviceAdded(team string, seq uint64, memberEmail string) {
+// when the list has one, that a member's passkey added a device (kind
+// noticeDeviceAdded), or that a member invited again is back on a new
+// computer and their old ones were removed (noticeMemberBack): content-free,
+// from the team's lead worker, as admitted. The member's other devices and
+// the admins see it in Fount with Remove.
+func (c *Coordinator) deviceAdded(team string, seq uint64, memberEmail, kind string) {
 	if c.sender == nil {
 		return
 	}
@@ -394,20 +503,23 @@ func (c *Coordinator) deviceAdded(team string, seq uint64, memberEmail string) {
 		if err != nil || lead == "" {
 			return
 		}
-		key := team + "/" + noticeDeviceAdded + "/" + strconv.FormatUint(seq, 10)
-		if err := c.NotifyOwner(ctx, key, noticeDeviceAdded, team, lead, time.Time{}); err != nil {
+		key := team + "/" + kind + "/" + strconv.FormatUint(seq, 10)
+		if err := c.NotifyOwner(ctx, key, kind, team, lead, time.Time{}); err != nil {
 			log.Printf("team %s: couldn't tell the owner entry %d added a device: %v", team, seq, err)
 		}
 		if memberEmail == "" {
 			return
 		}
-		if err := c.notify(ctx, key+"/member", noticeDeviceAdded, team, lead, time.Time{}, memberEmail); err != nil {
+		if err := c.notify(ctx, key+"/member", kind, team, lead, time.Time{}, memberEmail); err != nil {
 			log.Printf("team %s: couldn't tell the member entry %d added their device: %v", team, seq, err)
 		}
 	}()
 }
 
-const noticeDeviceAdded = "device_added"
+const (
+	noticeDeviceAdded = "device_added"
+	noticeMemberBack  = "member_back"
+)
 
 // TeamMembership is one team the caller's account is a member of.
 type TeamMembership struct {
@@ -416,11 +528,16 @@ type TeamMembership struct {
 	Member string `json:"member"`
 	Role   Role   `json:"role"`
 	// Admitted says whether the caller's device is admitted; a device that
-	// isn't joins with one that is (teamjoin.go) or with Passkey.
+	// isn't joins with the member's passkey (passkeyjoin.go).
 	Admitted bool `json:"admitted"`
-	// Passkey says whether the list names a passkey for the member, which
-	// admits a new device of theirs at once (passkeyjoin.go).
+	// Passkey says whether the log names a passkey for the member, which
+	// admits a new device of theirs at once.
 	Passkey bool `json:"passkey,omitempty"`
+	// Rec is that passkey. A device accepting an invite asks the platform
+	// for the account's passkeys by these credential ids first, so a person
+	// who has one signs the accept with one prompt; it checks the assertion
+	// against Rec's key, so a wrong Rec only costs that prompt.
+	Rec *ListRec `json:"rec,omitempty"`
 }
 
 // Memberships are the teams whose state lists the caller's account, by
@@ -437,7 +554,7 @@ func (c *Coordinator) Memberships(caller Caller) []TeamMembership {
 		for _, m := range st.members {
 			if m.Account != "" && m.Account == caller.Account {
 				_, holder := st.device(caller.Device)
-				out = append(out, TeamMembership{Team: id, Name: st.name, Member: m.ID, Role: m.Role, Admitted: holder == m, Passkey: m.Rec != nil})
+				out = append(out, TeamMembership{Team: id, Name: st.name, Member: m.ID, Role: m.Role, Admitted: holder == m, Passkey: m.Rec != nil, Rec: m.Rec})
 			}
 		}
 	}
@@ -484,13 +601,13 @@ func (a *api) openInvite(rw http.ResponseWriter, r *http.Request) {
 }
 
 // acceptInvite is POST /v1/teams/{team}/invites/{invite}/accept {member,
-// secret, device}.
+// secret, device, rec, authenticatorData, clientDataJSON, signature}.
 func (a *api) acceptInvite(rw http.ResponseWriter, r *http.Request) {
 	req, secret, ok := a.inviteRequest(rw, r)
 	if !ok {
 		return
 	}
-	v, err := a.c.AcceptInvite(*a.caller, r.PathValue("team"), r.PathValue("invite"), req.Member, secret, req.Device)
+	v, err := a.c.AcceptInvite(*a.caller, r.PathValue("team"), r.PathValue("invite"), req.Member, secret, req.Device, req.InvitePasskey)
 	if err != nil {
 		fail(rw, statusOf(err), err)
 		return

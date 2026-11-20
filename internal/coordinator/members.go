@@ -47,18 +47,12 @@ var opRoles = map[string]Role{
 	"POST /teams/{team}/passkey-join/challenge": roleCaller,
 	"POST /teams/{team}/passkey-join":           roleCaller,
 	"POST /teams/{team}/passkey-vouch":          roleCaller,
-	// Authorized by their proof: an invite's secret and verified email, or
-	// the device's own request to join as its account's member.
+	// Authorized by their proof: an invite's secret, verified email and
+	// passkey.
 	"GET /teams": roleCaller,
 	"POST /teams/{team}/invites/{invite}/open":   roleCaller,
 	"POST /teams/{team}/invites/{invite}/accept": roleCaller,
 	"POST /teams/{team}/invites/{invite}/send":   RoleAdmin,
-	"POST /teams/{team}/joins":                   roleCaller,
-	"GET /teams/{team}/joins":                    RoleReviewer,
-	"GET /teams/{team}/joins/{join}":             roleCaller,
-	"POST /teams/{team}/joins/{join}/approve":    RoleReviewer,
-	"POST /teams/{team}/joins/{join}/deny":       RoleReviewer,
-	"POST /teams/{team}/joins/{join}/accept":     roleCaller,
 
 	// A thread's work: any member who reaches the worker.
 	"startThread":     RoleReviewer,
@@ -171,9 +165,9 @@ type teamState struct {
 	// higher count, so a copied authenticator shows. A passkey that keeps no
 	// count, as synced ones, carries 0 throughout.
 	passkeyCounts map[string]uint32
-	// passkeyJoined are the devices a passkey-join record admitted since the
-	// last list (teamsigner.go).
-	passkeyJoined map[string]bool
+	// passkeyAdmitted are the devices a record admitted, with the member's
+	// passkey, since the last list (teamsigner.go).
+	passkeyAdmitted map[string]bool
 	// start is the hash of the team's first entry, which a passkey-vouch
 	// signs (passkeyvouch.go).
 	start string

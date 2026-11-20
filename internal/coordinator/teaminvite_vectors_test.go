@@ -12,13 +12,14 @@ import (
 
 // teamInviteVectors is testdata/team-invite-vectors.json, for Desktop's Rust
 // port of the formats this lane added: an invite's commit and code, a list
-// with a team name and an open invite, a join's message, code and approval,
-// and a signed draft approval. Ed25519 is deterministic, so every value is.
+// with a team name and an open invite, and a signed draft approval. An
+// invite record, which lists the member's passkey, is in
+// team-passkey-join-vectors.json. Ed25519 is deterministic, so every value is.
 type teamInviteVectors struct {
 	Comment  string `json:"comment"`
 	Audience string `json:"audience"`
 	Team     string `json:"team"`
-	// The admin (and, for the join, the approving device) and the new device.
+	// The admin and the new device.
 	AdminSeed     string `json:"admin_ed25519_seed"`
 	AdminDevice   string `json:"admin_device"`
 	NewSeed       string `json:"new_ed25519_seed"`
@@ -35,13 +36,6 @@ type teamInviteVectors struct {
 	InviteMessage string `json:"invite_commit_message"`
 	ListClaims    string `json:"list_claims"`
 	List          string `json:"list"`
-	InviteProof   string `json:"invite_proof"`
-	Join          string `json:"join"`
-	JoinNonce     string `json:"join_nonce"`
-	JoinMessage   string `json:"join_message"`
-	JoinCode      string `json:"join_code"`
-	JoinSig       string `json:"join_sig"`
-	JoinProof     string `json:"join_proof"`
 	// The approval is signed by the admin's device.
 	ApprovalClaims string `json:"approval_claims"`
 	Approval       string `json:"approval"`
@@ -58,14 +52,14 @@ func makeTeamInviteVectors(t *testing.T) teamInviteVectors {
 		t.Fatal(err)
 	}
 	v := teamInviteVectors{
-		Comment:  "Invite, join and draft-approval vectors (internal/coordinator/teaminvite.go, teamjoin.go, approvalsig.go). Bytes are hex unless named base64url. Test keys only. Rewrite: TEAM_INVITE_VECTORS_WRITE=1 go test -run TestTeamInviteVectors ./internal/coordinator",
+		Comment:  "Invite and draft-approval vectors (internal/coordinator/teaminvite.go, approvalsig.go). Bytes are hex unless named base64url. Test keys only. Rewrite: TEAM_INVITE_VECTORS_WRITE=1 go test -run TestTeamInviteVectors ./internal/coordinator",
 		Audience: "https://coordinator.example", Team: "acct_vectors",
 		AdminSeed: hex.EncodeToString(seq(0x01)), AdminDevice: deviceID(admin.Public().(ed25519.PublicKey)),
 		NewSeed: hex.EncodeToString(seq(0x61)), NewX25519: hex.EncodeToString(newEnc.Bytes()),
 		NewKey: hex.EncodeToString(newKey.Public().(ed25519.PublicKey)), NewEnc: hex.EncodeToString(newEnc.PublicKey().Bytes()),
 		NewDevice: deviceID(newKey.Public().(ed25519.PublicKey)),
 		Member:    "m_ann", Email: "ann@firm.example", Invite: "i_0123456789abcdef",
-		InviteSecret: hex.EncodeToString(seq(0xa1)), Join: "jn_0123456789abcdef01234567", JoinNonce: hex.EncodeToString(seq(0xc1)),
+		InviteSecret: hex.EncodeToString(seq(0xa1)),
 	}
 	secret := seq(0xa1)
 	if v.InviteCommit, err = InviteCommit(v.Team, v.Member, v.Invite, secret); err != nil {
@@ -87,20 +81,6 @@ func makeTeamInviteVectors(t *testing.T) teamInviteVectors {
 		t.Fatal(err)
 	}
 	v.ListClaims = claimsOf(v.List)
-	p, _ := json.Marshal(InviteProof{Invite: v.Invite, Secret: b64.EncodeToString(secret), Email: v.Email})
-	v.InviteProof = string(p)
-	nonce := seq(0xc1)
-	newPub, newEncPub := newKey.Public().(ed25519.PublicKey), newEnc.PublicKey().Bytes()
-	jm, err := JoinMessage(v.Audience, v.Team, v.Member, v.Join, nonce, newPub, newEncPub)
-	if err != nil {
-		t.Fatal(err)
-	}
-	v.JoinMessage = hex.EncodeToString(jm)
-	v.JoinCode = JoinCode(v.Join, nonce, newPub, newEncPub)
-	sig := ed25519.Sign(admin, jm)
-	v.JoinSig = hex.EncodeToString(sig)
-	jp, _ := json.Marshal(JoinProof{Join: v.Join, Nonce: b64.EncodeToString(nonce), Approver: v.AdminDevice, Sig: b64.EncodeToString(sig)})
-	v.JoinProof = string(jp)
 	if v.Approval, err = SignApproval(admin, ApprovalClaims{Aud: v.Audience, Worker: "w_0123456789abcdef01234567", Thread: "thr_0123456789abcdef01234567",
 		Draft: "e_0123456789abcdef", DraftRev: 2, To: []string{"dana@client.example", "lee@client.example"}, Subject: "Re: Q3 close",
 		Text: sha256Hex([]byte("Hi Dana,\n\nThe Q3 close is attached.\n")), Files: []ApprovedFile{{Path: "out/q3.xlsx", SHA256: sha256Hex([]byte("q3"))}}, Iat: 1798761600}); err != nil {
@@ -136,10 +116,8 @@ func TestTeamInviteVectors(t *testing.T) {
 	if err != nil || l.Name != "Acme & Co — Tax" {
 		t.Fatalf("the vector list: %v", err)
 	}
-	jm, _ := hex.DecodeString(v.JoinMessage)
-	sig, _ := hex.DecodeString(v.JoinSig)
-	if !ed25519.Verify(adminPub, jm, sig) || len(pub) != 32 {
-		t.Fatal("the join signature")
+	if len(pub) != 32 {
+		t.Fatal("the new device's key")
 	}
 	want := approvedAs{worker: "w_0123456789abcdef01234567", thread: "thr_0123456789abcdef01234567", draft: "e_0123456789abcdef", draftRev: 2,
 		to: []string{"Lee@client.example", "dana@client.example"}, subject: "Re: Q3 close", text: sha256Hex([]byte("Hi Dana,\n\nThe Q3 close is attached.\n")),

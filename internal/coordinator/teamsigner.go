@@ -4,8 +4,8 @@ import "fmt"
 
 // Who may sign a team's lists (security review 2026-11-19, H3).
 //
-// A device a record admitted (an invite, a join, a passkey join, or any kind
-// a record admits by) reaches the team's workers at once, but it signs no
+// A device a record admitted (an invite, a passkey join, or any kind a
+// record admits by) reaches the team's workers at once, but it signs no
 // list until a list, signed by an admin's device that a list admitted,
 // includes it. Else accepting an admin invite, or a join slipped past an
 // admin, would let the new device sign a list that drops every other admin
@@ -13,7 +13,8 @@ import "fmt"
 // on the record's kind, so a new admitting kind is held to it too.
 //
 // One exception: a device the member's own passkey added (a passkey-join
-// record) signs lists at once when no other admin has a device a list
+// record, or an invite record, which carries the assertion of the passkey it
+// lists) signs lists at once when no other admin has a device a list
 // included. Then no one else could ever include it, and an admin who lost
 // every computer would be locked out of their own team; the passkey is the
 // admin's own, and the record that admitted the device carries its
@@ -35,7 +36,7 @@ func (s *teamState) maySignLists(caller Caller) error {
 		return ErrNotAdmin
 	case d.Since <= s.lastList:
 		return nil
-	case s.passkeyJoined[d.ID] && !s.otherListedAdmin(m):
+	case s.passkeyAdmitted[d.ID] && !s.otherListedAdmin(m):
 		return nil
 	}
 	return fmt.Errorf("%w: a device a record admitted signs no list until a list includes it", ErrNotAdmin)

@@ -24,7 +24,6 @@ func TestDesktopsRoutesPassTheChannel(t *testing.T) {
 		"{draft}", "ent_0123456789abcdef01234567",
 		"{team}", "acct_acme",
 		"{invite}", "inv_1",
-		"{join}", "jn_1",
 		"{path...}", "root/a b.md",
 	)
 	seen := 0
@@ -45,7 +44,7 @@ func TestDesktopsRoutesPassTheChannel(t *testing.T) {
 			t.Errorf("%s isn't carried by the channel: %v", key, err)
 		}
 	}
-	if seen < 30 {
+	if seen < 25 {
 		t.Fatalf("only %d routes checked", seen)
 	}
 }

@@ -93,7 +93,7 @@ func checkPasskeyVouchProof(st *teamState, aud, team string, r TeamRecord, m *Me
 	if err := verifyAssertion(pub, passkeyAssertion{AuthenticatorData: auth, ClientDataJSON: client, Signature: sig}, challenge, PasskeyRPID, PasskeyOrigins); err != nil {
 		return 0, err
 	}
-	return checkSignCount(st, m, auth)
+	return signCountAfter(st.passkeyCounts[m.Rec.Pub], auth)
 }
 
 // PasskeyVouchRequest is POST /v1/teams/{team}/passkey-vouch: the passkey's

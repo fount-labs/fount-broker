@@ -432,3 +432,23 @@ func TestADeviceAddedNoticeGoesToTheOwnerAndTheMember(t *testing.T) {
 		t.Fatalf("notices: owner %v, member %v", owner, member)
 	}
 }
+
+// A member invited again is told, as the owner is, that their old
+// computers were removed.
+func TestAMemberBackNoticeSaysTheOldComputersWereRemoved(t *testing.T) {
+	r := newSendRig(t, modeNotify)
+	ctx := context.Background()
+	if err := r.c.notify(ctx, "acct/member_back/9", noticeMemberBack, r.w.Account, r.w.ID, time.Time{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.notify(ctx, "acct/member_back/9/member", noticeMemberBack, r.w.Account, r.w.ID, time.Time{}, "maria@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	r.pass()
+	for _, to := range []string{"dana@example.com", "maria@example.com"} {
+		sent := r.send.sentTo(to, "New computer added to Acme")
+		if len(sent) != 1 || !strings.Contains(string(r.send.raw[sent[0]]), "old computers were removed") {
+			t.Fatalf("%s: %v", to, sent)
+		}
+	}
+}
