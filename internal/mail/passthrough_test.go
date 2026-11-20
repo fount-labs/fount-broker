@@ -120,6 +120,7 @@ func TestPassthroughOps(t *testing.T) {
 		{OpAddress, testMailbox, "", "POST", "/address", "", `{"address":"tax.smithcpa@fountbox.com"}`},
 		{OpRouting, testMailbox, "", "PUT", "/routing", "", `{"version":2,"owners":["a"]}`},
 		{OpConnect, testMailbox, "", "POST", "/connect", "", `{"address":"w@fountbox.com","owner":"o@example.com"}`},
+		{OpAddressRemove, testMailbox, "", "POST", "/address/remove", "", `{"mailbox_id":"` + testMailbox + `"}`},
 		{OpSend, testMailbox, "", "POST", "/send", "", `{"message":"RnJvbTogdw=="}`},
 		{OpRenew, testMailbox, "", "POST", "/entitlement", "ent.token", `{}`},
 	}

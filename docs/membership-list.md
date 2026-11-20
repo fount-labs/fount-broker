@@ -223,6 +223,13 @@ this worker" without a rewrite, and a removal takes effect in them at once.
 
 ---
 
+**A deleted worker's address** (launch-plan X4). When an entry leaves a worker out, the same commit
+puts its edge mailbox in `State.Releases`. Each mail pass asks the edge to remove it (`POST
+/coordinator/remove`, signed by the generation key) and drops the entry once the edge answers:
+removed, removed before, unknown, not enrolled, or a handle's own address, which the edge keeps.
+Anything else is retried next pass, and the list survives a restart. The edge keeps a tombstone, so
+the address can't be taken by another handle and comes back to its own only after 30 days.
+
 ### 2.5 Invites, second devices, signed approvals and rotation (T)
 
 `lp(ctx, f…)` is `lengthPrefixed`: the context, then each field as a big-endian u16 length and its

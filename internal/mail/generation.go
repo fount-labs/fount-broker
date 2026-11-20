@@ -48,6 +48,8 @@ var (
 	// ErrSendInDoubt: the edge stopped mid-send and won't send this
 	// Message-ID again (POST /send).
 	ErrSendInDoubt = errors.New("mail: the send is in doubt")
+	// ErrHandleKept: the edge never removes a handle's own address.
+	ErrHandleKept = errors.New("mail: a handle's own address isn't removed")
 )
 
 var edgeCodes = map[string]error{
@@ -57,6 +59,7 @@ var edgeCodes = map[string]error{
 	"generation_conflict": ErrGenerationConflict,
 	"not_coordinated":     ErrNotCoordinated,
 	"send_in_doubt":       ErrSendInDoubt,
+	"handle":              ErrHandleKept,
 	"invite_limit":        ErrInviteLimit,
 	"invite_refused":      ErrInviteRefused,
 }
@@ -722,6 +725,41 @@ func (s *Service) SetPaused(ctx context.Context, mailbox string, paused bool) er
 	}
 	if out.MailboxID != mailbox || out.Paused != paused {
 		return fmt.Errorf("%w: POST /coordinator/pause answered %s paused=%t", ErrEdge, out.MailboxID, out.Paused)
+	}
+	return nil
+}
+
+// RemoveMailbox takes an enrolled worker's address off the edge (POST
+// /coordinator/remove), as when its worker or team is deleted, signed by the
+// current generation's key. The edge keeps a tombstone, so the address can't
+// be taken by another handle and its own handle names it again only after 30
+// days. Removed again succeeds, so a retry after a lost answer is safe.
+// ErrNotCoordinated is a mailbox that isn't enrolled, ErrNotFound one the edge
+// doesn't have, and ErrHandleKept a handle's own address, which the edge never
+// removes.
+func (s *Service) RemoveMailbox(ctx context.Context, mailbox string) error {
+	if !validHex(mailbox, 32) {
+		return fmt.Errorf("%w: mailbox must be 64 lowercase hex characters", ErrRequest)
+	}
+	body, err := json.Marshal(struct {
+		MailboxID string `json:"mailbox_id"`
+	}{mailbox})
+	if err != nil {
+		return err
+	}
+	data, err := s.coordinatorCall(ctx, "/coordinator/remove", body, maxJSON)
+	if err != nil {
+		return err
+	}
+	var out struct {
+		MailboxID string `json:"mailbox_id"`
+		Removed   bool   `json:"removed"`
+	}
+	if err := strictJSON(data, &out); err != nil {
+		return err
+	}
+	if out.MailboxID != mailbox || !out.Removed {
+		return fmt.Errorf("%w: POST /coordinator/remove answered %s removed=%t", ErrEdge, out.MailboxID, out.Removed)
 	}
 	return nil
 }

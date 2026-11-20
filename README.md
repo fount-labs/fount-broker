@@ -153,6 +153,7 @@ challenge covers both:
 | `handle` | `GET /handle/{path}`, `path` matching `^[a-z0-9-]{1,64}$` | empty |
 | `mailbox` | `POST /mailbox` | empty |
 | `address` | `POST /address` | the parent mailbox |
+| `address_remove` | `POST /address/remove` | any mailbox of the handle, or the removed one |
 | `routing` | `PUT /routing` | the mailbox |
 | `connect` | `POST /connect` | the mailbox |
 | `send` | `POST /send`, with a body of up to 34 MiB | the mailbox |

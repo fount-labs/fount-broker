@@ -616,10 +616,12 @@ func (c *Coordinator) commitEntry(team string, prior *teamState, entry TeamEntry
 			}
 		}
 	}
+	restoreReleases := c.releaseLocked(removed)
 	c.state.Teams[team] = &Team{ID: team, Log: log, Rotate: rotate, state: next}
 	mintedFor, minted := c.state.TeamMints[team]
 	delete(c.state.TeamMints, team)
 	if err := c.commitSecurity(); err != nil {
+		restoreReleases()
 		maps.Copy(c.state.Workers, oldWorkers)
 		maps.Copy(c.state.Jobs, oldJobs)
 		if existed {

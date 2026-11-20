@@ -24,6 +24,7 @@ const (
 	OpHandle             = "handle"            // GET /handle/{path}
 	OpMailbox            = "mailbox"           // POST /mailbox
 	OpAddress            = "address"           // POST /address
+	OpAddressRemove      = "address_remove"    // POST /address/remove
 	OpRouting            = "routing"           // PUT /routing
 	OpConnect            = "connect"           // POST /connect
 	OpSend               = "send"              // POST /send
@@ -66,13 +67,14 @@ type passOp struct {
 }
 
 var passOps = map[string]passOp{
-	OpHandle:  {method: http.MethodGet, path: "/handle/"},
-	OpMailbox: {method: http.MethodPost, path: "/mailbox"},
-	OpAddress: {method: http.MethodPost, path: "/address", perMailbox: true},
-	OpRouting: {method: http.MethodPut, path: "/routing", perMailbox: true},
-	OpConnect: {method: http.MethodPost, path: "/connect", perMailbox: true},
-	OpSend:    {method: http.MethodPost, path: "/send", perMailbox: true, maxBody: MaxSendBody},
-	OpRenew:   {method: http.MethodPost, path: "/entitlement", perMailbox: true},
+	OpHandle:        {method: http.MethodGet, path: "/handle/"},
+	OpMailbox:       {method: http.MethodPost, path: "/mailbox"},
+	OpAddress:       {method: http.MethodPost, path: "/address", perMailbox: true},
+	OpAddressRemove: {method: http.MethodPost, path: "/address/remove", perMailbox: true},
+	OpRouting:       {method: http.MethodPut, path: "/routing", perMailbox: true},
+	OpConnect:       {method: http.MethodPost, path: "/connect", perMailbox: true},
+	OpSend:          {method: http.MethodPost, path: "/send", perMailbox: true, maxBody: MaxSendBody},
+	OpRenew:         {method: http.MethodPost, path: "/entitlement", perMailbox: true},
 	OpRecoverChallenge: {method: http.MethodGet, path: "/recover/", perMailbox: true, auth: authNone,
 		query: "kc", valid: func(v string) bool { return validHex(v, 32) }},
 	OpRecover: {method: http.MethodPost, path: "/recover", perMailbox: true, auth: authPasskey},
