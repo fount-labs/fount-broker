@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdh"
-	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -93,7 +92,8 @@ func TestARecordAdmittedDeviceSignsNoListUntilAListIncludesIt(t *testing.T) {
 	}
 	eve := newTestDevice(t)
 	seq, _ := f.tt.head()
-	if _, err := f.c.AcceptInvite(withEmail(eve.caller("eve_acct"), "ann@firm.com"), "acme", "i_ann", "m_ann", secret, eve.include(t, "acme", "eve_acct", seq+1)); err != nil {
+	if _, err := f.c.AcceptInvite(withEmail(eve.caller("eve_acct"), "ann@firm.com"), "acme", "i_ann", "m_ann", secret, eve.include(t, "acme", "eve_acct", seq+1),
+		newTestPasskey(t).invitePasskey(t, "acme", "m_ann", "i_ann", eve, ceremony{})); err != nil {
 		t.Fatal(err)
 	}
 	// The new device reaches the workers at once.
@@ -318,34 +318,5 @@ func TestASoleAdminsPasskeyJoinedDeviceSignsAtOnce(t *testing.T) {
 	f.tt.since[phone.id()] = seq
 	if err := f.tt.push(phone, "acme", nil); err != nil {
 		t.Fatalf("the only admin's passkey-joined device: %v", err)
-	}
-}
-
-// A device a code join admitted for the only admin still waits: only the
-// passkey, whose assertion every client checks, signs at once.
-func TestASoleAdminsCodeJoinedDeviceWaits(t *testing.T) {
-	f := newTeamFixture(t)
-	f.tt.drop("m_admin")
-	if err := f.tt.push(f.owner, "acme", nil); err != nil {
-		t.Fatal(err)
-	}
-	laptop := newTestDevice(t)
-	st, err := f.c.StartJoin(laptop.caller("acme"), "acme", laptop.pub(), laptop.enc.PublicKey().Bytes())
-	if err != nil {
-		t.Fatal(err)
-	}
-	nonce := mustB64(t, st.Nonce)
-	msg, _ := JoinMessage(testAudience, "acme", "m_owner", st.Join, nonce, laptop.pub(), laptop.enc.PublicKey().Bytes())
-	if err := f.c.ApproveJoin(f.owner.caller("acme"), "acme", st.Join, ed25519.Sign(f.owner.key, msg)); err != nil {
-		t.Fatal(err)
-	}
-	seq, _ := f.tt.head()
-	if _, err := f.c.AcceptJoin(laptop.caller("acme"), "acme", st.Join, laptop.include(t, "acme", "acme", seq+1)); err != nil {
-		t.Fatal(err)
-	}
-	f.tt.devices["m_owner"] = append(f.tt.devices["m_owner"], laptop)
-	f.tt.since[laptop.id()] = seq + 1
-	if err := f.tt.push(laptop, "acme", nil); !errors.Is(err, ErrNotAdmin) {
-		t.Fatalf("a code-joined device of the only admin: %v", err)
 	}
 }

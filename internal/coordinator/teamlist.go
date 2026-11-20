@@ -113,7 +113,9 @@ type ListInvite struct {
 
 // ListRec is a member's passkey, which admits a new device of theirs at once
 // (passkeyjoin.go): its credential id and its ES256 public key, uncompressed,
-// both base64url.
+// both base64url. The invitee makes it on accepting their invite, and the
+// invite record carries it (teaminvite.go); a list after that carries it on,
+// and an admin's list that names another is the only way to change it.
 type ListRec struct {
 	Cred string `json:"cred"`
 	Pub  string `json:"pub"`
@@ -456,13 +458,22 @@ func (m ListMember) checkShape(workers map[string]bool) error {
 		}
 	}
 	if rec := m.Rec; rec != nil {
-		cred, err := b64.DecodeString(rec.Cred)
-		pub, perr := b64.DecodeString(rec.Pub)
-		if err != nil || len(cred) == 0 || len(cred) > maxPasskeyCred || perr != nil || len(pub) != p256PublicSize || pub[0] != 4 {
-			return errors.New("its passkey is malformed")
+		if _, err := rec.public(); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// public is the passkey's SEC1 public key, once its credential id and key
+// are of the shape a list allows.
+func (rec ListRec) public() ([]byte, error) {
+	cred, err := b64.DecodeString(rec.Cred)
+	pub, perr := b64.DecodeString(rec.Pub)
+	if err != nil || len(cred) == 0 || len(cred) > maxPasskeyCred || perr != nil || len(pub) != p256PublicSize || pub[0] != 4 {
+		return nil, errors.New("its passkey is malformed")
+	}
+	return pub, nil
 }
 
 // parseTeamInclusion checks an inclusion's signature by the key it names and

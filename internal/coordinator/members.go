@@ -47,18 +47,12 @@ var opRoles = map[string]Role{
 	"POST /teams/{team}/passkey-join/challenge": roleCaller,
 	"POST /teams/{team}/passkey-join":           roleCaller,
 	"POST /teams/{team}/passkey-vouch":          roleCaller,
-	// Authorized by their proof: an invite's secret and verified email, or
-	// the device's own request to join as its account's member.
+	// Authorized by their proof: an invite's secret, verified email and
+	// passkey.
 	"GET /teams": roleCaller,
 	"POST /teams/{team}/invites/{invite}/open":   roleCaller,
 	"POST /teams/{team}/invites/{invite}/accept": roleCaller,
 	"POST /teams/{team}/invites/{invite}/send":   RoleAdmin,
-	"POST /teams/{team}/joins":                   roleCaller,
-	"GET /teams/{team}/joins":                    RoleReviewer,
-	"GET /teams/{team}/joins/{join}":             roleCaller,
-	"POST /teams/{team}/joins/{join}/approve":    RoleReviewer,
-	"POST /teams/{team}/joins/{join}/deny":       RoleReviewer,
-	"POST /teams/{team}/joins/{join}/accept":     roleCaller,
 
 	// A thread's work: any member who reaches the worker.
 	"startThread":     RoleReviewer,

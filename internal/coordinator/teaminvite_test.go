@@ -6,7 +6,10 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -40,7 +43,8 @@ func TestAnInviteWorksOnlyWithItsSecretOnceForItsEmail(t *testing.T) {
 	ann, eve := newTestDevice(t), newTestDevice(t)
 	seq, _ := f.tt.head()
 	accept := func(d testDevice, account, email string, secret []byte, since uint64) error {
-		_, err := f.c.AcceptInvite(withEmail(d.caller(account), email), "acme", "i_ann", "m_ann", secret, d.include(t, "acme", account, since))
+		_, err := f.c.AcceptInvite(withEmail(d.caller(account), email), "acme", "i_ann", "m_ann", secret, d.include(t, "acme", account, since),
+			newTestPasskey(t).invitePasskey(t, "acme", "m_ann", "i_ann", d, ceremony{}))
 		return err
 	}
 	wrong := make([]byte, InviteSecretSize)
@@ -98,7 +102,10 @@ func TestAnInviteWorksOnlyWithItsSecretOnceForItsEmail(t *testing.T) {
 	last := log[len(log)-1]
 	var r TeamRecord
 	json.Unmarshal(last.Record, &r)
-	r.Proof, _ = json.Marshal(InviteProof{Invite: "i_ann", Secret: b64.EncodeToString(secret), Email: "eve@firm.com"})
+	var p InviteProof
+	json.Unmarshal(r.Proof, &p)
+	p.Email = "eve@firm.com"
+	r.Proof, _ = json.Marshal(p)
 	last.Record, _ = json.Marshal(r)
 	last.Hash = entryHash(TeamRecordContext, last.Record)
 	if _, err := reduceTeam("acme", testAudience, append(log[:len(log)-1:len(log)-1], last)); err == nil {
@@ -116,8 +123,8 @@ func TestAnInviteDoesntWorkAfterItExpires(t *testing.T) {
 	_, later := checkInvite(st, "acme", "m_ann", "i_ann", secret, withEmail(ann.caller("ann"), "ann@firm.com"), time.Now().Add(61*time.Minute))
 	m := st.byID["m_ann"]
 	proof, _ := json.Marshal(InviteProof{Invite: "i_ann", Secret: b64.EncodeToString(secret), Email: "ann@firm.com"})
-	late := checkInviteProof(st, "acme", TeamRecord{At: m.Invite.Exp, Proof: proof}, m)
-	inTime := checkInviteProof(st, "acme", TeamRecord{At: m.Invite.Exp - 1, Proof: proof}, m)
+	_, _, late := checkInviteProof(st, testAudience, "acme", TeamRecord{At: m.Invite.Exp, Proof: proof}, m)
+	_, _, inTime := checkInviteProof(st, testAudience, "acme", TeamRecord{At: m.Invite.Exp - 1, Proof: proof}, m)
 	f.c.mu.Unlock()
 	if now != nil || inTime != nil {
 		t.Fatalf("in time: %v %v", now, inTime)
@@ -127,76 +134,61 @@ func TestAnInviteDoesntWorkAfterItExpires(t *testing.T) {
 	}
 }
 
-func TestASecondDeviceJoinsWithAListedDevicesApproval(t *testing.T) {
+// The code join is gone (decided 2026-11-19): its routes are, and no join
+// record is appended. One already in a dev log still replays, checked as
+// before, so those teams keep working.
+func TestTheCodeJoinIsGoneAndAnOldJoinRecordStillReplays(t *testing.T) {
 	f := newTeamFixture(t)
+	srv := httptest.NewServer(f.c.AccountHandler(newTestDevice(t).caller("maria")))
+	defer srv.Close()
+	for _, route := range []string{"POST /v1/teams/acme/joins", "GET /v1/teams/acme/joins", "GET /v1/teams/acme/joins/jn_1",
+		"POST /v1/teams/acme/joins/jn_1/approve", "POST /v1/teams/acme/joins/jn_1/deny", "POST /v1/teams/acme/joins/jn_1/accept"} {
+		method, path, _ := strings.Cut(route, " ")
+		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader("{}"))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("%s: %d", route, resp.StatusCode)
+		}
+	}
+	for k := range opRoles {
+		if strings.Contains(k, "/joins") {
+			t.Errorf("opRoles still has %s", k)
+		}
+	}
+
 	phone := newTestDevice(t)
-	key, enc := phone.pub(), phone.enc.PublicKey().Bytes()
-	if _, err := f.c.StartJoin(newTestDevice(t).caller("maria"), "acme", key, enc); err == nil {
-		t.Error("a device asked to join with another's key")
+	seq, head := f.tt.head()
+	join := "jn_0123456789abcdef01234567"
+	nonce := make([]byte, joinNonceSize)
+	rand.Read(nonce)
+	msg, _ := JoinMessage(testAudience, "acme", "m_reviewer", join, nonce, phone.pub(), phone.enc.PublicKey().Bytes())
+	proofBy := func(approver testDevice) json.RawMessage {
+		p, _ := json.Marshal(JoinProof{Join: join, Nonce: b64.EncodeToString(nonce), Approver: approver.id(), Sig: b64.EncodeToString(ed25519.Sign(approver.key, msg))})
+		return p
 	}
-	if _, err := f.c.StartJoin(phone.caller("nobody"), "acme", key, enc); !errors.Is(err, ErrNoTeam) {
-		t.Errorf("an account that isn't a member: %v", err)
+	rec := TeamRecord{Kind: RecordJoin, Seq: seq + 1, Prev: head, Member: "m_reviewer", Account: "maria",
+		Device: phone.include(t, "acme", "maria", seq+1), At: time.Now().Unix(), Proof: proofBy(f.reviewer)}
+	if _, err := f.c.appendRecord(phone.caller("maria"), "acme", rec, func(*teamState, *Member) error { return nil }); !errors.Is(err, ErrListRefused) {
+		t.Fatalf("a new join record: %v", err)
 	}
-	st, err := f.c.StartJoin(phone.caller("maria"), "acme", key, enc)
-	if err != nil || st.State != "waiting" || st.Member != "m_reviewer" {
-		t.Fatalf("start: %v %+v", err, st)
-	}
-	nonce, _ := b64.DecodeString(st.Nonce)
-	if mine, _ := f.c.PendingJoins(f.reviewer.caller("maria"), "acme"); len(mine) != 1 || mine[0].Join != st.Join ||
-		JoinCode(st.Join, nonce, key, enc) != JoinCode(mine[0].Join, nonce, key, enc) {
-		t.Fatalf("maria's pending joins: %+v", mine)
-	}
-	if theirs, _ := f.c.PendingJoins(f.owner.caller("acme"), "acme"); len(theirs) != 0 {
-		t.Errorf("another member sees maria's request: %+v", theirs)
-	}
-	seq, _ := f.tt.head()
-	if _, err := f.c.AcceptJoin(phone.caller("maria"), "acme", st.Join, phone.include(t, "acme", "maria", seq+1)); !errors.Is(err, ErrListRefused) {
-		t.Errorf("accepted before approval: %v", err)
-	}
-	msg, _ := JoinMessage(testAudience, "acme", "m_reviewer", st.Join, nonce, key, enc)
-	if err := f.c.ApproveJoin(f.owner.caller("acme"), "acme", st.Join, ed25519.Sign(f.owner.key, msg)); !errors.Is(err, ErrNotFound) {
-		t.Errorf("another member approved: %v", err)
-	}
-	other, _ := JoinMessage(testAudience, "acme", "m_reviewer", st.Join, nonce, key, make([]byte, 32))
-	if err := f.c.ApproveJoin(f.reviewer.caller("maria"), "acme", st.Join, ed25519.Sign(f.reviewer.key, other)); !errors.Is(err, ErrListRefused) {
-		t.Errorf("an approval of other keys: %v", err)
-	}
-	if err := f.c.ApproveJoin(f.reviewer.caller("maria"), "acme", st.Join, ed25519.Sign(f.reviewer.key, msg)); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := f.c.JoinStatusOf(phone.caller("maria"), "acme", st.Join); err != nil || got.State != "approved" || got.Seq != seq {
-		t.Fatalf("status: %v %+v", err, got)
-	}
-	// The inclusion must carry the approved keys.
-	if _, err := f.c.AcceptJoin(phone.caller("maria"), "acme", st.Join, newTestDevice(t).include(t, "acme", "maria", seq+1)); err == nil {
-		t.Error("accepted with another device's inclusion")
-	}
-	if _, err := f.c.AcceptJoin(phone.caller("maria"), "acme", st.Join, phone.include(t, "acme", "maria", seq+1)); err != nil {
-		t.Fatal(err)
-	}
-	if _, role, err := f.c.access(phone.caller("maria"), f.w1.ID, RoleReviewer); err != nil || role != RoleReviewer {
-		t.Fatalf("maria's phone: %v %s", err, role)
-	}
-	if _, err := f.c.JoinStatusOf(phone.caller("maria"), "acme", st.Join); !errors.Is(err, ErrNotFound) {
-		t.Errorf("the request outlived its record: %v", err)
-	}
-	// The log replays: the record's proof checks against the state before it.
 	f.c.mu.Lock()
 	log := slices.Clone(f.c.state.Teams["acme"].Log)
 	f.c.mu.Unlock()
-	if _, err := reduceTeam("acme", testAudience, log); err != nil {
-		t.Fatalf("the log with the join: %v", err)
+	entry := func(r TeamRecord) TeamEntry {
+		raw, _ := json.Marshal(r)
+		return TeamEntry{Seq: r.Seq, Record: raw, Hash: entryHash(TeamRecordContext, raw)}
 	}
-	last := log[len(log)-1]
-	var r TeamRecord
-	json.Unmarshal(last.Record, &r)
-	var p JoinProof
-	json.Unmarshal(r.Proof, &p)
-	p.Approver = f.owner.id()
-	r.Proof, _ = json.Marshal(p)
-	last.Record, _ = json.Marshal(r)
-	last.Hash = entryHash(TeamRecordContext, last.Record)
-	if _, err := reduceTeam("acme", testAudience, append(log[:len(log)-1:len(log)-1], last)); err == nil {
+	st, err := reduceTeam("acme", testAudience, append(slices.Clone(log), entry(rec)))
+	if err != nil || st.byDevice[phone.id()] == nil {
+		t.Fatalf("an old join record: %v", err)
+	}
+	bad := rec
+	bad.Proof = proofBy(f.owner)
+	if _, err := reduceTeam("acme", testAudience, append(slices.Clone(log), entry(bad))); err == nil {
 		t.Error("a join approved by another member's device replayed")
 	}
 }
@@ -218,7 +210,8 @@ func TestARemovedMembersDeviceIsRefused(t *testing.T) {
 			t.Errorf("the removed member keeps a wrap on %s", w.ID)
 		}
 	}
-	if _, err := f.c.StartJoin(newTestDevice(t).caller("maria"), "acme", nil, nil); err == nil {
+	d := newTestDevice(t)
+	if _, err := f.c.StartPasskeyJoin(d.caller("maria"), "acme", d.pub(), d.enc.PublicKey().Bytes()); err == nil {
 		t.Error("a removed member's account asked to join")
 	}
 }

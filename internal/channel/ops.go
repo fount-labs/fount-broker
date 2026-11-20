@@ -26,8 +26,6 @@ import (
 //	POST v1/teams                         GET  v1/teams
 //	PUT  v1/workers/{id}/threads/{tid}/drafts/{draft}/files/{path...}?rev=N
 //	POST v1/teams/{team}/invites/{invite}/{open,accept,send}
-//	POST v1/teams/{team}/joins            GET  v1/teams/{team}/joins
-//	GET  v1/teams/{team}/joins/{join}     POST v1/teams/{team}/joins/{join}/{approve,deny,accept}
 //	POST v1/teams/{team}/passkey-join     POST v1/teams/{team}/passkey-join/challenge
 //	POST v1/teams/{team}/passkey-vouch
 //
@@ -121,12 +119,6 @@ func teamOp(method string, rest []string) (ok, changes bool) {
 		return post || method == http.MethodGet, method == http.MethodGet
 	case len(rest) == 3 && rest[0] == "invites" && teamID.MatchString(rest[1]):
 		return post && (rest[2] == "open" || rest[2] == "accept" || rest[2] == "send"), false
-	case len(rest) == 1 && rest[0] == "joins":
-		return post || method == http.MethodGet, false
-	case len(rest) == 2 && rest[0] == "joins" && teamID.MatchString(rest[1]):
-		return method == http.MethodGet, false
-	case len(rest) == 3 && rest[0] == "joins" && teamID.MatchString(rest[1]):
-		return post && (rest[2] == "approve" || rest[2] == "deny" || rest[2] == "accept"), false
 	case len(rest) == 1 && (rest[0] == "passkey-join" || rest[0] == "passkey-vouch"):
 		return post, false
 	case len(rest) == 2 && rest[0] == "passkey-join" && rest[1] == "challenge":

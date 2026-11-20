@@ -858,6 +858,7 @@ func TestAnInviteRecordAdmitsOnceAndBindsTheAccount(t *testing.T) {
 		{"an account already a member", f.reviewer.caller("maria"), rec(f.reviewer, "maria", seq+1), ok},
 		{"a device already admitted", f.reviewer.caller("ann"), rec(f.reviewer, "ann", seq+1), ok},
 		{"a join before the invite is taken", ann.caller("ann"), TeamRecord{Kind: RecordJoin, Member: "m_zed", Account: "ann", Device: ann.include(t, "acme", "ann", seq+1)}, ok},
+		{"a code join, which is gone", ann.caller("maria"), TeamRecord{Kind: RecordJoin, Member: "m_reviewer", Account: "maria", Device: ann.include(t, "acme", "maria", seq+1)}, ok},
 		{"no kind", ann.caller("ann"), TeamRecord{Kind: "admin", Member: "m_zed", Account: "ann"}, ok},
 		{"no member", ann.caller("ann"), TeamRecord{Kind: RecordInvite, Member: "m_nobody", Account: "ann", Device: ann.include(t, "acme", "ann", seq+1)}, ok},
 	} {

@@ -52,7 +52,6 @@ func (c *Coordinator) Handler() http.Handler {
 //	POST /v1/teams/{team}/log             {"v":3,"list","deks"}: a list an admin device signed (teamlog.go)
 //	GET  /v1/teams                        the teams the caller's account is a member of
 //	POST /v1/teams/{team}/invites/{invite}/open|accept|send  an invite (teaminvite.go)
-//	POST /v1/teams/{team}/joins, GET …/joins[/{join}], POST …/{join}/approve|deny|accept  a second device (teamjoin.go)
 //	POST /v1/teams/{team}/passkey-join/challenge, POST …/passkey-join  a member's new device with their passkey (passkeyjoin.go)
 //	POST /v1/teams/{team}/passkey-vouch  a member's passkey vouches for their own team (passkeyvouch.go)
 //	POST /v1/workers/{id}/grant, /revoke  the retired v2 grants: 410
@@ -90,12 +89,6 @@ func (a *api) accountRoutes(mux router) {
 	mux.HandleFunc("POST /v1/teams/{team}/invites/{invite}/open", a.openInvite)
 	mux.HandleFunc("POST /v1/teams/{team}/invites/{invite}/accept", a.acceptInvite)
 	mux.HandleFunc("POST /v1/teams/{team}/invites/{invite}/send", a.sendInvite)
-	mux.HandleFunc("POST /v1/teams/{team}/joins", a.startJoin)
-	mux.HandleFunc("GET /v1/teams/{team}/joins", a.pendingJoins)
-	mux.HandleFunc("GET /v1/teams/{team}/joins/{join}", a.joinStatus)
-	mux.HandleFunc("POST /v1/teams/{team}/joins/{join}/approve", a.approveJoin)
-	mux.HandleFunc("POST /v1/teams/{team}/joins/{join}/deny", a.denyJoin)
-	mux.HandleFunc("POST /v1/teams/{team}/joins/{join}/accept", a.acceptJoin)
 	mux.HandleFunc("PUT /v1/workers/{id}/mail", a.setUpMail)
 	a.routes(mux, "/v1")
 }

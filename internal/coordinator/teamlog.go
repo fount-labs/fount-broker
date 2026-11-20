@@ -23,9 +23,13 @@ import (
 // TeamRecordContext is what a record's hash is taken over, before its JSON.
 const TeamRecordContext = "fount-team-record-v1\n"
 
-// The record kinds (§2.3): an invite taken (teaminvite.go), a member's new
-// device approved by another of theirs (teamjoin.go) or by their passkey
+// The record kinds (§2.3): an invite taken, which lists the member's passkey
+// (teaminvite.go), and a member's new device added by that passkey
 // (passkeyjoin.go). Each checks its proof and calls appendRecord.
+//
+// RecordJoin, a new device approved by another of the member's with a
+// six-digit code, is gone (decided 2026-11-19): no new one is appended, and
+// one already in a dev log still replays (teamjoinreplay.go).
 const (
 	RecordInvite      = "invite"
 	RecordJoin        = "join"
@@ -35,10 +39,14 @@ const (
 // A member's passkey vouching for their own team (passkeyvouch.go) admits no
 // device.
 
-// recordAdmits are the record kinds that admit a device: all of them.
+// recordAdmits are the record kinds that admit a device.
 var recordAdmits = map[string]bool{RecordInvite: true, RecordJoin: true, RecordPasskeyJoin: true}
 
-var recordKinds = map[string]bool{RecordInvite: true, RecordJoin: true, RecordPasskeyJoin: true, RecordPasskeyVouch: true}
+// recordKinds are the kinds a log replays; appendKinds those appended now.
+var (
+	recordKinds = map[string]bool{RecordInvite: true, RecordJoin: true, RecordPasskeyJoin: true, RecordPasskeyVouch: true}
+	appendKinds = map[string]bool{RecordInvite: true, RecordPasskeyJoin: true, RecordPasskeyVouch: true}
+)
 
 var (
 	// ErrTeamStale is an entry that isn't the head's next: a replay, a list
@@ -186,8 +194,15 @@ func (s *teamState) applyRecord(r TeamRecord, team, aud string) error {
 	}
 	switch r.Kind {
 	case RecordInvite:
-		if err := checkInviteProof(s, team, r, m); err != nil {
+		rec, count, err := checkInviteProof(s, aud, team, r, m)
+		if err != nil {
 			return err
+		}
+		if rec != nil {
+			m.Rec = rec
+			if count != 0 {
+				s.passkeyCounts[rec.Pub] = count
+			}
 		}
 	case RecordJoin:
 		if err := checkJoinProof(s, aud, team, r, m); err != nil {
@@ -467,7 +482,7 @@ func (c *Coordinator) appendRecordLocked(caller Caller, team string, prior *team
 	}
 	m := prior.byID[rec.Member]
 	switch {
-	case !recordKinds[rec.Kind]:
+	case !appendKinds[rec.Kind]:
 		return 0, refuse("no record kind %.20q", rec.Kind)
 	case m == nil:
 		return 0, refuse("no member %.40q", rec.Member)

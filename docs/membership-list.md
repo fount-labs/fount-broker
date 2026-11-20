@@ -24,7 +24,7 @@ Builds on `launch-plan.md` decisions 5, 17, 18, 24–27 and sections T and H,
 | 1 | One authority per **team**: its membership log. Signed lists and admission records, one sequence, hash-chained. | 2 |
 | 2 | A **list** names the team's members (by account, or by email while invited), each one's role, the devices admitted so far, the team's workers, and which workers each reviewer reaches. Only a device of a member who is admin in the state before it can sign the next one. | 2.2 |
 | 3 | Each worker belongs to one team and **inherits its admins**. A solo account is a team of one, whose id is the account's. A firm team's id is a random one the coordinator makes for the account that signs its first list, never an identity provider's organisation id. | 2.2 |
-| 4 | An **admission record** lets a device in without an admin online: an invite redeemed, a member's new device approved by another of theirs or by their passkey. Each carries proof a client checks against the list on replay. | 2.3 |
+| 4 | An **admission record** lets a device in without an admin online: an invite redeemed (which lists the member's passkey), a member's new device added by that passkey. Each carries proof a client checks against the list on replay. | 2.3 |
 | 5 | Two roles: **admin** and **reviewer**. Every operation has a required role in one table; an operation missing from it is refused. | 3 |
 | 6 | The caller is checked on **every request** against the current state: account, device, role and, for a reviewer, the worker. Nothing is cached in the channel. | 3.2 |
 | 7 | Each entry's `seq` is the head's plus one and its `prev` is the head's hash. A stale, replayed or forked entry is refused. Clients keep the highest `(seq, hash)` they've seen and refuse anything lower or different. | 4 |
@@ -98,7 +98,7 @@ TeamListContext = "fount-team-members-v3\n"
       "workers": ["*"] | ["w_…", …],    // reviewers only: all the team's workers, or these
       "devices": ["<team inclusion>", …],   // sorted by device id, 0..MaxMemberDevices
       "invite": {"id", "commit", "exp"},    // optional: one open invite (§2.3)
-      "rec": {"cred", "pub"}                // optional: the member's passkey, which admits a new device of theirs (§2.3)
+      "rec": {"cred", "pub"}                // optional: the member's passkey, which admits a new device of theirs (§2.3); an invite record lists it, a later list carries it on, and an admin's list naming another changes it
     }
   ],
   "workers": [ {"id": "w_…", "dek": "<DEKCommitment>"}, … ]   // sorted by id, 0..MaxTeamWorkers
@@ -175,8 +175,8 @@ their proof checks**, and call `appendRecord` (§9) once a proof checks out.
 
 | Kind | Proof | Checked by the coordinator | Admits | Built in |
 |---|---|---|---|---|
-| `invite` | the invite's secret, revealed once used | an open invite on the member, `commit == base64url(SHA-256(lp("fount-team-invite-v1\0", team, member, invite, secret)))`, before `exp`, not used before (a record for it exists = used), the channel credential's **verified email** is the member's, and the channel's account isn't another member's. Binds `account`. | a device | T, invites |
-| `join` | `{join, nonce, approver, sig}`: a signature by one of the member's admitted devices over `lp("fount-team-join-v1\0", aud, team, member, join, nonce, key, enc)`, the new device's Ed25519 and X25519 keys | the approver is admitted under the same member; the channel's account is the member's. The code comparison of `cloud-worker-devices.md` §2.3 happens on the devices. | a device | T, second device (the code path) |
+| `invite` | `{invite, secret, email, rec: {cred, pub}, authenticatorData, clientDataJSON, signature}`: the invite's secret, revealed once used, and the member's passkey with a WebAuthn assertion by it over `SHA-256(lp("fount-team-invite-passkey-v1\0", aud, team, member, invite, key, enc))`, `key`, `enc` the admitted device's | an open invite on the member, `commit == base64url(SHA-256(lp("fount-team-invite-v1\0", team, member, invite, secret)))`, before `exp`, not used before (a record for it exists = used), the channel credential's **verified email** is the member's, the channel's account isn't another member's and, for a member invited again, is theirs. The passkey: `rec` of a list's shape, ES256 by `rec.pub`, the assertion checked as a `passkey-join`'s (rp, flags, origin, flat client data, sign count). Binds `account`; `rec` becomes the member's passkey. A record with no passkey and no assertion is from before passkey-only joins: it replays (dev logs) and lists none; none is appended. | a device | T, invites; J, the passkey |
+| `join` | `{join, nonce, approver, sig}`: a signature by one of the member's admitted devices over `lp("fount-team-join-v1\0", aud, team, member, join, nonce, key, enc)` | **Gone** (decided 2026-11-19): none is appended. One already in a log still replays: the approver is admitted under the same member (`teamjoinreplay.go`). | a device | T, the code join, removed in J |
 | `passkey-join` | `{nonce, cred, authenticatorData, clientDataJSON, signature}`, base64url: a WebAuthn assertion by the member's `rec` passkey over `SHA-256(lp("fount-team-passkey-join-v1\0", aud, team, member, prev, nonce, key, enc))`, where `prev` is the record's own and `key`, `enc` the admitted device's | `cred` is the member's `rec`; ES256 by `rec.pub`; authenticator data for rp `fount.sh` with user present and verified; client data a `webauthn.get` over that challenge, origin `https://fount.sh`, not `crossOrigin`, one flat object of strings, booleans and nulls, valid UTF-8 without escapes; the sign count 0 throughout, or above the last nonzero count a `passkey-join` record carried for that passkey; the channel's account is the member's. The nonce is the coordinator's, single-use, for 5 minutes. | a device, at once | P2, a member's new device (`passkeyjoin.go`) |
 | `passkey-vouch` | `{cred, authenticatorData, clientDataJSON, signature}`, base64url: a WebAuthn assertion by the member's `rec` passkey over `SHA-256(lp("fount-team-vouch-v1\0", aud, team, member, start))`, where `start` is the hash of the team's first entry | the team is the member's own (`team == account`); the caller is a device of the member the team admits; `cred` is the member's `rec`; the assertion checks as a `passkey-join`'s, sign count included; no earlier vouch by the same passkey; no device | nothing: says the account's own team is the member's (M3) | S2 (`passkeyvouch.go`) |
 
@@ -184,10 +184,15 @@ The challenge binds the head, so an assertion is good for one append, and the de
 admits only the device it was made for. A client replaying the log checks the same things except
 the nonce's freshness. An admin can also add a member's new device with a list.
 
-The passkey is the one the list names, which only an admin's device signs; Fount's servers can't
-put another there, and the coordinator holds no passkey. Removing `rec`, or the member, stops it
-at once. If a member loses their passkey and every device, a solo account's workers are lost; on
-a team an admin re-adds the member.
+The passkey is the one the member listed on accepting their invite, by an assertion that binds the
+invite and the accepting device's keys, or the one an admin's list names since; Fount's servers
+can't put another there without that passkey, and the coordinator holds no passkey. The invite
+challenge names no passkey, so a person who has a Fount passkey already signs the accept with one
+prompt; with none, Desktop makes one, then signs (two). Removing `rec`, or the member, stops it at
+once. Every new computer of a member joins with their passkey; there is no other way in. If a
+member loses their passkey and every device, a solo account's workers are lost; on a team an admin
+invites them again: the list puts an open invite on the member they are (same id, role and
+account), and accepting it lists the new passkey in place of the old.
 
 Each admission notifies the team's admins (decision 26 step 5): the owner is emailed
 (`member_joined`, or `device_added` for a passkey join, which also goes to the member's own
@@ -228,8 +233,11 @@ bytes. Vectors for every format here: `internal/coordinator/testdata/team-invite
   `fi1.<team>.<member>.<invite>.<base64url secret>`, after `#` in `https://fount.sh/join#…` and
   `fount://join#…`, so no server log sees it. `POST /v1/teams/{team}/invites/{invite}/open`
   `{member, secret}` checks it without using it (Desktop shows the firm, role and email);
-  `…/accept` `{member, secret, device}` appends the `invite` record, whose proof is
-  `{invite, secret, email}`, and seals the device its wraps. The checks, in order: not used, an
+  `…/accept` `{member, secret, device, rec, authenticatorData, clientDataJSON, signature}`
+  appends the `invite` record, whose proof is `{invite, secret, email, rec, authenticatorData,
+  clientDataJSON, signature}` (§2.3), and seals the device its wraps. An accept with no passkey is
+  refused (400). `GET /v1/teams` gives each membership's `rec`, so a new computer asks the
+  platform for those credentials first. The checks, in order: not used, an
   open invite with that id, the commit (constant time), before `exp`, the Cloud credential's `eml`
   (lower-case, present only when Clerk verified it) equals the member's email. The record's proof
   rechecks all but the credential when any client replays the log.
@@ -241,14 +249,8 @@ bytes. Vectors for every format here: `internal/coordinator/testdata/team-invite
   under the worker like any send, so `/sent/query` finds it and a retry posts nothing twice. A
   refusal fails the record: `invite_limit` (429) as `SEND_LIMIT`, `invite_refused` (400) as
   `BAD_MESSAGE`. Desktop's "Copy invite link" stays the fallback.
-- **A second device.** `POST /v1/teams/{team}/joins {key, enc}` from the new device (its own
-  key; its account must be a member's) gives `{join, nonce, member, expiresAt}`, kept 15 minutes
-  in memory, 3 per member. The member's admitted devices list them (`GET …/joins`), both show
-  `JoinCode` = `SHA-256(lp("fount-team-join-code-v1\0", join, nonce, key, enc))[:4]` big-endian
-  mod 10⁶ as six digits, and one signs (`…/{join}/approve {sig}`) or drops it (`…/deny`). The new
-  device polls `GET …/{join}` and accepts (`…/accept {device}`) with an inclusion carrying the
-  approved keys. About 20 bits: the code stops a person approving the wrong request, not a
-  coordinator, which holds the DEKs anyway.
+- **A second device** joins with the member's passkey (`passkey-join`, §2.3). The six-digit
+  code join (`…/joins`) is gone (decided 2026-11-19).
 - **Admissions** email the team's owner (`member_joined`, once per entry). The cancel window is
   the next list without the device.
 - **A signed approval** of a draft in the app is a token like a list's:
@@ -429,8 +431,8 @@ wiped when this ships. Desktop moves to the team log in the same release.
 - They never make an admin. A Clerk organisation role, if the credential carries one, may be shown
   or used by Desktop to suggest a change; an admin's device still signs it.
 - They can't add a member, change a role, admit a device or remove one: every one of those is an
-  admin-signed list, or a record with a proof they can't make (an invite secret they never saw, a
-  listed device's approval, the member's passkey).
+  admin-signed list, or a record with a proof they can't make (an invite secret they never saw, the
+  member's passkey).
 
 ---
 
@@ -440,7 +442,7 @@ The review in `launch-plan.md` T and `teams.md` §11 should take each of these.
 
 | # | Threat | What stops it |
 |---|---|---|
-| 1 | fount-infra or Clerk mints a device on a member's account | It isn't admitted: a device needs a list, an invite secret, a listed device's approval or the passkey. |
+| 1 | fount-infra or Clerk mints a device on a member's account | It isn't admitted: a device needs a list, an invite secret with the passkey's assertion, or the passkey. |
 | 2 | fount-infra or Clerk adds a person, or makes someone admin | Only an admin device's signature changes the list. No credential claim is read as a role. |
 | 3 | A reviewer acts as admin: signs a list, changes settings, writes the worker's files, deletes a worker | The signer must be an admin device in the state before the list; every route and kind checks `opRoles`. |
 | 4 | A reviewer reaches a worker they aren't assigned | `requireRole` checks the assignment; the worker's derived `Devices` don't include them. 404. |
@@ -453,7 +455,7 @@ The review in `launch-plan.md` T and `teams.md` §11 should take each of these.
 | 11 | A removed member keeps the DEK they opened | Accepted: no DEK rotation on removal. Address keys rotate when an admin is lost (§5). |
 | 12 | An invite link forwarded or intercepted | Single use, expiring, and only for an account whose verified email is the invite's. Whoever controls that mailbox can accept it, as with every email invite; admins are notified and can remove the device. |
 | 12a | A member's passkey phished or synced to an attacker's device | The attacker also needs a sign-in to the member's account. The assertion's rp, origin and user verification are checked; the device is admitted at once, the owner and member are emailed and the member's other devices show it with Remove; an admin's list removes it, and removing `rec` stops another. A copied authenticator that counts shows as a sign count that doesn't rise. A device a record admits signs no list until a list includes it (H3, `teamsigner.go`), except that a device the passkey of the team's only admin added signs at once when no other admin has a device a list included: else an admin who lost every computer could never sign again. With a phished passkey that is a takeover of a one-admin team, which the emails and Remove make visible. |
-| 13 | Parser differential between Desktop (serde) and the coordinator (Go) on a signed list | Strict decoding with unknown fields and duplicate keys refused on both sides; the stored bytes are what is hashed; shared test vectors (`testdata/team-vectors.json`, `team-passkey-join-vectors.json`, `team-passkey-vouch-vectors.json`). A passkey's client data is one flat object read by exact key with no escapes, so both read the same fields; the vectors carry a high-S signature, nested, numeric, repeated and case-varied keys. |
+| 13 | Parser differential between Desktop (serde) and the coordinator (Go) on a signed list | Strict decoding with unknown fields and duplicate keys refused on both sides; the stored bytes are what is hashed; shared test vectors (`testdata/team-vectors.json`, `team-passkey-join-vectors.json` (with the invite's passkey), `team-passkey-vouch-vectors.json`). A passkey's client data is one flat object read by exact key with no escapes, so both read the same fields; the vectors carry a high-S signature, nested, numeric, repeated and case-varied keys. |
 | 14 | A list that leaves no admin | Refused. |
 | 15 | One device under two members, one account as two members, or a worker in two teams | Refused. |
 | 16 | Someone claims a team id first | The first list of a team must be for the signer's own account id, or a firm id the coordinator minted at random for that account. An organisation's id, or another account's mint, is refused. |

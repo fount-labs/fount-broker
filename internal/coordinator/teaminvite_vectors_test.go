@@ -12,8 +12,10 @@ import (
 
 // teamInviteVectors is testdata/team-invite-vectors.json, for Desktop's Rust
 // port of the formats this lane added: an invite's commit and code, a list
-// with a team name and an open invite, a join's message, code and approval,
-// and a signed draft approval. Ed25519 is deterministic, so every value is.
+// with a team name and an open invite, a join's message and approval (the
+// code join is gone; an old join record still replays), and a signed draft
+// approval. The passkey an invite lists is in
+// team-passkey-join-vectors.json. Ed25519 is deterministic, so every value is.
 type teamInviteVectors struct {
 	Comment  string `json:"comment"`
 	Audience string `json:"audience"`
@@ -39,7 +41,6 @@ type teamInviteVectors struct {
 	Join          string `json:"join"`
 	JoinNonce     string `json:"join_nonce"`
 	JoinMessage   string `json:"join_message"`
-	JoinCode      string `json:"join_code"`
 	JoinSig       string `json:"join_sig"`
 	JoinProof     string `json:"join_proof"`
 	// The approval is signed by the admin's device.
@@ -58,7 +59,7 @@ func makeTeamInviteVectors(t *testing.T) teamInviteVectors {
 		t.Fatal(err)
 	}
 	v := teamInviteVectors{
-		Comment:  "Invite, join and draft-approval vectors (internal/coordinator/teaminvite.go, teamjoin.go, approvalsig.go). Bytes are hex unless named base64url. Test keys only. Rewrite: TEAM_INVITE_VECTORS_WRITE=1 go test -run TestTeamInviteVectors ./internal/coordinator",
+		Comment:  "Invite, join and draft-approval vectors (internal/coordinator/teaminvite.go, teamjoinreplay.go, approvalsig.go). Bytes are hex unless named base64url. Test keys only. Rewrite: TEAM_INVITE_VECTORS_WRITE=1 go test -run TestTeamInviteVectors ./internal/coordinator",
 		Audience: "https://coordinator.example", Team: "acct_vectors",
 		AdminSeed: hex.EncodeToString(seq(0x01)), AdminDevice: deviceID(admin.Public().(ed25519.PublicKey)),
 		NewSeed: hex.EncodeToString(seq(0x61)), NewX25519: hex.EncodeToString(newEnc.Bytes()),
@@ -96,7 +97,6 @@ func makeTeamInviteVectors(t *testing.T) teamInviteVectors {
 		t.Fatal(err)
 	}
 	v.JoinMessage = hex.EncodeToString(jm)
-	v.JoinCode = JoinCode(v.Join, nonce, newPub, newEncPub)
 	sig := ed25519.Sign(admin, jm)
 	v.JoinSig = hex.EncodeToString(sig)
 	jp, _ := json.Marshal(JoinProof{Join: v.Join, Nonce: b64.EncodeToString(nonce), Approver: v.AdminDevice, Sig: b64.EncodeToString(sig)})

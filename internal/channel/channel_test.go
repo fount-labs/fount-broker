@@ -328,8 +328,6 @@ func TestCheckRequest(t *testing.T) {
 		"PUT v1/workers/" + w + "/threads/" + th + "/drafts/ent_0123456789abcdef01234567/files/threads/" + th[4:] + "/outputs/j/a b.docx?rev=2",
 		"POST v1/teams/acct_acme/invites/i_m_ann/send", "GET v1/teams",
 		"POST v1/teams/acct_acme/invites/inv_1/open", "POST v1/teams/acct_acme/invites/inv_1/accept",
-		"POST v1/teams/acct_acme/joins", "GET v1/teams/acct_acme/joins", "GET v1/teams/acct_acme/joins/jn_1",
-		"POST v1/teams/acct_acme/joins/jn_1/approve", "POST v1/teams/acct_acme/joins/jn_1/deny", "POST v1/teams/acct_acme/joins/jn_1/accept",
 		"POST v1/teams/acct_acme/passkey-join", "POST v1/teams/acct_acme/passkey-join/challenge",
 		"POST v1/teams/acct_acme/passkey-vouch",
 	} {
@@ -356,6 +354,9 @@ func TestCheckRequest(t *testing.T) {
 		"GET v1/teams/acct_acme/invites/inv_1/open", "POST v1/teams/acct_acme/invites/inv_1/delete", "POST v1/teams/acct_acme/invites/inv_1",
 		"PUT v1/teams/acct_acme/joins", "POST v1/teams/acct_acme/joins/jn_1", "GET v1/teams/acct_acme/joins/jn_1/approve",
 		"POST v1/teams/acct_acme/joins/jn.1/accept", "POST v1/teams/acct_acme/joins?since=1", "POST v1/teams/acct_acme/joins/jn_1/approve/x",
+		// The code join is gone (decided 2026-11-19).
+		"POST v1/teams/acct_acme/joins", "GET v1/teams/acct_acme/joins", "GET v1/teams/acct_acme/joins/jn_1",
+		"POST v1/teams/acct_acme/joins/jn_1/approve", "POST v1/teams/acct_acme/joins/jn_1/deny", "POST v1/teams/acct_acme/joins/jn_1/accept",
 		"GET v1/teams/acct_acme/passkey-join", "POST v1/teams/acct_acme/passkey-join/x", "GET v1/teams/acct_acme/passkey-join/challenge",
 		"GET v1/teams/acct_acme/passkey-vouch", "POST v1/teams/acct_acme/passkey-vouch/x",
 		"POST v1/teams/acct_acme/recovery", "POST v1/teams/acct_acme/recovery/start", "POST v1/teams/acct_acme/x",
