@@ -84,6 +84,15 @@ func (f backupFlags) check() error {
 	if f.restore != "" && f.restore != restoreLatest && !strings.HasPrefix(f.restore, "roots/") {
 		return fmt.Errorf("--restore %q: latest, or a backup's key, roots/<generation>-<seq>-<unix>", f.restore)
 	}
+	if f.restore != "" && !f.dryRun {
+		// Before the vault is asked for a generation: a refused start
+		// mustn't fence the coordinator running now.
+		if has, mark, err := f.volume(); err != nil {
+			return err
+		} else if has && mark == nil {
+			return errNeverRestoredOnto
+		}
+	}
 	switch f.keyMode {
 	case keyVault:
 		// Backups without the vault's counter could be rolled back by
@@ -246,6 +255,24 @@ func (f backupFlags) config(d *durable) *coordinator.BackupConfig {
 	}
 }
 
+var errNeverRestoredOnto = fmt.Errorf("--restore: %w; this one was never restored onto, so take --restore off, or give the restore an empty --dir", coordinator.ErrRestoreOverVolume)
+
+// volume is whether --dir has a coordinator's state, and if so its restore
+// mark, nil on a volume nothing was restored onto.
+func (f backupFlags) volume() (bool, *coordinator.RestoreMark, error) {
+	stateDir := filepath.Join(f.dir, "state")
+	if _, err := os.Stat(filepath.Join(stateDir, "state.json")); errors.Is(err, fs.ErrNotExist) {
+		return false, nil, nil
+	} else if err != nil {
+		return false, nil, err
+	}
+	st, err := coordinator.LoadState(stateDir)
+	if err != nil {
+		return false, nil, err
+	}
+	return true, st.Restored, nil
+}
+
 // errDryRunDone ends a dry run: the coordinator checked the backup and
 // serves nothing.
 var errDryRunDone = errors.New("the restore dry run is done")
@@ -266,15 +293,14 @@ func (f backupFlags) restoreVolume(ctx context.Context, d *durable, key coordina
 	stateDir := filepath.Join(f.dir, "state")
 	opts := coordinator.RestoreOptions{Bucket: d.bucket, Counter: d.vault, Key: key, Root: root, DryRun: f.dryRun}
 	if !f.dryRun {
-		if _, err := os.Stat(filepath.Join(stateDir, "state.json")); err == nil {
-			st, err := coordinator.LoadState(stateDir)
-			if err != nil {
-				return err
-			}
-			if st.Restored == nil {
-				return fmt.Errorf("--restore: %w; this one was never restored onto, so take --restore off, or give the restore an empty --dir", coordinator.ErrRestoreOverVolume)
-			}
-			log.Printf("restore: the volume was restored from %s at %s; serving it", st.Restored.Root, st.Restored.At.Format(time.RFC3339))
+		has, mark, err := f.volume()
+		switch {
+		case err != nil:
+			return err
+		case has && mark == nil:
+			return errNeverRestoredOnto
+		case has:
+			log.Printf("restore: the volume was restored from %s at %s; serving it", mark.Root, mark.At.Format(time.RFC3339))
 			return nil
 		}
 		opts.Generations, opts.StateDir, opts.Store = d.gen, stateDir, coordinator.DirStore{Root: filepath.Join(f.dir, "objects")}
