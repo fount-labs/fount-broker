@@ -3,17 +3,10 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/xml"
 	"errors"
-	"io"
-	"maps"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -21,65 +14,10 @@ import (
 
 	"github.com/fount-labs/fount-broker/internal/coordinator"
 	"github.com/fount-labs/fount-broker/internal/mail"
+	"github.com/fount-labs/fount-broker/internal/s3bucket/s3buckettest"
 	"github.com/fount-labs/fount-broker/internal/vaultkey"
 	"github.com/fount-labs/fount-broker/internal/vaultkey/cloudvaulttest"
 )
-
-// memS3 is just enough S3 for the wiring: conditional Put, Get, Delete, and
-// List a page of two at a time.
-type memS3 struct {
-	mu   sync.Mutex
-	objs map[string][]byte
-}
-
-func (m *memS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	key := strings.TrimPrefix(r.URL.Path, "/")
-	switch {
-	case r.Method == http.MethodGet && r.URL.Query().Get("list-type") == "2":
-		var keys []string
-		for _, k := range slices.Sorted(maps.Keys(m.objs)) {
-			if strings.HasPrefix(k, r.URL.Query().Get("prefix")) && k > r.URL.Query().Get("continuation-token") {
-				keys = append(keys, k)
-			}
-		}
-		type content struct {
-			Key string `xml:"Key"`
-		}
-		out := struct {
-			XMLName     xml.Name  `xml:"ListBucketResult"`
-			IsTruncated bool      `xml:"IsTruncated"`
-			Next        string    `xml:"NextContinuationToken,omitempty"`
-			Contents    []content `xml:"Contents"`
-		}{}
-		if len(keys) > 2 {
-			keys = keys[:2]
-			out.IsTruncated, out.Next = true, keys[1]
-		}
-		for _, k := range keys {
-			out.Contents = append(out.Contents, content{k})
-		}
-		data, _ := xml.Marshal(out)
-		w.Write(data)
-	case r.Method == http.MethodGet:
-		data, ok := m.objs[key]
-		if !ok {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.Write(data)
-	case r.Method == http.MethodPut:
-		if _, ok := m.objs[key]; ok && r.Header.Get("If-None-Match") == "*" {
-			w.WriteHeader(http.StatusPreconditionFailed)
-			return
-		}
-		m.objs[key], _ = io.ReadAll(r.Body)
-	case r.Method == http.MethodDelete:
-		delete(m.objs, key)
-		w.WriteHeader(http.StatusNoContent)
-	}
-}
 
 func testEnv(k string) string {
 	return map[string]string{"AWS_ACCESS_KEY_ID": "AKIDTEST", "AWS_SECRET_ACCESS_KEY": "secret"}[k]
@@ -138,9 +76,7 @@ func TestBackupFlags(t *testing.T) {
 // restore onto a new volume brings the worker back, once.
 func TestBackupAndRestoreThroughTheFlags(t *testing.T) {
 	ctx := context.Background()
-	s3 := &memS3{objs: map[string][]byte{}}
-	srv := httptest.NewServer(s3)
-	defer srv.Close()
+	s3, srv := s3buckettest.Start(t, "AKIDTEST")
 	vaultFile := filepath.Join(t.TempDir(), "dev-vault.json")
 	flags := func(dir, restore string, dry bool) backupFlags {
 		return backupFlags{bucket: srv.URL, region: "us-east-1", devVault: vaultFile, keyMode: keyDev, dir: dir,
@@ -183,7 +119,7 @@ func TestBackupAndRestoreThroughTheFlags(t *testing.T) {
 	if _, err := c1.Backup(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(s3.objs); n < 3 {
+	if n := s3.Len(); n < 3 {
 		t.Fatalf("%d objects in the bucket", n)
 	}
 
@@ -243,9 +179,8 @@ func TestBackupAndRestoreThroughTheFlags(t *testing.T) {
 // vault released, and count in the vault under the generation it gave.
 func TestBackupsUnderTheVaultsKey(t *testing.T) {
 	ctx := context.Background()
-	s3 := &memS3{objs: map[string][]byte{}}
-	srv := httptest.NewServer(s3)
-	defer srv.Close()
+	// Every request must be signed by the vault's access key.
+	s3, srv := s3buckettest.Start(t, "AKIDVAULT")
 	pair := cloudvaulttest.Start(t)
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	cert, n, err := pair.Boot(pub)
@@ -265,13 +200,6 @@ func TestBackupsUnderTheVaultsKey(t *testing.T) {
 	if err := f.check(); err != nil {
 		t.Fatal(err)
 	}
-	var auth []string
-	s3check := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth = append(auth, r.Header.Get("Authorization"))
-		s3.ServeHTTP(w, r)
-	}))
-	defer s3check.Close()
-	f.bucket = s3check.URL
 	d, err := f.openDurable("")
 	if err != nil {
 		t.Fatal(err)
@@ -295,8 +223,8 @@ func TestBackupsUnderTheVaultsKey(t *testing.T) {
 	if _, err := c.Backup(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(auth) == 0 || !strings.Contains(auth[0], "Credential=AKIDVAULT/") {
-		t.Fatalf("the bucket was called with %q", auth)
+	if s3.Len() == 0 {
+		t.Fatal("nothing reached the bucket")
 	}
 
 	// A dry run's side has no generation and boots nothing.
