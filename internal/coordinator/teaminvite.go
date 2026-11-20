@@ -311,7 +311,7 @@ func inviteMailText(firm, email string, role Role, code string, exp time.Time) s
 	b.WriteString("Or, in Fount, choose Join a team and paste this code:\n" + code + "\n\n")
 	fmt.Fprintf(&b, "The invite works once, for %s, until %s.\n\n", email, exp.UTC().Format("2 Jan 2006 15:04 MST"))
 	// The edge's proof mail (reviewers.go), so they expect it.
-	b.WriteString("Once you join, you'll get an email asking you to reply to turn on email updates. Reply to it to hear about drafts and questions by email. Updates start within three days.\n")
+	b.WriteString("Once you join, you'll get an email asking you to reply to turn on email updates about drafts and questions.\n")
 	return b.String()
 }
 
