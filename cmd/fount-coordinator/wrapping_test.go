@@ -17,6 +17,9 @@ import (
 
 const testCommitment = "db2d1d4e7a8e474c78d48b89e93ccac6d9810776cda72ca8955000f9987dcb95"
 
+// testAuthority is a GENERATION_AUTHORITY_KEY.
+const testAuthority = "XIVBssrY9spP0DGRTC7Jue6vqFasENvFNje+z/94yJA="
+
 func vaultFlags() keyFlags {
 	return keyFlags{
 		mode:       keyVault,
@@ -38,6 +41,15 @@ func TestKeyFlags(t *testing.T) {
 	if err := (keyFlags{mode: keyDev, testAPI: true}).check(); err != nil {
 		t.Fatalf("the test API with the dev key: %v", err)
 	}
+	withMail := vaultFlags()
+	withMail.authority, withMail.mail = testAuthority, true
+	if err := withMail.check(); err != nil || !withMail.boots() {
+		t.Fatalf("mail with an authority: %v, boots %t", err, withMail.boots())
+	}
+	withMail.dryRun = true
+	if withMail.boots() {
+		t.Fatal("a dry run boots a generation")
+	}
 	for name, change := range map[string]func(f *keyFlags){
 		"the test API with the vault's key": func(f *keyFlags) { f.testAPI = true },
 		"an unknown mode":                   func(f *keyFlags) { f.mode = "file" },
@@ -51,6 +63,11 @@ func TestKeyFlags(t *testing.T) {
 		"a short commitment":                func(f *keyFlags) { f.commitment = testCommitment[:62] },
 		"no status listener":                func(f *keyFlags) { f.statusListen = "" },
 		"vault flags with the dev key":      func(f *keyFlags) { f.mode = keyDev },
+		"mail with no generation":           func(f *keyFlags) { f.mail = true },
+		"a bad authority key":               func(f *keyFlags) { f.authority = "abc" },
+		"an authority with the dev key": func(f *keyFlags) {
+			f.mode, f.vaults, f.vaultRepo, f.commitment, f.authority = keyDev, "", "", "", testAuthority
+		},
 	} {
 		f := vaultFlags()
 		change(&f)

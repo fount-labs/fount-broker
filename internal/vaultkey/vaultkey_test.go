@@ -19,6 +19,7 @@ import (
 	"github.com/fount-labs/fount-mail-vault/wire"
 
 	"github.com/fount-labs/fount-broker/internal/coordinator"
+	"github.com/fount-labs/fount-broker/internal/vaultkey/cloudvaulttest"
 )
 
 // fakeDoc stands in for an attestation document: the nonce it answers and the
@@ -76,6 +77,10 @@ type fakeVault struct {
 	// sealWith, when set, seals with another key than the one the document
 	// endorses.
 	sealWith *ecdh.PrivateKey
+	// cloud, when set, boots generations as a Cloud vault does; s3 rides in
+	// the payload.
+	cloud *cloudvaulttest.Pair
+	s3    *wire.S3Credentials
 
 	mu     sync.Mutex
 	nonces map[string]bool
@@ -110,12 +115,27 @@ func (v *fakeVault) serve(t *testing.T) *httptest.Server {
 			http.Error(w, "bad nonce", http.StatusForbidden)
 			return
 		}
-		requester, err := v.trusts(req.Document, issued)
+		attested := issued
+		if len(req.CoordinatorKey) > 0 {
+			attested = wire.BootNonce(issued, req.CoordinatorKey)
+		}
+		requester, err := v.trusts(req.Document, attested)
 		if err != nil {
 			http.Error(w, "refused at verify: "+err.Error(), http.StatusForbidden)
 			return
 		}
-		payload, _ := json.Marshal(wire.Payload{Keyset: v.keyset.MarshalBinary()})
+		p := wire.Payload{Keyset: v.keyset.MarshalBinary(), S3: v.s3}
+		if len(req.CoordinatorKey) > 0 {
+			if v.cloud == nil {
+				http.Error(w, "refused at boot: not a Cloud vault", http.StatusForbidden)
+				return
+			}
+			if p.GenerationCertificate, _, err = v.cloud.Boot(req.CoordinatorKey); err != nil {
+				http.Error(w, "booting a generation: "+err.Error(), http.StatusServiceUnavailable)
+				return
+			}
+		}
+		payload, _ := json.Marshal(p)
 		sealer := v.key
 		if v.sealWith != nil {
 			sealer = v.sealWith

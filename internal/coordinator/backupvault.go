@@ -46,8 +46,9 @@ type BackupBucket interface {
 // security sequence, as of the last change to security state it
 // acknowledged, and the generation that may move it.
 //
-// What the Cloud vault must provide (lane G), next to the wrapping key and
-// the generation certificate it already releases together (decision 18):
+// What the Cloud vault provides (fount-mail-vault COORDINATOR_MODE;
+// WireCounter is the client), next to the wrapping key and the generation
+// certificate it releases together (decision 18):
 //   - One counter per coordinator deployment, durable across vault restarts
 //     and replicated to its peer before a CompareAndSwap returns.
 //   - Load answers the current generation and count.

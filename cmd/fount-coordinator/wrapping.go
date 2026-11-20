@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,7 +27,14 @@ type keyFlags struct {
 	vaults     string
 	vaultRepo  string
 	commitment string
-	testAPI    bool
+	// authority is --coordinator-authority-key, the Cloud vaults'
+	// GENERATION_AUTHORITY_KEY: with it, a boot takes a generation.
+	authority string
+	// mail is --mail, which with the vault's key needs a generation.
+	mail bool
+	// dryRun is --restore-dry-run, which must not move the generation.
+	dryRun  bool
+	testAPI bool
 	// statusListen is --status-listen, or --client-listen, which serves
 	// /health too. Vault needs one for the healthcheck, since it serves no
 	// dev API.
@@ -45,8 +53,8 @@ const (
 func (f keyFlags) check() error {
 	switch f.mode {
 	case keyDev:
-		if f.vaults != "" || f.vaultRepo != "" || f.commitment != "" {
-			return errors.New("--vaults, --vault-repo and --keyset-commitment need --wrapping-key vault")
+		if f.vaults != "" || f.vaultRepo != "" || f.commitment != "" || f.authority != "" {
+			return errors.New("--vaults, --vault-repo, --keyset-commitment and --coordinator-authority-key need --wrapping-key vault")
 		}
 		return nil
 	case keyVault:
@@ -71,8 +79,20 @@ func (f keyFlags) check() error {
 	if f.statusListen == "" {
 		return errors.New("--wrapping-key vault needs --status-listen or --client-listen, for the healthcheck while it waits for a vault")
 	}
+	if f.authority != "" {
+		if _, err := wire.ParseAuthorityKey(f.authority); err != nil {
+			return fmt.Errorf("--coordinator-authority-key: %w", err)
+		}
+	} else if f.mail {
+		// Without a generation the edge never fences an old coordinator,
+		// and an address key is never rotated (security review H2).
+		return errors.New("--mail with --wrapping-key vault needs --coordinator-authority-key, so the coordinator has a generation")
+	}
 	return nil
 }
+
+// boots says whether this process takes a generation from the vault.
+func (f keyFlags) boots() bool { return f.mode == keyVault && f.authority != "" && !f.dryRun }
 
 // keyStatus is what /status says about the wrapping key. It names the key by
 // an ID derived from it, never the key.
@@ -84,6 +104,7 @@ type keyStatus struct {
 	Commitment string    `json:"keyset_commitment,omitempty"`
 	Vault      string    `json:"vault,omitempty"`
 	Since      time.Time `json:"since"`
+	Generation uint64    `json:"generation,omitempty"`
 	Failures   int       `json:"failed_rounds,omitempty"`
 	LastError  string    `json:"last_error,omitempty"`
 }
@@ -128,32 +149,78 @@ func statusAPI(s *keyStatus, jobs *atomic.Pointer[coordinator.Coordinator]) http
 }
 
 // wrappingKey gets the key by f.mode: the dev key from its file, or the
-// vaults' keyset, waiting for a vault as long as it takes.
-func wrappingKey(ctx context.Context, f keyFlags, status *keyStatus) (coordinator.WrappingKey, error) {
+// vaults' keyset, waiting for a vault as long as it takes. With the vaults'
+// key and an authority it also returns what else the vault gave: the
+// generation, the counter and the bucket's credentials.
+func wrappingKey(ctx context.Context, f keyFlags, status *keyStatus) (coordinator.WrappingKey, *vaultSide, error) {
 	if f.mode == keyDev {
 		key, err := devWrappingKey(filepath.Join(f.dir, "wrapping.key"))
 		if err == nil {
 			status.held(&key, "", "")
 		}
-		return key, err
+		return key, nil, err
 	}
 	vaults, err := vaultkey.ParseVaults(f.vaults)
 	if err != nil {
-		return coordinator.WrappingKey{}, err
+		return coordinator.WrappingKey{}, nil, err
 	}
 	src, err := vaultkey.Tinfoil(vaults, f.vaultRepo, f.commitment)
 	if err != nil {
-		return coordinator.WrappingKey{}, err
+		return coordinator.WrappingKey{}, nil, err
 	}
-	log.Printf("waiting for the wrapping key from %s (releases of %s, keyset %s)", f.vaults, f.vaultRepo, f.commitment)
+	if f.authority != "" {
+		src.Authority, _ = wire.ParseAuthorityKey(f.authority)
+		src.Boot = f.boots()
+	}
+	log.Printf("waiting for the wrapping key from %s (releases of %s, keyset %s, generation %t)", f.vaults, f.vaultRepo, f.commitment, src.Boot)
 	got, err := src.Wait(ctx, vaultkey.DefaultBackoff, func(err error) {
 		status.failed(err)
 		log.Printf("no vault gave the wrapping key: %v", err)
 	})
 	if err != nil {
-		return coordinator.WrappingKey{}, err
+		return coordinator.WrappingKey{}, nil, err
 	}
 	status.held(&got.Key, got.Commitment, got.Vault)
 	log.Printf("wrapping key %s from %s in %s", vaultkey.KeyID(&got.Key), got.Vault, got.Elapsed.Round(time.Millisecond))
-	return got.Key, nil
+	side, err := newVaultSide(vaults, src.Authority, got)
+	if err != nil {
+		return coordinator.WrappingKey{}, nil, err
+	}
+	if side != nil && side.gen != nil {
+		status.generation(side.gen.G.Number)
+		log.Printf("coordinator generation %d from %s", side.gen.G.Number, got.Vault)
+	}
+	return got.Key, side, nil
+}
+
+// vaultSide is what the Cloud vaults give a coordinator beyond its key.
+type vaultSide struct {
+	counter coordinator.VaultCounter
+	// gen is this process's generation; nil in a dry run.
+	gen *coordinator.FixedGeneration
+	// s3 is the backup bucket's credentials, nil when the vault holds none.
+	s3 *wire.S3Credentials
+}
+
+// newVaultSide is nil without an authority: no generation, no counter.
+func newVaultSide(vaults []string, authority ed25519.PublicKey, got *vaultkey.Fetched) (*vaultSide, error) {
+	if authority == nil {
+		return nil, nil
+	}
+	side := &vaultSide{s3: got.S3}
+	if got.Generation != nil {
+		side.gen = &coordinator.FixedGeneration{G: *got.Generation}
+	}
+	counter, err := vaultkey.NewCounter(vaults, authority, side.gen)
+	if err != nil {
+		return nil, err
+	}
+	side.counter = counter
+	return side, nil
+}
+
+func (s *keyStatus) generation(n uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Generation = n
 }
