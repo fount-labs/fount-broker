@@ -56,10 +56,21 @@ type Checker func(doc, nonce []byte) (ed25519.PublicKey, error)
 // An Endorsement is what a verified document vouches for: the peer's key,
 // and Fresh, the verification's freshness deadline, at and after which it
 // may authorize nothing new (tinfoil-go's FreshnessExpiresAt). Zero is no
-// deadline, an unattested document's.
+// deadline, an unattested document's. Release is the release the document
+// proved it runs, zero for an unattested one.
 type Endorsement struct {
-	Key   ed25519.PublicKey
-	Fresh time.Time
+	Key     ed25519.PublicKey
+	Fresh   time.Time
+	Release Release
+}
+
+// A Release is the code a peer's verified document proved it runs: the
+// repository the checker pinned, the release tag and the artifact's digest,
+// as tinfoil-go verified them.
+type Release struct {
+	Repo   string `json:"repo"`
+	Tag    string `json:"tag"`
+	Digest string `json:"digest"`
 }
 
 // A KeyChecker is a Checker that also says how long its verification stays

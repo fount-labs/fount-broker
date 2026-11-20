@@ -105,7 +105,10 @@ func TestATurnSummaryThatBreaksARuleIsRefusedWhole(t *testing.T) {
 }
 
 // summaryRunner is an agent job that ends with events.
-type summaryRunner struct{ events []byte }
+type summaryRunner struct {
+	events  []byte
+	enclave *RunnerEnclave
+}
 
 func (r summaryRunner) Run(_ context.Context, _, _ string, job JobDirs) (RunResult, error) {
 	if job.Mode == jobwire.ModeIndex {
@@ -115,17 +118,22 @@ func (r summaryRunner) Run(_ context.Context, _, _ string, job JobDirs) (RunResu
 	for _, out := range outputs {
 		os.WriteFile(filepath.Join(out, "recon.xlsx"), []byte("cells"), fileMode)
 	}
-	return RunResult{Events: r.events}, nil
+	return RunResult{Events: r.events, Enclave: r.enclave}, nil
 }
 
 func newSummaryCoordinator(t *testing.T, events []byte) (*Coordinator, Worker) {
+	t.Helper()
+	return newRunnerCoordinator(t, summaryRunner{events: events})
+}
+
+func newRunnerCoordinator(t *testing.T, runner Runner) (*Coordinator, Worker) {
 	t.Helper()
 	key, _ := NewWrappingKey()
 	dir := t.TempDir()
 	c, err := New(Config{
 		StateDir: filepath.Join(dir, "state"), WorkDir: filepath.Join(dir, "work"),
 		Store: DirStore{Root: filepath.Join(dir, "objects")}, Key: key, Pool: NewPool(1, 2, nil),
-		Runner: summaryRunner{events}, Audience: testAudience, JobConfig: json.RawMessage(`{"model":"m"}`),
+		Runner: runner, Audience: testAudience, JobConfig: json.RawMessage(`{"model":"m"}`),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -172,6 +180,9 @@ func TestACloudTurnShowsItsStepsTextAndQuestion(t *testing.T) {
 		t.Fatalf("view %s", view)
 	}
 	agent, question := drawn.Entries[1], drawn.Entries[2]
+	if _, ok := agent["enclave"]; ok {
+		t.Errorf("a turn whose runner didn't dial in names an enclave: %v", agent)
+	}
 	if agent["kind"] != "agent-turn" || agent["text"] != "Which statement?" {
 		t.Errorf("turn drawn %v", agent)
 	}
@@ -198,5 +209,31 @@ func TestATurnWithAHostileSummaryShowsOnlyItsFiles(t *testing.T) {
 	view, _ := json.Marshal(th.view())
 	if !strings.Contains(string(view), `"steps":[]`) {
 		t.Errorf("a turn without a summary draws no steps list: %s", view)
+	}
+}
+
+func TestAnEndedTurnSaysWhichEnclaveRanIt(t *testing.T) {
+	ran := &RunnerEnclave{Kind: enclaveTeam, Repo: "fount-labs/fount-cloud-runner", Tag: "v0.4.0", Digest: "5f2c"}
+	c, w := newRunnerCoordinator(t, summaryRunner{events: eventsWith(goodSummary), enclave: ran})
+	tid := startThread(t, c, w, "op_1", "Reconcile April").ThreadID
+	th := waitThread(t, c, w, tid, "the question", func(th *threadRecord) bool { return th.Status == StatusWaiting })
+	if got := th.Entries[1].Enclave; got == nil || *got != *ran {
+		t.Fatalf("the turn's enclave %+v", got)
+	}
+	view, _ := json.Marshal(th.view())
+	want := `"enclave":{"kind":"team","repo":"fount-labs/fount-cloud-runner","tag":"v0.4.0","digest":"5f2c"}`
+	if !strings.Contains(string(view), want) {
+		t.Errorf("view %s", view)
+	}
+}
+
+func TestAnEnclaveRecordThatDoesntHoldIsDropped(t *testing.T) {
+	for _, data := range []string{`{"kind":"pool"`, `{"kind":"tm_0123456789abcdef01234567"}`, `{"kind":"team","team":"tm_1"}`, `{}`} {
+		if e := readEnclave([]byte(data)); e != nil {
+			t.Errorf("%s read as %+v", data, e)
+		}
+	}
+	if e := readEnclave([]byte(`{"kind":"pool"}`)); e == nil || e.Kind != enclavePool {
+		t.Errorf("a pool record read as %+v", e)
 	}
 }

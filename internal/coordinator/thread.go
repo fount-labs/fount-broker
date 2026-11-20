@@ -134,6 +134,8 @@ type threadEntry struct {
 	// An ended turn's steps, from its turn summary (jobresult.go); its final
 	// text is Text.
 	Steps []workStep `json:"steps,omitempty"`
+	// An ended turn's enclave: where its job ran, and the runner's release.
+	Enclave *RunnerEnclave `json:"enclave,omitempty"`
 	// A question's wait, its state in State, its text in Text and the job
 	// that asked it in JobID.
 	WaitID string `json:"waitId,omitempty"`
@@ -298,12 +300,13 @@ type jobView struct {
 type jobFiles struct {
 	outputs, proposed []string
 	turn              *turnSummary
+	enclave           *RunnerEnclave
 }
 
 // endTurn fills an ended turn from what its job left, and asks the question
 // the job ended on.
 func (th *threadRecord) endTurn(e *threadEntry, f jobFiles, rev uint64, now time.Time) error {
-	e.State, e.Outputs, e.Proposed = turnDone, f.outputs, f.proposed
+	e.State, e.Outputs, e.Proposed, e.Enclave = turnDone, f.outputs, f.proposed, f.enclave
 	if f.turn == nil {
 		return nil
 	}
@@ -439,6 +442,9 @@ func (c *Coordinator) follow(t *Tree, th *threadRecord) (bool, error) {
 			// nothing, but the turn shows its state and files without it.
 			f.turn, _ = readTurnSummary(events)
 		}
+		if data, err := t.Read(prefixJobs + jobID + "/" + enclaveFile); err == nil {
+			f.enclave = readEnclave(data)
+		}
 		return f
 	}
 	now := time.Now().UTC()
@@ -536,6 +542,10 @@ type turnView struct {
 	// Queued is why a live turn's job hasn't started: "busy", the runners
 	// are all in use, or "waiting", behind the account's own jobs.
 	Queued string `json:"queued,omitempty"`
+	// Enclave is where an ended turn's job ran: "pool" or "team", and the
+	// release the coordinator verified its runner runs. Absent for a turn
+	// that ended before the coordinator kept it.
+	Enclave *RunnerEnclave `json:"enclave,omitempty"`
 }
 
 type attachmentView struct {
@@ -615,7 +625,7 @@ func (th *threadRecord) display(since uint64) []DisplayEntry {
 			out = append(out, noteView{entryHead: head, Author: "You", Text: e.Text})
 		case entryTurn:
 			head.Kind = "agent-turn"
-			v := turnView{entryHead: head, JobID: e.JobID, Steps: e.Steps, Text: e.Text, Live: e.State == turnLive, Queued: e.Queued}
+			v := turnView{entryHead: head, JobID: e.JobID, Steps: e.Steps, Text: e.Text, Live: e.State == turnLive, Queued: e.Queued, Enclave: e.Enclave}
 			if v.Steps == nil {
 				v.Steps = []workStep{}
 			}
