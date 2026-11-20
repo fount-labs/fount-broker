@@ -12,9 +12,18 @@ decisions 15 to 18). The code is `internal/coordinator/backup*.go` and
 |---|---|
 | Backups, the security counter, restore, export | Built in `internal/coordinator` |
 | S3 bucket client (`internal/s3bucket`) | Built: SigV4, write-once `Put`, paged `List`, through the S3 forwarder |
-| `--backup-bucket`, `--restore`, `--restore-dry-run` | Built, with `--wrapping-key dev` and `--dev-vault` |
-| The Cloud vault's generation and counter | **Not built.** Design: fount-mail-vault `docs/COORDINATOR-COUNTER.md` |
-| Backups under `--wrapping-key vault` | Refused until the counter exists: without it, whoever holds the bucket could roll security state back |
+| `--backup-bucket`, `--restore`, `--restore-dry-run` | Built, with `--wrapping-key dev` and `--dev-vault`, or `--wrapping-key vault` and `--coordinator-authority-key` |
+| The Cloud vault's generation and counter | Built in fount-mail-vault (`COORDINATOR_MODE`, `docs/COORDINATOR-COUNTER.md`); the coordinator's side is `vaultkey` (the boot) and `coordinator.WireCounter`. Not yet run against a deployed Cloud vault pair |
+| Backups under `--wrapping-key vault` | Need `--coordinator-authority-key`. The bucket's credentials come from the vault, never from `$AWS_*` |
+
+With `--wrapping-key vault --coordinator-authority-key <key>`, the key is the
+Cloud vaults' `GENERATION_AUTHORITY_KEY`, the same string the edge has as
+`COORDINATOR_AUTHORITY_KEY`. Every boot's keyset pull then boots a
+generation: the coordinator attests to a fresh per-boot Ed25519 key, and the
+vault answers a certificate for it under that authority, once both vaults
+hold the new generation. That fences every coordinator before it, at the
+vault's counter and at the edge. `--restore-dry-run` pulls without booting.
+`--mail` with the vault's key needs the authority key too.
 
 `--dev-vault <file>` stands in for the vault: a file holding the generation
 and the count (`coordinator.FileVault`). Each boot moves the generation on and
@@ -37,11 +46,14 @@ rolled back.
 | `--backup-retention` | How long roots are kept: every one from the last day, then one a day. Default 30 days, at most 80 (`MaxRestoreAge`) |
 | `--backup-delete-mail` | Delete mail from the edge once every backup a restore could take has acted on it. Off by default, so the edge keeps it |
 | `--dev-vault` | The vault stand-in file, required with `--wrapping-key dev` |
+| `--coordinator-authority-key` (`FOUNT_COORDINATOR_AUTHORITY_KEY`) | With `--wrapping-key vault`: the Cloud vaults' `GENERATION_AUTHORITY_KEY`. Required for backups and for `--mail` |
 | `--restore latest\|roots/<key>` | Restore onto an empty `--dir` before serving |
 | `--restore-dry-run` | With `--restore`: check the backup and write nothing |
 
-Credentials come from `$AWS_ACCESS_KEY_ID`, `$AWS_SECRET_ACCESS_KEY`, and
-`$AWS_SESSION_TOKEN` for temporary credentials.
+With `--wrapping-key dev`, credentials come from `$AWS_ACCESS_KEY_ID`,
+`$AWS_SECRET_ACCESS_KEY`, and `$AWS_SESSION_TOKEN` for temporary credentials.
+With `--wrapping-key vault` they come from the vault, and a `$AWS_*` in the
+environment is refused.
 
 Bucket layout: `objects/<worker>/<object>`, each a tree object already sealed
 under its worker's DEK, and `roots/<generation>-<seq>-<unix>`, each sealed
@@ -167,9 +179,8 @@ probe (`tinfoil-s3-egress-probe`, fount-mail-design.md §6, fount-mail-gaps.md
       vault already seals S3 credentials into the keyset it releases to an
       attested coordinator release (`wire.Payload.S3`). The Cloud vault pair
       is separate from the mail vaults, so its S3 slot is free.
-      `vaultkey.Fetch` drops the credentials today; it should keep them when
-      the counter lands. Then no Tinfoil secret and no deploy config holds
-      them.
+      `vaultkey.Fetch` keeps them and the bucket client uses them, so no
+      Tinfoil secret and no deploy config holds them.
 - [ ] Residual risk, to state publicly: AWS account admins can always mint
       credentials and change the bucket policy. The bucket only ever sees
       ciphertext. Rollback is stopped by the vault's counter and the sealed
@@ -184,5 +195,8 @@ probe (`tinfoil-s3-egress-probe`, fount-mail-design.md §6, fount-mail-gaps.md
 - The restore drill on the test coordinator: back up, wipe the volume, dry
   run, restore, with a send in flight and an edge reboot between (launch
   de-risk 2).
-- Once the vault counter exists: a restore below the counter refused, and an
-  old-generation coordinator fenced, against the real vault pair.
+- Against a deployed Cloud vault pair (`COORDINATOR_MODE`): a boot's
+  certificate taken by the edge; a restore below the counter refused; an
+  old-generation coordinator fenced at the counter and the edge; backups
+  under the vault's S3 credentials; one vault down holding changes back
+  (`ErrNotDurable`) without retiring the coordinator.

@@ -94,3 +94,8 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 )
+
+// The Cloud vault's generation and counter are on fount-mail-vault's local main
+// (35f2439), not yet pushed. Before a release, push it and point the require
+// above at its pseudo-version instead.
+replace github.com/fount-labs/fount-mail-vault/wire => ../fount-mail-vault/wire
