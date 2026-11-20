@@ -15,6 +15,9 @@ type Pool struct {
 	// recycle restarts a runner that has drained. It runs outside the lock, and
 	// the runner takes no jobs until it returns.
 	recycle func(runnerID string) error
+	// Ready, if set, gates every slot: with runners that dial in, a pool with
+	// no runner linked has no room, and jobs wait in the queue (RunnerHub).
+	Ready func() bool
 }
 
 type poolRunner struct {
@@ -38,6 +41,9 @@ func NewPool(n, slots int, recycle func(runnerID string) error) *Pool {
 // Acquire takes a slot for account: first on a runner it already holds, then on
 // a free one. It reports false when neither has room, and the job waits.
 func (p *Pool) Acquire(account string) (string, bool) {
+	if p.Ready != nil && !p.Ready() {
+		return "", false
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, r := range p.runners {

@@ -12,7 +12,7 @@ import (
 // repo.
 func linkSide(repo string) (*link.Side, error) {
 	if repo == "" {
-		return nil, errors.New("--runner-addr needs --runner-repo")
+		return nil, errors.New("a runner enclave (--runner-addr, --runners-dial-in) needs --runner-repo")
 	}
 	return link.Tinfoil(repo)
 }

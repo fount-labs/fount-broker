@@ -75,7 +75,7 @@ func (r *Relay) Serve(ctx context.Context, l net.Listener) error {
 				defer tc.Close()
 				conn = tc
 			}
-			if err := r.handle(ctx, conn); err != nil {
+			if err := r.handle(ctx, conn, headerTimeout, nil); err != nil {
 				log.Printf("job: %v", err)
 				w := frame.NewWriter(conn)
 				jobwire.Send(w, jobwire.Reply{Kind: jobwire.KindError, Message: err.Error()}, nil)
@@ -84,13 +84,18 @@ func (r *Relay) Serve(ctx context.Context, l net.Listener) error {
 	}
 }
 
-func (r *Relay) handle(ctx context.Context, conn net.Conn) error {
-	conn.SetReadDeadline(time.Now().Add(headerTimeout))
+// handle runs the job conn carries, whose first frame comes within wait.
+// started, if set, is called once it has.
+func (r *Relay) handle(ctx context.Context, conn net.Conn, wait time.Duration, started func()) error {
+	conn.SetReadDeadline(time.Now().Add(wait))
 	first, err := frame.Read(conn)
 	if err != nil {
 		return err
 	}
 	conn.SetReadDeadline(time.Time{})
+	if started != nil {
+		started()
+	}
 	job, err := jobwire.DecodeJob(first, jobwire.FromCoordinator)
 	if err != nil {
 		return err

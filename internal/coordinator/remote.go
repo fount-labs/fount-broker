@@ -30,7 +30,10 @@ type RemoteRunner struct {
 	// TCP listener: tests only.
 	Addr string
 	// Link is the coordinator's end. Nil dials plain TCP: tests only.
-	Link    *link.Side
+	Link *link.Side
+	// Hub, if set, replaces Addr and Link: each job takes a link a runner
+	// dialled in, which the hub has already checked.
+	Hub     *RunnerHub
 	Timeout time.Duration
 	Limits  filetree.Limits
 }
@@ -114,9 +117,12 @@ func (r RemoteRunner) run(ctx context.Context, job wireJob) (RunResult, error) {
 	}
 	var conn net.Conn
 	var err error
-	if strings.Contains(r.Addr, "://") {
+	switch {
+	case r.Hub != nil:
+		conn, err = r.Hub.Take(ctx)
+	case strings.Contains(r.Addr, "://"):
 		conn, err = link.Dial(ctx, r.Addr)
-	} else {
+	default:
 		var d net.Dialer
 		conn, err = d.DialContext(ctx, "tcp", r.Addr)
 	}
@@ -124,7 +130,7 @@ func (r RemoteRunner) run(ctx context.Context, job wireJob) (RunResult, error) {
 		return RunResult{}, fmt.Errorf("reach the runner: %w", err)
 	}
 	defer conn.Close()
-	if r.Link != nil {
+	if r.Link != nil && r.Hub == nil {
 		tc, err := r.Link.Client(ctx, conn)
 		if err != nil {
 			return RunResult{}, fmt.Errorf("the runner's link: %w", err)

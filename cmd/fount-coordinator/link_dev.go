@@ -15,7 +15,7 @@ import (
 func linkSide(repo string) (*link.Side, error) {
 	switch repo {
 	case "":
-		return nil, errors.New("--runner-addr needs --runner-repo (or unattested, in a dev build)")
+		return nil, errors.New("a runner enclave (--runner-addr, --runners-dial-in) needs --runner-repo (or unattested, in a dev build)")
 	case "unattested":
 		log.Printf("the runner's link is unattested: nothing vouches for either end")
 		return link.Unattested()

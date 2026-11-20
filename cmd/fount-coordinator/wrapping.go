@@ -127,13 +127,18 @@ func (s *keyStatus) failed(err error) {
 // enclave that fails its boot gate is restarted, and that wouldn't bring the
 // vaults back. Once the coordinator runs, /status counts its jobs by account,
 // naming none.
-func statusAPI(s *keyStatus, jobs *atomic.Pointer[coordinator.Coordinator]) http.Handler {
+//
+// runners, if set, is the runner enclaves linked in, by hostname and key.
+func statusAPI(s *keyStatus, jobs *atomic.Pointer[coordinator.Coordinator], runners func() any) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok\n") })
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
 		out := map[string]any{"wrapping_key": s}
 		if c := jobs.Load(); c != nil {
 			out["jobs"] = c.Load()
+		}
+		if runners != nil {
+			out["runners"] = runners()
 		}
 		s.mu.Lock()
 		body, err := json.Marshal(out)

@@ -38,6 +38,14 @@ func (c *Coordinator) acquireIntake(workerID, account string) (string, error) {
 // of workers whose intake waited for one and starts what jobs can start.
 func (c *Coordinator) releaseRunner(runnerID string) error {
 	err := c.cfg.Pool.Release(runnerID)
+	c.RunnersChanged()
+	return err
+}
+
+// RunnersChanged is a slot that may have come free: a released one, or a
+// runner that linked in (RunnerHub.Changed). Workers whose intake waited for
+// one have their mail passed over, and what jobs can start do.
+func (c *Coordinator) RunnersChanged() {
 	if m := c.mail; m != nil {
 		m.mu.Lock()
 		waiting := len(m.slotWaiters) > 0
@@ -51,5 +59,4 @@ func (c *Coordinator) releaseRunner(runnerID string) error {
 		}
 	}
 	c.poke()
-	return err
 }

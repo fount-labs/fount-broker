@@ -80,7 +80,7 @@ func TestKeyFlags(t *testing.T) {
 func TestStatusNamesTheKeyButNeverShowsIt(t *testing.T) {
 	s := &keyStatus{Mode: keyVault, State: "waiting", Since: time.Now().UTC()}
 	var jobs atomic.Pointer[coordinator.Coordinator]
-	h := statusAPI(s, &jobs)
+	h := statusAPI(s, &jobs, nil)
 	get := func(path string) (int, string) {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))

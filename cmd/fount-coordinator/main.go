@@ -109,6 +109,7 @@ import (
 	"github.com/fount-labs/fount-broker/internal/healthcheck"
 	"github.com/fount-labs/fount-broker/internal/infraent"
 	"github.com/fount-labs/fount-broker/internal/jobcred"
+	"github.com/fount-labs/fount-broker/internal/link"
 	"github.com/fount-labs/fount-broker/internal/mail"
 	"github.com/fount-labs/fount-broker/internal/route"
 )
@@ -134,12 +135,13 @@ func main() {
 func run() error {
 	dir := flag.String("dir", "", "folder for the state, the stored objects, job folders and the dev wrapping key")
 	listen := flag.String("listen", "127.0.0.1:8790", "loopback address for the dev API, with --wrapping-key dev")
-	runners := flag.Int("runners", 2, "runners in the pool")
+	poolRunners := flag.Int("runners", 2, "runners in the pool")
 	slots := flag.Int("slots", 2, "jobs at once per runner")
 	accountJobs := flag.Int("account-jobs", 12, "jobs at once per account, which share its inference key's rate limit; more wait in the queue; 0 for no cap")
 	timeout := flag.Duration("job-timeout", 30*time.Minute, "longest a job may run")
 	runnerAddr := flag.String("runner-addr", "", "a runner enclave broker's origin, https://<domain>, in place of a runner command")
-	credentials := flag.String("credentials", "", "JSON file of every job's broker credentials, with --runner-addr")
+	runnersDialIn := flag.Bool("runners-dial-in", false, "runner enclaves dial in on --client-listen's "+link.Path+", checked against --runner-repo, in place of a runner command or --runner-addr")
+	credentials := flag.String("credentials", "", "JSON file of every job's broker credentials, with --runner-addr or --runners-dial-in")
 	jobConfig := flag.String("job-config", "", "JSON file, or a JSON object, of the model settings for every job a thread operation starts; without it those operations are refused with NO_MODEL")
 	test := flag.Bool("test-api", false, "listen beyond loopback, behind the bearer token in $"+testTokenEnv+"; test data only")
 	runnerRepo := flag.String("runner-repo", os.Getenv("FOUNT_RUNNER_REPO"), "GitHub repository whose releases the runner enclave must run, or unattested")
@@ -168,23 +170,45 @@ func run() error {
 	flag.StringVar(&backups.restore, "restore", "", "with --backup-bucket: restore this backup, latest or roots/<key>, onto an empty --dir before serving; a volume already restored onto is served as it is")
 	flag.BoolVar(&backups.dryRun, "restore-dry-run", false, "with --restore: check the backup opens whole and a restore would take it, write nothing, serve nothing")
 	flag.Parse()
-	if *dir == "" || (flag.NArg() == 0) == (*runnerAddr == "") {
-		return errors.New("usage: fount-coordinator --dir <folder> [flags] (-- <runner command...> | --runner-addr <host:port>)")
+	modes := 0
+	for _, on := range []bool{flag.NArg() > 0, *runnerAddr != "", *runnersDialIn} {
+		if on {
+			modes++
+		}
+	}
+	if *dir == "" || modes != 1 {
+		return errors.New("usage: fount-coordinator --dir <folder> [flags] (-- <runner command...> | --runner-addr <host:port> | --runners-dial-in)")
+	}
+	if *runnersDialIn && *clientListen == "" {
+		return errors.New("--runners-dial-in needs --client-listen, where runners dial in")
 	}
 	if *accountJobs < 0 {
 		return fmt.Errorf("--account-jobs %d: a cap of 1 or more, or 0 for none", *accountJobs)
 	}
 	var runner coordinator.Runner = coordinator.LocalRunner{Command: flag.Args(), Timeout: *timeout}
 	var mint func(account, workerID, jobID string) (map[string]string, error)
-	if *runnerAddr != "" {
-		if u, err := url.Parse(*runnerAddr); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-			return fmt.Errorf("--runner-addr %s: the runner broker's origin, https://<domain>", *runnerAddr)
-		}
+	var jobs atomic.Pointer[coordinator.Coordinator]
+	var hub *coordinator.RunnerHub
+	if *runnerAddr != "" || *runnersDialIn {
 		side, err := linkSide(*runnerRepo)
 		if err != nil {
 			return err
 		}
-		runner = coordinator.RemoteRunner{Addr: *runnerAddr, Timeout: *timeout, Link: side}
+		if *runnersDialIn {
+			hub = coordinator.NewRunnerHub(side)
+			defer hub.Close()
+			hub.Changed = func() {
+				if c := jobs.Load(); c != nil {
+					c.RunnersChanged()
+				}
+			}
+			runner = coordinator.RemoteRunner{Hub: hub, Timeout: *timeout}
+		} else {
+			if u, err := url.Parse(*runnerAddr); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+				return fmt.Errorf("--runner-addr %s: the runner broker's origin, https://<domain>", *runnerAddr)
+			}
+			runner = coordinator.RemoteRunner{Addr: *runnerAddr, Timeout: *timeout, Link: side}
+		}
 		if *credentials != "" {
 			data, err := os.ReadFile(*credentials)
 			if err != nil {
@@ -207,7 +231,7 @@ func run() error {
 			log.Printf("job credentials are signed by %s", jobcred.PublicKey(key))
 		}
 	} else if *credentials != "" {
-		return errors.New("--credentials needs --runner-addr")
+		return errors.New("--credentials needs --runner-addr or --runners-dial-in")
 	}
 	config, err := readJobConfig(*jobConfig)
 	if err != nil {
@@ -247,13 +271,16 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	status := &keyStatus{Mode: keys.mode, State: "waiting", Since: time.Now().UTC()}
-	var jobs atomic.Pointer[coordinator.Coordinator]
+	var runners func() any
+	if hub != nil {
+		runners = func() any { return hub.Runners() }
+	}
 	if *statusListen != "" {
 		statusLn, err := net.Listen("tcp", *statusListen)
 		if err != nil {
 			return fmt.Errorf("--status-listen: %w", err)
 		}
-		serveBeyond(ctx, stop, "status", statusLn, statusAPI(status, &jobs))
+		serveBeyond(ctx, stop, "status", statusLn, statusAPI(status, &jobs, runners))
 	}
 	var channelReady, testReady atomic.Pointer[http.Handler]
 	if clients != nil {
@@ -261,7 +288,11 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("--client-listen: %w", err)
 		}
-		serveBeyond(ctx, stop, "client channel", clientLn, clientAPI(statusAPI(status, &jobs), &channelReady, *test, &testReady))
+		var linkIn http.Handler
+		if hub != nil {
+			linkIn = hub
+		}
+		serveBeyond(ctx, stop, "client channel", clientLn, clientAPI(statusAPI(status, &jobs, runners), &channelReady, *test, &testReady, linkIn))
 	}
 	key, side, err := wrappingKey(ctx, keys, status)
 	if err != nil {
@@ -307,12 +338,16 @@ func run() error {
 			return fmt.Errorf("--mail-entitlements: %w", err)
 		}
 	}
+	pool := coordinator.NewPool(*poolRunners, *slots, nil)
+	if hub != nil {
+		pool.Ready = hub.Ready
+	}
 	c, err := coordinator.New(coordinator.Config{
 		StateDir: filepath.Join(*dir, "state"),
 		WorkDir:  filepath.Join(*dir, "work"),
 		Store:    coordinator.DirStore{Root: filepath.Join(*dir, "objects")},
 		Key:      key,
-		Pool:     coordinator.NewPool(*runners, *slots, nil),
+		Pool:     pool,
 		Runner:   runner,
 
 		Credentials: mint,

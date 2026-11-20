@@ -13,6 +13,10 @@
 // can't be replayed or relayed into another.
 //
 // Once both have, each end pings the other while the link is up (keepalive.go).
+//
+// Which end dials is separate from which end sends jobs. A runner may open the
+// connection (runners dial in, launch plan work R): it runs Client, and the
+// coordinator runs Server on what it accepted, then sends jobs as before.
 package link
 
 import (
@@ -67,18 +71,29 @@ type Side struct {
 	Key      ed25519.PrivateKey
 	Attester Attester
 	Check    Checker
+	// Endorse, if set, replaces Check: it also says how long the
+	// verification stays fresh, for an end that holds a link before using it.
+	// Without it the link has no freshness deadline, as an unattested one.
+	Endorse KeyChecker
 }
 
 var ErrPeer = errors.New("the link's peer didn't prove its release")
 
-// Client runs the handshake as the coordinator, on a connection it dialled.
+// Client runs the handshake on a connection this end dialled.
 func (s *Side) Client(ctx context.Context, conn net.Conn) (net.Conn, error) {
-	return s.handshake(ctx, conn, true)
+	c, _, err := s.handshake(ctx, conn, true)
+	return c, err
 }
 
-// Server runs the handshake as the runner's broker, on a connection it
-// accepted.
+// Server runs the handshake on a connection this end accepted.
 func (s *Side) Server(ctx context.Context, conn net.Conn) (net.Conn, error) {
+	c, _, err := s.handshake(ctx, conn, false)
+	return c, err
+}
+
+// ServerEndorsed is Server, and says what the peer's document vouched for:
+// its key, and with Endorse set, until when.
+func (s *Side) ServerEndorsed(ctx context.Context, conn net.Conn) (net.Conn, Endorsement, error) {
 	return s.handshake(ctx, conn, false)
 }
 
@@ -87,12 +102,12 @@ const (
 	labelServer = "EXPORTER-fount-link server"
 )
 
-func (s *Side) handshake(ctx context.Context, conn net.Conn, client bool) (net.Conn, error) {
+func (s *Side) handshake(ctx context.Context, conn net.Conn, client bool) (net.Conn, Endorsement, error) {
 	ctx, cancel := context.WithTimeout(ctx, HandshakeTimeout)
 	defer cancel()
 	cert, err := Certificate(s.Key)
 	if err != nil {
-		return nil, err
+		return nil, Endorsement{}, err
 	}
 	var peer ed25519.PublicKey
 	cfg := &tls.Config{
@@ -127,7 +142,7 @@ func (s *Side) handshake(ctx context.Context, conn net.Conn, client bool) (net.C
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
 	if err := tc.HandshakeContext(ctx); err != nil {
-		return nil, fmt.Errorf("link TLS: %w", err)
+		return nil, Endorsement{}, fmt.Errorf("link TLS: %w", err)
 	}
 	mine, theirs := labelServer, labelClient
 	if client {
@@ -136,43 +151,48 @@ func (s *Side) handshake(ctx context.Context, conn net.Conn, client bool) (net.C
 	state := tc.ConnectionState()
 	myNonce, err := state.ExportKeyingMaterial(mine, nil, 32)
 	if err != nil {
-		return nil, err
+		return nil, Endorsement{}, err
 	}
 	peerNonce, err := state.ExportKeyingMaterial(theirs, nil, 32)
 	if err != nil {
-		return nil, err
+		return nil, Endorsement{}, err
 	}
 	doc, err := s.Attester.Attest(ctx, myNonce)
 	if err != nil {
-		return nil, fmt.Errorf("attesting this end: %w", err)
+		return nil, Endorsement{}, fmt.Errorf("attesting this end: %w", err)
 	}
 	// Both ends write before they read, so the write can't wait on the read.
 	sent := make(chan error, 1)
 	go func() { sent <- frame.NewWriter(tc).Write(frame.Frame{Header: attestationHeader, Body: doc}) }()
 	f, err := frame.Read(tc)
 	if err != nil {
-		return nil, fmt.Errorf("the peer's attestation: %w", err)
+		return nil, Endorsement{}, fmt.Errorf("the peer's attestation: %w", err)
 	}
 	if err := <-sent; err != nil {
-		return nil, fmt.Errorf("sending the attestation: %w", err)
+		return nil, Endorsement{}, fmt.Errorf("sending the attestation: %w", err)
 	}
 	var h struct {
 		Kind string `json:"kind"`
 	}
 	if json.Unmarshal(f.Header, &h) != nil || h.Kind != "attestation" {
-		return nil, fmt.Errorf("%w: it sent %q first", ErrPeer, f.Header)
+		return nil, Endorsement{}, fmt.Errorf("%w: it sent %q first", ErrPeer, f.Header)
 	}
-	endorsed, err := s.Check(f.Body, peerNonce)
+	var endorsed Endorsement
+	if s.Endorse != nil {
+		endorsed, err = s.Endorse(f.Body, peerNonce)
+	} else {
+		endorsed.Key, err = s.Check(f.Body, peerNonce)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrPeer, err)
+		return nil, Endorsement{}, fmt.Errorf("%w: %v", ErrPeer, err)
 	}
-	if !endorsed.Equal(peer) {
-		return nil, fmt.Errorf("%w: its attestation endorses another key than its TLS one", ErrPeer)
+	if !endorsed.Key.Equal(peer) {
+		return nil, Endorsement{}, fmt.Errorf("%w: its attestation endorses another key than its TLS one", ErrPeer)
 	}
 	if ctx.Err() != nil {
-		return nil, ctx.Err()
+		return nil, Endorsement{}, ctx.Err()
 	}
-	return keepalive(tc, PingInterval, IdleTimeout), nil
+	return keepalive(tc, PingInterval, IdleTimeout), endorsed, nil
 }
 
 var attestationHeader = []byte(`{"kind":"attestation"}`)

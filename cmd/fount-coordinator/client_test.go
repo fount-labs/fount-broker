@@ -72,7 +72,7 @@ func TestDesktopReachesItsAccountOverTheChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	var ready atomic.Pointer[http.Handler]
-	srv := httptest.NewServer(clientAPI(statusAPI(&keyStatus{Mode: keyDev, State: "waiting"}, &atomic.Pointer[coordinator.Coordinator]{}), &ready, false, nil))
+	srv := httptest.NewServer(clientAPI(statusAPI(&keyStatus{Mode: keyDev, State: "waiting"}, &atomic.Pointer[coordinator.Coordinator]{}, nil), &ready, false, nil, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + channel.Path)
@@ -217,9 +217,9 @@ func TestClientFlags(t *testing.T) {
 // 503 until the coordinator is up and behind its token after; without it,
 // /v0/ isn't there.
 func TestClientListenerServesTheTestAPI(t *testing.T) {
-	status := statusAPI(&keyStatus{Mode: keyDev, State: "waiting"}, &atomic.Pointer[coordinator.Coordinator]{})
+	status := statusAPI(&keyStatus{Mode: keyDev, State: "waiting"}, &atomic.Pointer[coordinator.Coordinator]{}, nil)
 	var channelReady, testReady atomic.Pointer[http.Handler]
-	srv := httptest.NewServer(clientAPI(status, &channelReady, true, &testReady))
+	srv := httptest.NewServer(clientAPI(status, &channelReady, true, &testReady, nil))
 	defer srv.Close()
 	get := func(url string) int {
 		t.Helper()
@@ -243,7 +243,7 @@ func TestClientListenerServesTheTestAPI(t *testing.T) {
 		t.Fatalf("/v0/ without the token: %d", code)
 	}
 
-	off := httptest.NewServer(clientAPI(status, &channelReady, false, &testReady))
+	off := httptest.NewServer(clientAPI(status, &channelReady, false, &testReady, nil))
 	defer off.Close()
 	if code := get(off.URL + "/v0/jobs/none"); code != http.StatusNotFound {
 		t.Fatalf("/v0/ without --test-api: %d", code)

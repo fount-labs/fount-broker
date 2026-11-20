@@ -23,6 +23,10 @@ networks:
       - websearch.tinfoil.sh
       - ghcr.io # the harness pull
       - pkg-containers.githubusercontent.com
+      # The coordinator: the runner dials in for its jobs (--coordinator), as a
+      # coordinator's measured allowlist can't name a runner that may be
+      # stopped (launch plan work R).
+      - coordinator-a.fount.containers.tinfoil.dev
       # Checking the coordinator needs no hosts: a V3 document carries its
       # own collateral (Sigstore bundles, AMD VCEK and CRL, Intel PCS), and
       # tinfoil-go verifies it offline against embedded roots.
@@ -35,7 +39,7 @@ containers:
     # The link sends this enclave's document; the coordinator checks it.
     attestation: true
     restart: always
-    command: ["runner", "--listen", "0.0.0.0:7400"]
+    command: ["runner", "--listen", "0.0.0.0:7400", "--coordinator", "https://coordinator-a.fount.containers.tinfoil.dev"]
     volumes:
       - harness-blobs:/harness-blobs
       - sockets:/sockets
@@ -82,4 +86,4 @@ shim:
   paths:
     - /health
     - /status
-    - /fount-link
+    # No /fount-link: jobs come over links this runner dials.

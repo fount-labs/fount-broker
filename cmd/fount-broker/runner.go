@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -35,13 +37,17 @@ import (
 // FOUNT_BROKER_REGISTRY_TOKEN is a read-only registry token; without it the
 // pull is anonymous.
 //
-// The job listener is HTTP, behind the enclave's shim: each job is a
-// connection upgraded on link.Path (shim paths: /fount-link, /health,
-// /status), and
-// that connection is the attested link (package link):
-// the coordinator must prove it runs a release of --coordinator-repo, and this
-// enclave proves itself back with its attested fount-link key. Dev builds also
-// take --coordinator-repo unattested, a link no hardware vouches for.
+// Each job comes over the attested link (package link): the coordinator must
+// prove it runs a release of --coordinator-repo, and this enclave proves
+// itself back with its attested fount-link key. Dev builds also take
+// --coordinator-repo unattested, a link no hardware vouches for.
+//
+// With --coordinator, the runner dials the coordinator's link endpoint and
+// keeps links parked there for jobs (launch plan work R): a coordinator's
+// measured allowlist can't name a runner that may be stopped. Its shim then
+// needs only /health and /status. Without it, the job listener is HTTP,
+// behind the enclave's shim: each job is a connection upgraded on link.Path
+// (shim paths: /fount-link, /health, /status).
 func runner(args []string) error {
 	fs := flag.NewFlagSet("runner", flag.ExitOnError)
 	image := fs.String("image", os.Getenv("FOUNT_HARNESS_IMAGE"), "harness image, host/repository@sha256:<hex>")
@@ -49,7 +55,20 @@ func runner(args []string) error {
 	sockets := fs.String("sockets", "/sockets", "volume shared with the supervisor")
 	listen := fs.String("listen", "127.0.0.1:7400", "the coordinator's job listener")
 	coordinatorRepo := fs.String("coordinator-repo", os.Getenv("FOUNT_COORDINATOR_REPO"), "GitHub repository whose releases the coordinator must run")
+	coordinatorURL := fs.String("coordinator", os.Getenv("FOUNT_COORDINATOR"), "the coordinator's origin, https://<domain>, to dial for jobs instead of taking them on --listen's "+link.Path)
+	name := fs.String("name", os.Getenv("FOUNT_RUNNER_NAME"), "with --coordinator: this enclave's hostname, a label the coordinator logs and shows on /status; nothing attests it")
+	spare := fs.Int("spare-links", relay.DefaultSpare, "with --coordinator: links kept parked at the coordinator, waiting for jobs")
+	maxLinks := fs.Int("max-links", relay.DefaultMax, "with --coordinator: links at once, parked and carrying jobs; the supervisor's --max-jobs")
 	fs.Parse(args)
+	if *coordinatorURL != "" {
+		u, err := url.Parse(*coordinatorURL)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || (u.Path != "" && u.Path != "/") {
+			return fmt.Errorf("--coordinator %s: the coordinator's origin, https://<domain>", *coordinatorURL)
+		}
+		if *spare < 1 || *maxLinks < *spare {
+			return fmt.Errorf("--spare-links %d, --max-links %d: at least one spare, and no more than the most", *spare, *maxLinks)
+		}
+	}
 	side, err := linkSide(*coordinatorRepo)
 	if err != nil {
 		return err
@@ -76,13 +95,15 @@ func runner(args []string) error {
 		supervisor: filepath.Join(*sockets, relay.SupervisorSocket)}
 	l := link.NewListener(tl.Addr())
 	mux := http.NewServeMux()
-	mux.HandleFunc(link.Path, func(w http.ResponseWriter, r *http.Request) {
-		if !status.ready() {
-			http.Error(w, "the runner isn't ready; see /status", http.StatusServiceUnavailable)
-			return
-		}
-		l.ServeHTTP(w, r)
-	})
+	if *coordinatorURL == "" {
+		mux.HandleFunc(link.Path, func(w http.ResponseWriter, r *http.Request) {
+			if !status.ready() {
+				http.Error(w, "the runner isn't ready; see /status", http.StatusServiceUnavailable)
+				return
+			}
+			l.ServeHTTP(w, r)
+		})
+	}
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok\n") })
 	mux.HandleFunc("/status", status.serve)
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
@@ -118,7 +139,6 @@ func runner(args []string) error {
 			}
 		}
 	}
-	log.Printf("taking jobs on http://%s%s", tl.Addr(), link.Path)
 	// Each job's broker is new, so without this every job would find Tinfoil's
 	// router again: about 30 s, or a failed job, whenever the router list
 	// names a router this enclave can't reach.
@@ -128,6 +148,22 @@ func runner(args []string) error {
 		b.Locked = true
 		return b
 	}}
+	if *coordinatorURL != "" {
+		log.Printf("taking jobs from %s%s", *coordinatorURL, link.Path)
+		header := http.Header{}
+		if *name != "" {
+			header.Set(link.NameHeader, *name)
+		}
+		return r.ServeDialIn(ctx, relay.DialIn{
+			Dial: func(ctx context.Context) (net.Conn, error) {
+				return link.DialUpgradeHeader(ctx, *coordinatorURL, link.Path, link.DialInProtocol, header)
+			},
+			Ready: status.ready,
+			Spare: *spare,
+			Max:   *maxLinks,
+		})
+	}
+	log.Printf("taking jobs on http://%s%s", tl.Addr(), link.Path)
 	return r.Serve(ctx, l)
 }
 

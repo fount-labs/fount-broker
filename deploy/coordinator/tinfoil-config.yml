@@ -30,10 +30,11 @@ attested-keys:
 networks:
   coordinator-out:
     egress: allowlist
-    allow:
-      # The runner enclaves. Checking a runner needs no other hosts: a V3
-      # document carries its own collateral, verified offline.
-      - runner-a.fount.containers.tinfoil.dev
+    # Runner enclaves dial in (--runners-dial-in), so none is listed: a
+    # stopped runner's name doesn't resolve, and one name that doesn't fails
+    # the whole allowlist. Checking a runner needs no hosts either: a V3
+    # document carries its own collateral, verified offline.
+    allow: []
 
 containers:
   - name: coordinator
@@ -45,8 +46,7 @@ containers:
     command:
       - "--dir"
       - "/state"
-      - "--runner-addr"
-      - "https://runner-a.fount.containers.tinfoil.dev"
+      - "--runners-dial-in" # on --client-listen's /fount-link
       - "--runners"
       - "1"
       - "--slots"
@@ -90,4 +90,5 @@ shim:
     - /health
     - /status
     - /fount-client # the client channel, an HTTP upgrade
+    - /fount-link # runner enclaves' links, HTTP upgrades they dial
     - /v0/* # the test API, behind its bearer token

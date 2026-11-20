@@ -12,6 +12,7 @@ import (
 	"github.com/fount-labs/fount-broker/internal/attested"
 	"github.com/fount-labs/fount-broker/internal/channel"
 	"github.com/fount-labs/fount-broker/internal/coordinator"
+	"github.com/fount-labs/fount-broker/internal/link"
 )
 
 // accountKeysEnv names fount-infra's device-credential keys in the measured
@@ -84,10 +85,15 @@ func loadClientKey() (ed25519.PrivateKey, error) {
 // answers 503 until ready says it's up. With test set (--test-api), it serves
 // the test API's /v0/ too, from testReady, so a test coordinator's shim needs
 // only this port.
-func clientAPI(status http.Handler, ready *atomic.Pointer[http.Handler], test bool, testReady *atomic.Pointer[http.Handler]) http.Handler {
+//
+// linkIn, if set, takes runner enclaves' links on link.Path (--runners-dial-in).
+func clientAPI(status http.Handler, ready *atomic.Pointer[http.Handler], test bool, testReady *atomic.Pointer[http.Handler], linkIn http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/", status)
 	mux.Handle(channel.Path, waitFor(ready))
+	if linkIn != nil {
+		mux.Handle(link.Path, linkIn)
+	}
 	if test {
 		mux.Handle("/v0/", waitFor(testReady))
 	}

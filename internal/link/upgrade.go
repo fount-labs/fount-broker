@@ -20,11 +20,26 @@ import (
 // lists. So the link travels inside an HTTP/1.1 upgrade on Path: the shim's TLS
 // carries it between enclaves, and the link's own handshake runs inside.
 
-// Path is the runner broker's link endpoint, listed in its shim paths.
+// Path is the link endpoint, listed in the shim paths of the end that
+// accepts: the runner broker's, or the coordinator's when runners dial in.
 const Path = "/fount-link"
 
 // Protocol is the Upgrade token. 2 added the keepalive's records.
 const Protocol = "fount-link/2"
+
+// DialInProtocol is the Upgrade token of a link a runner opens to the
+// coordinator. The job protocol over it is Protocol's, but the runner waits
+// up to ParkFor for its job, and the coordinator holds it until it has one.
+const DialInProtocol = "fount-link-in/1"
+
+// ParkFor is how long a runner keeps a dialled link that has no job before it
+// closes it and dials another, so no link is used long after its peer was
+// checked. The coordinator stops handing it out a minute sooner.
+const ParkFor = 10 * time.Minute
+
+// NameHeader is the runner's name for itself on a dialled link, its enclave's
+// hostname: a label for logs and status. Nothing attests it.
+const NameHeader = "Fount-Runner"
 
 // roots are the system's, but in tests.
 var roots *x509.CertPool
@@ -39,6 +54,11 @@ func Dial(ctx context.Context, base string) (net.Conn, error) {
 // link's endpoint, or another that crosses the shim the same way (package
 // channel).
 func DialUpgrade(ctx context.Context, base, path, protocol string) (net.Conn, error) {
+	return DialUpgradeHeader(ctx, base, path, protocol, nil)
+}
+
+// DialUpgradeHeader is DialUpgrade with extra request headers.
+func DialUpgradeHeader(ctx context.Context, base, path, protocol string, extra http.Header) (net.Conn, error) {
 	u, err := url.Parse(base)
 	if err != nil {
 		return nil, err
@@ -77,6 +97,9 @@ func DialUpgrade(ctx context.Context, base, path, protocol string) (net.Conn, er
 		Proto:      "HTTP/1.1",
 		ProtoMajor: 1,
 		ProtoMinor: 1,
+	}
+	for k, v := range extra {
+		req.Header[k] = v
 	}
 	if err := req.Write(conn); err != nil {
 		conn.Close()
@@ -127,31 +150,40 @@ func (l *Listener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if !headerHas(r.Header, "Connection", "upgrade") || !strings.EqualFold(r.Header.Get("Upgrade"), l.protocol) {
-		w.Header().Set("Upgrade", l.protocol)
-		http.Error(w, "this endpoint takes only an upgrade to "+l.protocol, http.StatusUpgradeRequired)
+	c, ok := Upgrade(w, r, l.protocol)
+	if !ok {
 		return
+	}
+	select {
+	case l.conns <- c:
+	case <-l.done:
+		c.Close()
+	}
+}
+
+// Upgrade answers r with a switch to protocol and takes its connection over.
+// It reports false once it has answered with an error instead.
+func Upgrade(w http.ResponseWriter, r *http.Request, protocol string) (net.Conn, bool) {
+	if !headerHas(r.Header, "Connection", "upgrade") || !strings.EqualFold(r.Header.Get("Upgrade"), protocol) {
+		w.Header().Set("Upgrade", protocol)
+		http.Error(w, "this endpoint takes only an upgrade to "+protocol, http.StatusUpgradeRequired)
+		return nil, false
 	}
 	rc := http.NewResponseController(w)
 	conn, brw, err := rc.Hijack()
 	if err != nil {
 		http.Error(w, "can't take the connection over", http.StatusInternalServerError)
-		return
+		return nil, false
 	}
 	conn.SetDeadline(time.Time{})
-	if _, err := io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: "+l.protocol+"\r\n\r\n"); err != nil {
+	if _, err := io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: "+protocol+"\r\n\r\n"); err != nil {
 		conn.Close()
-		return
+		return nil, false
 	}
-	var c net.Conn = conn
 	if brw.Reader.Buffered() > 0 {
-		c = &bufferedConn{Conn: conn, r: brw.Reader}
+		return &bufferedConn{Conn: conn, r: brw.Reader}, true
 	}
-	select {
-	case l.conns <- c:
-	case <-l.done:
-		conn.Close()
-	}
+	return conn, true
 }
 
 func (l *Listener) Accept() (net.Conn, error) {

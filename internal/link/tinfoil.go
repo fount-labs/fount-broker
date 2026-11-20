@@ -84,11 +84,11 @@ func (a *SocketAttester) Attest(ctx context.Context, nonce []byte) ([]byte, erro
 // repository whose releases the peer must run: hardware, provenance,
 // freshness and the nonce.
 //
-// It keeps nothing: each link verifies afresh and carries one job, so the
-// verification's FreshnessExpiresAt, after which tinfoil-go says it may
-// authorize nothing new, never outlives the one job it admits. VerifyV3
-// already refuses a document whose freshness proofs have lapsed. Caching a
-// peer's key across links would have to honour that deadline.
+// It keeps nothing: each link verifies afresh and carries one job. VerifyV3
+// already refuses a document whose freshness proofs have lapsed. A link held
+// before its job (one a runner dialled in) is used only within ParkFor and
+// before the verification's FreshnessExpiresAt (Side.Endorse); caching a
+// peer's key across links would have to honour that deadline too.
 func TinfoilChecker(repo string) (Checker, error) {
 	check, err := TinfoilKeyChecker(repo, KeyID)
 	if err != nil {
@@ -149,9 +149,13 @@ func Tinfoil(repo string) (*Side, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the attested link key: %w", err)
 	}
-	check, err := TinfoilChecker(repo)
+	endorse, err := TinfoilKeyChecker(repo, KeyID)
 	if err != nil {
 		return nil, err
 	}
-	return &Side{Key: key, Attester: NewSocketAttester(AttestationSocket), Check: check}, nil
+	check := func(doc, nonce []byte) (ed25519.PublicKey, error) {
+		e, err := endorse(doc, nonce)
+		return e.Key, err
+	}
+	return &Side{Key: key, Attester: NewSocketAttester(AttestationSocket), Check: check, Endorse: endorse}, nil
 }
