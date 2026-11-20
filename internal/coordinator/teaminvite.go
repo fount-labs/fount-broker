@@ -379,6 +379,36 @@ func (c *Coordinator) admitted(team string, seq uint64) {
 
 const noticeMemberJoined = "member_joined"
 
+// deviceAdded tells the team's owner, and the member at their own address
+// when the list has one, that a member's passkey added a device: content-
+// free, from the team's lead worker, as admitted. The member's other devices
+// and the admins see it in Fount with Remove.
+func (c *Coordinator) deviceAdded(team string, seq uint64, memberEmail string) {
+	if c.sender == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		lead, err := c.noticeLead(team)
+		if err != nil || lead == "" {
+			return
+		}
+		key := team + "/" + noticeDeviceAdded + "/" + strconv.FormatUint(seq, 10)
+		if err := c.NotifyOwner(ctx, key, noticeDeviceAdded, team, lead, time.Time{}); err != nil {
+			log.Printf("team %s: couldn't tell the owner entry %d added a device: %v", team, seq, err)
+		}
+		if memberEmail == "" {
+			return
+		}
+		if err := c.notify(ctx, key+"/member", noticeDeviceAdded, team, lead, time.Time{}, memberEmail); err != nil {
+			log.Printf("team %s: couldn't tell the member entry %d added their device: %v", team, seq, err)
+		}
+	}()
+}
+
+const noticeDeviceAdded = "device_added"
+
 // TeamMembership is one team the caller's account is a member of.
 type TeamMembership struct {
 	Team   string `json:"team"`
@@ -386,8 +416,11 @@ type TeamMembership struct {
 	Member string `json:"member"`
 	Role   Role   `json:"role"`
 	// Admitted says whether the caller's device is admitted; a device that
-	// isn't joins with one that is (teamjoin.go).
+	// isn't joins with one that is (teamjoin.go) or with Passkey.
 	Admitted bool `json:"admitted"`
+	// Passkey says whether the list names a passkey for the member, which
+	// admits a new device of theirs at once (passkeyjoin.go).
+	Passkey bool `json:"passkey,omitempty"`
 }
 
 // Memberships are the teams whose state lists the caller's account, by
@@ -404,7 +437,7 @@ func (c *Coordinator) Memberships(caller Caller) []TeamMembership {
 		for _, m := range st.members {
 			if m.Account != "" && m.Account == caller.Account {
 				_, holder := st.device(caller.Device)
-				out = append(out, TeamMembership{Team: id, Name: st.name, Member: m.ID, Role: m.Role, Admitted: holder == m})
+				out = append(out, TeamMembership{Team: id, Name: st.name, Member: m.ID, Role: m.Role, Admitted: holder == m, Passkey: m.Rec != nil})
 			}
 		}
 	}

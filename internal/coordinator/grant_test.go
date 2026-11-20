@@ -366,7 +366,9 @@ func TestAnUnlistedDeviceFindsNothing(t *testing.T) {
 		{"GET", "/v1/workers/" + w.ID + "/files/root/instructions.md", "", 404},
 		{"POST", "/v1/workers/" + w.ID + "/jobs", `{"threadId":"t2","sessionId":"s2","instruction":"hi","config":{}}`, 404},
 		{"GET", "/v1/jobs/" + j.ID, "", 404},
-		{"GET", "/v1/teams/acme/log", "", 404},
+		// The account's own team's log it reads, to check the passkey
+		// vouched for it before it joins (passkeyvouch.go).
+		{"GET", "/v1/teams/acme/log", "", 200},
 		// Its own list adding itself: it isn't an admin's device.
 		{"POST", "/v1/teams/acme/log", string(body), 403},
 	} {

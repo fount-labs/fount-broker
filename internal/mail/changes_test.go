@@ -128,3 +128,70 @@ func TestLapse(t *testing.T) {
 		t.Fatalf("resume %+v %v", st, err)
 	}
 }
+
+func TestSetRouting(t *testing.T) {
+	s, f, _, v := newService(t)
+	ctx := context.Background()
+	s.SetGeneration(f.generation(t, 1))
+	if err := s.AdvanceGeneration(ctx); err != nil {
+		t.Fatal(err)
+	}
+	owners := []string{"dana@example.com"}
+	if err := s.SetRouting(ctx, v.MailboxID, 1, owners, nil); !errors.Is(err, ErrNotCoordinated) {
+		t.Fatalf("not enrolled: %v", err)
+	}
+	if err := s.Enroll(ctx, v.MailboxID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetRouting(ctx, v.MailboxID, 0, owners, nil); !errors.Is(err, ErrRequest) {
+		t.Fatalf("version 0: %v", err)
+	}
+	proof := []RoutingProof{{Owner: "dana@example.com", MessageID: "<c1@fountbox.com>"}}
+	if err := s.SetRouting(ctx, v.MailboxID, 2, owners, proof); err != nil {
+		t.Fatal(err)
+	}
+	if m := f.coord.Mailbox(v.MailboxID); m.RoutingVersion != 2 || fmt.Sprint(m.Owners) != fmt.Sprint(owners) || fmt.Sprint(m.Proved) != fmt.Sprint(owners) {
+		t.Fatalf("edge holds %+v", m)
+	}
+	// The same version and list again is a retry: it succeeds.
+	if err := s.SetRouting(ctx, v.MailboxID, 2, owners, nil); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	two := []string{"dana@example.com", "lee@client.example"}
+	for _, ver := range []uint64{1, 2} {
+		if err := s.SetRouting(ctx, v.MailboxID, ver, two, nil); !StaleRouting(err) {
+			t.Fatalf("version %d: %v", ver, err)
+		}
+	}
+	f.coord.RefuseProofs(true)
+	if err := s.SetRouting(ctx, v.MailboxID, 3, two, []RoutingProof{{Owner: "lee@client.example", MessageID: "<c2@fountbox.com>"}}); !ProofRefused(err) || StaleRouting(err) {
+		t.Fatalf("refused proof: %v", err)
+	}
+	if err := s.SetRouting(ctx, v.MailboxID, 3, two, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSetPaused(t *testing.T) {
+	s, f, _, v := newService(t)
+	ctx := context.Background()
+	s.SetGeneration(f.generation(t, 1))
+	if err := s.AdvanceGeneration(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetPaused(ctx, v.MailboxID, true); !errors.Is(err, ErrNotCoordinated) {
+		t.Fatalf("not enrolled: %v", err)
+	}
+	if err := s.Enroll(ctx, v.MailboxID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetPaused(ctx, v.MailboxID, true); err != nil || !f.coord.Mailbox(v.MailboxID).Paused {
+		t.Fatalf("pause: %v", err)
+	}
+	if err := s.SetPaused(ctx, v.MailboxID, false); err != nil || f.coord.Mailbox(v.MailboxID).Paused {
+		t.Fatalf("resume: %v", err)
+	}
+	if err := s.SetPaused(ctx, "zz", true); !errors.Is(err, ErrRequest) {
+		t.Fatalf("bad mailbox: %v", err)
+	}
+}

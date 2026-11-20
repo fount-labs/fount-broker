@@ -41,13 +41,12 @@ var opRoles = map[string]Role{
 	"POST /teams/{team}/log":               RoleAdmin,
 	// Taking a worker's threads, mail and files away (backupexport.go).
 	"GET /workers/{id}/export": RoleAdmin,
-	// Passkey recovery (recovery.go): the recovering device isn't a member
-	// yet, so each route checks its caller and the record its proof.
-	"GET /recovery/teams":                      roleCaller,
-	"GET /teams/{team}/recovery":               roleCaller,
-	"POST /teams/{team}/recovery":              roleCaller,
-	"POST /teams/{team}/recovery/{seq}/cancel": roleCaller,
-	"POST /teams/{team}/recovery/{seq}/done":   roleCaller,
+	// A member's new device with their passkey (passkeyjoin.go): the device
+	// isn't listed yet, so each route checks its caller and the record its
+	// proof.
+	"POST /teams/{team}/passkey-join/challenge": roleCaller,
+	"POST /teams/{team}/passkey-join":           roleCaller,
+	"POST /teams/{team}/passkey-vouch":          roleCaller,
 	// Authorized by their proof: an invite's secret and verified email, or
 	// the device's own request to join as its account's member.
 	"GET /teams": roleCaller,
@@ -87,6 +86,7 @@ var opRoles = map[string]Role{
 	"setDefaultMode":     RoleAdmin,
 	"setAutoRun":         RoleAdmin,
 	"setAcknowledge":     RoleAdmin,
+	"setPaused":          RoleAdmin,
 	"pairingStart":       RoleAdmin,
 	"pairingConfirm":     RoleAdmin,
 	"routingSaved":       RoleAdmin,
@@ -166,6 +166,19 @@ type teamState struct {
 	usedInvites map[string]bool
 	// lastList is the seq of the last list (teamsigner.go).
 	lastList uint64
+	// passkeyCounts are each listed passkey's (by public key) last nonzero
+	// sign count a passkey-join record carried: a later one must carry a
+	// higher count, so a copied authenticator shows. A passkey that keeps no
+	// count, as synced ones, carries 0 throughout.
+	passkeyCounts map[string]uint32
+	// passkeyJoined are the devices a passkey-join record admitted since the
+	// last list (teamsigner.go).
+	passkeyJoined map[string]bool
+	// start is the hash of the team's first entry, which a passkey-vouch
+	// signs (passkeyvouch.go).
+	start string
+	// vouched are the passkeys (by public key) that vouched for the team.
+	vouched map[string]bool
 }
 
 // device is a device the state admits, and its member.

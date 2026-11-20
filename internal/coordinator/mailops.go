@@ -18,6 +18,7 @@ import (
 //	addRequester    {address, baseRevision}       the requester list's
 //	setAutoRun      {on, baseRevision}            automatic runs'
 //	setAcknowledge  {on, baseRevision}            the acknowledgement's (decision 8)
+//	setPaused       {on, baseRevision}            the worker's pause; the mail loop tells the edge (mailpush.go)
 //	pairingStart    {requester, expiresAt, baseRevision}  the pairing's; a device sent POST /connect
 //	pairingConfirm  {mailId, baseRevision}        the pairing's; mailId is an untokened email's edge id
 //	routingSaved    {requestersRevision}          a device wrote that list to the edge
@@ -212,6 +213,7 @@ var mailWorkerOps = map[string]func() any{
 	"addRequester":   func() any { return &requesterArgs{} },
 	"setAutoRun":     func() any { return &switchArgs{} },
 	"setAcknowledge": func() any { return &switchArgs{} },
+	"setPaused":      func() any { return &switchArgs{} },
 	"pairingStart":   func() any { return &pairingStartArgs{} },
 	"pairingConfirm": func() any { return &pairingConfirmArgs{} },
 	"routingSaved":   func() any { return &routingSavedArgs{} },
@@ -234,6 +236,7 @@ func (c *Coordinator) applyMailWorkerOp(device, workerID string, env workerOpEnv
 	}
 	hash := argsHash("", env.Kind, args)
 	var result OpResult
+	owed := false
 	err := c.changeThen(workerID, device, func(t *Tree) error {
 		ops, err := loadOpLog(t, workerOps)
 		if err != nil {
@@ -268,11 +271,17 @@ func (c *Coordinator) applyMailWorkerOp(device, workerID string, env workerOpEnv
 		}
 		result = OpResult{OK: true, Revision: rev}
 		ops[env.OpID] = loggedOp{ArgsHash: hash, Revision: rev, Result: result, At: now}
+		owed = s.RoutingUnsent || s.PauseUnsent
 		if err := writeJSON(t, mailSettingsPath, s); err != nil {
 			return err
 		}
 		return saveOpLog(t, workerOps, ops)
-	}, nil)
+	}, func() {
+		// The edge hears of a pause or a new requester on the next pass, now.
+		if owed && c.mail != nil {
+			c.mail.kick(workerID)
+		}
+	})
 	return result, err
 }
 
@@ -300,8 +309,11 @@ func (c *Coordinator) applyMailSettingsOp(mb *Mailbox, s *MailSettings, args any
 		return s.RequestersRev, nil
 	case *switchArgs:
 		on, since, rev := &s.AutoRun, &s.AutoRunSince, &s.AutoRunRev
-		if kind == "setAcknowledge" {
+		switch kind {
+		case "setAcknowledge":
 			on, since, rev = &s.Acknowledge, nil, &s.AcknowledgeRev
+		case "setPaused":
+			on, since, rev = &s.Paused, nil, &s.PausedRev
 		}
 		if err := stale(a.BaseRevision, *rev); err != nil {
 			return *rev, err
@@ -309,6 +321,9 @@ func (c *Coordinator) applyMailSettingsOp(mb *Mailbox, s *MailSettings, args any
 		if *on != a.On {
 			*on = a.On
 			*rev++
+			if kind == "setPaused" {
+				s.PauseUnsent = true
+			}
 			// Mail that arrived before automatic runs were on never runs
 			// by itself (autorun.rs JobSettings.since).
 			if since != nil && a.On {

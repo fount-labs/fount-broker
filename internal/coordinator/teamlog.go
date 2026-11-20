@@ -23,20 +23,22 @@ import (
 // TeamRecordContext is what a record's hash is taken over, before its JSON.
 const TeamRecordContext = "fount-team-record-v1\n"
 
-// The record kinds (§2.3). T builds the invite, H the join and recovery;
-// each checks its proof and calls appendRecord.
+// The record kinds (§2.3): an invite taken (teaminvite.go), a member's new
+// device approved by another of theirs (teamjoin.go) or by their passkey
+// (passkeyjoin.go). Each checks its proof and calls appendRecord.
 const (
-	RecordInvite         = "invite"
-	RecordJoin           = "join"
-	RecordRecoveryStart  = "recovery-start"
-	RecordRecoveryCancel = "recovery-cancel"
-	RecordRecoveryDone   = "recovery-done"
+	RecordInvite      = "invite"
+	RecordJoin        = "join"
+	RecordPasskeyJoin = "passkey-join"
 )
 
-// recordAdmits are the record kinds that admit a device.
-var recordAdmits = map[string]bool{RecordInvite: true, RecordJoin: true, RecordRecoveryDone: true}
+// A member's passkey vouching for their own team (passkeyvouch.go) admits no
+// device.
 
-var recordKinds = map[string]bool{RecordInvite: true, RecordJoin: true, RecordRecoveryStart: true, RecordRecoveryCancel: true, RecordRecoveryDone: true}
+// recordAdmits are the record kinds that admit a device: all of them.
+var recordAdmits = map[string]bool{RecordInvite: true, RecordJoin: true, RecordPasskeyJoin: true}
+
+var recordKinds = map[string]bool{RecordInvite: true, RecordJoin: true, RecordPasskeyJoin: true, RecordPasskeyVouch: true}
 
 var (
 	// ErrTeamStale is an entry that isn't the head's next: a replay, a list
@@ -66,8 +68,8 @@ type TeamEntry struct {
 	Hash   string          `json:"hash"`
 }
 
-// TeamRecord admits a device, or marks a step of a recovery, under one
-// member, on a proof its kind's builder checked.
+// TeamRecord admits a device under one member, on a proof its kind's builder
+// checked and every client checks again.
 type TeamRecord struct {
 	Kind    string `json:"kind"`
 	Seq     uint64 `json:"seq"`
@@ -101,7 +103,7 @@ func (c *Coordinator) teamState(id string) (*teamState, error) {
 // last list and the records after it. The log holds only entries that were
 // checked when they were appended, so a failure here is a damaged volume.
 func reduceTeam(team, aud string, log []TeamEntry) (*teamState, error) {
-	st := &teamState{usedInvites: map[string]bool{}, byID: map[string]*Member{}, byDevice: map[string]*Member{}, workers: map[string]string{}}
+	st := &teamState{usedInvites: map[string]bool{}, passkeyCounts: map[string]uint32{}, passkeyJoined: map[string]bool{}, vouched: map[string]bool{}, byID: map[string]*Member{}, byDevice: map[string]*Member{}, workers: map[string]string{}}
 	head := ""
 	for i, e := range log {
 		if e.Seq != uint64(i+1) {
@@ -143,6 +145,9 @@ func reduceTeam(team, aud string, log []TeamEntry) (*teamState, error) {
 		if hash != e.Hash {
 			return nil, fmt.Errorf("entry %d's hash is wrong", e.Seq)
 		}
+		if e.Seq == 1 {
+			st.start = hash
+		}
 		head = hash
 	}
 	st.seq, st.head = uint64(len(log)), head
@@ -152,6 +157,7 @@ func reduceTeam(team, aud string, log []TeamEntry) (*teamState, error) {
 // applyList makes a list the state; what it leaves out is gone.
 func (s *teamState) applyList(l TeamList, aud string) error {
 	s.members, s.byID, s.byDevice, s.workers = nil, map[string]*Member{}, map[string]*Member{}, map[string]string{}
+	s.passkeyJoined = map[string]bool{}
 	s.name, s.lastList = l.Name, l.Seq
 	for _, w := range l.Workers {
 		s.workers[w.ID] = w.DEK
@@ -187,6 +193,23 @@ func (s *teamState) applyRecord(r TeamRecord, team, aud string) error {
 		if err := checkJoinProof(s, aud, team, r, m); err != nil {
 			return err
 		}
+	case RecordPasskeyJoin:
+		count, err := checkPasskeyJoinProof(s, aud, team, r, m)
+		if err != nil {
+			return err
+		}
+		if count != 0 {
+			s.passkeyCounts[m.Rec.Pub] = count
+		}
+	case RecordPasskeyVouch:
+		count, err := checkPasskeyVouchProof(s, aud, team, r, m)
+		if err != nil {
+			return err
+		}
+		if count != 0 {
+			s.passkeyCounts[m.Rec.Pub] = count
+		}
+		s.vouched[m.Rec.Pub] = true
 	}
 	if r.Kind == RecordInvite {
 		s.usedInvites[m.Invite.ID] = true
@@ -205,6 +228,9 @@ func (s *teamState) applyRecord(r TeamRecord, team, aud string) error {
 	m.Devices = append(m.Devices, d)
 	slices.SortFunc(m.Devices, func(a, b TeamDevice) int { return cmpString(a.ID, b.ID) })
 	s.byDevice[d.ID] = m
+	if r.Kind == RecordPasskeyJoin {
+		s.passkeyJoined[d.ID] = true
+	}
 	return nil
 }
 
@@ -416,8 +442,8 @@ func listMemberOf(l TeamList, device, aud string) *ListMember {
 // and, for a kind that admits one, device. It fills in the number, the chain
 // and the time. proof checks rec's proof against the state before it, under
 // the same locks, and is the caller's: the invite secret and verified email,
-// a listed device's approval, the passkey and the wait. The caller is the
-// device being admitted, or for recovery-cancel the one cancelling.
+// a listed device's approval, the passkey. The caller is the device being
+// admitted.
 func (c *Coordinator) appendRecord(caller Caller, team string, rec TeamRecord, proof func(*teamState, *Member) error) (uint64, error) {
 	unlock := c.lockTeam(team, nil)
 	defer unlock()
@@ -454,7 +480,7 @@ func (c *Coordinator) appendRecordLocked(caller Caller, team string, prior *team
 	case checkID("account", rec.Account) != nil:
 		return 0, refuse("the record's account isn't an id")
 	}
-	if rec.Kind != RecordRecoveryCancel && rec.Account != caller.Account {
+	if rec.Account != caller.Account {
 		return 0, refuse("the record is for another account than the caller's")
 	}
 	for _, o := range prior.members {
@@ -713,8 +739,30 @@ func (c *Coordinator) teamLogView(team string, since uint64) TeamLogView {
 
 const maxTeamBody = 512 << 10
 
+// mayReadLog refuses a caller who may not read team's log: a device the
+// team admits, or a device of the account whose own team it is, which reads
+// it before it joins to see the member's passkey vouched for it
+// (passkeyvouch.go). Called with c.mu held.
+func (c *Coordinator) mayReadLog(caller Caller, team string) error {
+	_, _, err := c.requireMember(caller, team)
+	if err == nil || team != caller.Account {
+		return err
+	}
+	st, serr := c.teamState(team)
+	if serr != nil {
+		return ErrNoTeam
+	}
+	for _, m := range st.members {
+		if m.Account == caller.Account {
+			return nil
+		}
+	}
+	return ErrNoTeam
+}
+
 // teamLog is GET /v1/teams/{team}/log?since=N: the entries after N, for any
-// member of the team.
+// device the team admits, and for the account's own team any device of the
+// account.
 func (a *api) teamLog(rw http.ResponseWriter, r *http.Request) {
 	var since uint64
 	if q := r.URL.Query(); q.Has("since") {
@@ -727,7 +775,7 @@ func (a *api) teamLog(rw http.ResponseWriter, r *http.Request) {
 	}
 	team := r.PathValue("team")
 	a.c.mu.Lock()
-	_, _, err := a.c.requireMember(*a.caller, team)
+	err := a.c.mayReadLog(*a.caller, team)
 	var v TeamLogView
 	if err == nil {
 		v = a.c.teamLogView(team, since)

@@ -53,6 +53,8 @@ func (c *Coordinator) Handler() http.Handler {
 //	GET  /v1/teams                        the teams the caller's account is a member of
 //	POST /v1/teams/{team}/invites/{invite}/open|accept|send  an invite (teaminvite.go)
 //	POST /v1/teams/{team}/joins, GET …/joins[/{join}], POST …/{join}/approve|deny|accept  a second device (teamjoin.go)
+//	POST /v1/teams/{team}/passkey-join/challenge, POST …/passkey-join  a member's new device with their passkey (passkeyjoin.go)
+//	POST /v1/teams/{team}/passkey-vouch  a member's passkey vouches for their own team (passkeyvouch.go)
 //	POST /v1/workers/{id}/grant, /revoke  the retired v2 grants: 410
 //	PUT  /v1/workers/{id}/mail            {"v":1,"sealed"}: the address, its keys and the worker's setup, under its DEK (mailsetup.go)
 //
@@ -81,7 +83,9 @@ func (a *api) accountRoutes(mux router) {
 	mux.HandleFunc("POST /v1/teams", a.mintTeam)
 	mux.HandleFunc("GET /v1/teams/{team}/log", a.teamLog)
 	mux.HandleFunc("POST /v1/teams/{team}/log", a.appendTeamList)
-	a.recoveryRoutes(mux)
+	mux.HandleFunc("POST /v1/teams/{team}/passkey-join/challenge", a.startPasskeyJoin)
+	mux.HandleFunc("POST /v1/teams/{team}/passkey-join", a.passkeyJoin)
+	mux.HandleFunc("POST /v1/teams/{team}/passkey-vouch", a.passkeyVouch)
 	mux.HandleFunc("GET /v1/teams", a.myTeams)
 	mux.HandleFunc("POST /v1/teams/{team}/invites/{invite}/open", a.openInvite)
 	mux.HandleFunc("POST /v1/teams/{team}/invites/{invite}/accept", a.acceptInvite)

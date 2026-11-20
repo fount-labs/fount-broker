@@ -630,3 +630,98 @@ func (s *Service) RotateDecryptionKey(ctx context.Context, mailbox string, next 
 	}
 	return nil
 }
+
+// RoutingProof is a connect reply the coordinator saw, which proves an owner
+// on POST /coordinator/routing as on PUT /routing.
+type RoutingProof struct {
+	Owner     string `json:"owner"`
+	MessageID string `json:"messageId"`
+}
+
+// SetRouting writes an enrolled worker's owner list at version (security
+// review 2026-11-19, H1; POST /coordinator/routing), signed by the current
+// generation's key: PUT /routing's rule, limits and connect proofs, which the
+// edge no longer takes from a device for an enrolled mailbox. The version must
+// not go backwards; the stored version again with the same list succeeds and
+// changes nothing, so a retry after a lost answer is safe. StaleRouting reports
+// a version the edge refused, ProofRefused a connect proof it didn't take, and
+// an *EdgeError with status 429 the day's new-owner limit.
+func (s *Service) SetRouting(ctx context.Context, mailbox string, version uint64, owners []string, proofs []RoutingProof) error {
+	if !validHex(mailbox, 32) || version == 0 {
+		return fmt.Errorf("%w: a mailbox is 64 lowercase hex characters and a routing version at least 1", ErrRequest)
+	}
+	if owners == nil {
+		owners = []string{}
+	}
+	body, err := json.Marshal(struct {
+		MailboxID string         `json:"mailbox_id"`
+		Version   uint64         `json:"version"`
+		Owners    []string       `json:"owners"`
+		Proofs    []RoutingProof `json:"proofs,omitempty"`
+	}{mailbox, version, owners, proofs})
+	if err != nil {
+		return err
+	}
+	data, err := s.coordinatorCall(ctx, "/coordinator/routing", body, maxJSON)
+	if err != nil {
+		return err
+	}
+	var out struct {
+		Version uint64 `json:"version"`
+		Owners  int    `json:"owners"`
+	}
+	if err := strictJSON(data, &out); err != nil {
+		return err
+	}
+	if out.Version != version || out.Owners != len(owners) {
+		return fmt.Errorf("%w: POST /coordinator/routing answered version %d with %d owners", ErrEdge, out.Version, out.Owners)
+	}
+	return nil
+}
+
+// StaleRouting says err is the edge refusing a routing version: lower than
+// the one it holds, or the one it holds with a different list.
+func StaleRouting(err error) bool {
+	var e *EdgeError
+	return errors.As(err, &e) && e.Status == http.StatusConflict && e.Code == "" && strings.Contains(e.Message, "routing version did not advance")
+}
+
+// ProofRefused says err is the edge refusing a routing write's connect
+// proofs: one didn't verify, had expired, or named no owner in the list.
+func ProofRefused(err error) bool {
+	var e *EdgeError
+	return errors.As(err, &e) && e.Status == http.StatusUnprocessableEntity
+}
+
+// SetPaused pauses or resumes an enrolled worker (security review 2026-11-19,
+// H1; POST /coordinator/pause), signed by the current generation's key: the
+// worker's own pause, which POST /pause sets with a passkey for a worker that
+// isn't enrolled, apart from the lapse pause. ErrNotCoordinated is a mailbox
+// that isn't enrolled.
+func (s *Service) SetPaused(ctx context.Context, mailbox string, paused bool) error {
+	if !validHex(mailbox, 32) {
+		return fmt.Errorf("%w: mailbox must be 64 lowercase hex characters", ErrRequest)
+	}
+	body, err := json.Marshal(struct {
+		MailboxID string `json:"mailbox_id"`
+		Paused    bool   `json:"paused"`
+	}{mailbox, paused})
+	if err != nil {
+		return err
+	}
+	data, err := s.coordinatorCall(ctx, "/coordinator/pause", body, maxJSON)
+	if err != nil {
+		return err
+	}
+	var out struct {
+		MailboxID string `json:"mailbox_id"`
+		Paused    bool   `json:"paused"`
+	}
+	if err := strictJSON(data, &out); err != nil {
+		return err
+	}
+	if out.MailboxID != mailbox || out.Paused != paused {
+		return fmt.Errorf("%w: POST /coordinator/pause answered %s paused=%t", ErrEdge, out.MailboxID, out.Paused)
+	}
+	return nil
+}

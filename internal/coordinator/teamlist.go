@@ -111,8 +111,9 @@ type ListInvite struct {
 	Exp    int64  `json:"exp"`
 }
 
-// ListRec is a member's recovery passkey: its credential id and its ES256
-// public key, uncompressed, both base64url.
+// ListRec is a member's passkey, which admits a new device of theirs at once
+// (passkeyjoin.go): its credential id and its ES256 public key, uncompressed,
+// both base64url.
 type ListRec struct {
 	Cred string `json:"cred"`
 	Pub  string `json:"pub"`
@@ -458,7 +459,7 @@ func (m ListMember) checkShape(workers map[string]bool) error {
 		cred, err := b64.DecodeString(rec.Cred)
 		pub, perr := b64.DecodeString(rec.Pub)
 		if err != nil || len(cred) == 0 || len(cred) > maxPasskeyCred || perr != nil || len(pub) != p256PublicSize || pub[0] != 4 {
-			return errors.New("its recovery passkey is malformed")
+			return errors.New("its passkey is malformed")
 		}
 	}
 	return nil

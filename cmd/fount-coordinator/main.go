@@ -75,8 +75,8 @@
 // nothing, and takes no generation. With the vault's key they need
 // --coordinator-authority-key, and the bucket's credentials come from the
 // vault; with the dev key, --dev-vault, a file standing in for the vault's
-// generation and counter, and the credentials from $AWS_*. See
-// docs/backups.md.
+// generation and counter, and the credentials from $AWS_*. --mail with the
+// vault's key needs --backup-bucket. See docs/backups.md.
 package main
 
 import (
@@ -225,7 +225,7 @@ func run() error {
 	if err := keys.check(); err != nil {
 		return err
 	}
-	backups.keyMode, backups.dir, backups.authority = keys.mode, *dir, keys.authority
+	backups.keyMode, backups.dir, backups.authority, backups.mail = keys.mode, *dir, keys.authority, keys.mail
 	if err := backups.check(); err != nil {
 		return err
 	}

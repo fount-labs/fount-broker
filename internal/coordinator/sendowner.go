@@ -24,6 +24,8 @@ var accountNoticeText = map[string][2]string{
 	// An admission (teaminvite.go): someone took an invite, or a member
 	// added a device.
 	noticeMemberJoined: {"A new device joined %s", "Someone joined %s in Fount, by an invite or as a member's new device. If you didn't expect it, an admin can remove them in Fount, under Members.%s"},
+	// A member's passkey added a computer of theirs (passkeyjoin.go).
+	noticeDeviceAdded: {"New computer added to %s", "A new computer was added to %s in Fount with a member's passkey. If it wasn't you, remove it in Fount: on another of your computers, or an admin can under Members.%s"},
 }
 
 // ownerNotices is the mail loop's OwnerNotices (lapse.go) on NotifyOwner.
@@ -36,6 +38,11 @@ func (a ownerNotices) Notify(ctx context.Context, n OwnerNotice) error {
 // NotifyOwner sends account's notice of kind once per key, from the
 // account's lead worker to its owner.
 func (c *Coordinator) NotifyOwner(ctx context.Context, key, kind, account, workerID string, until time.Time) error {
+	return c.notify(ctx, key, kind, account, workerID, until, "")
+}
+
+// notify is NotifyOwner to the address to, or the owner when to is empty.
+func (c *Coordinator) notify(ctx context.Context, key, kind, account, workerID string, until time.Time, to string) error {
 	words, ok := accountNoticeText[kind]
 	if !ok {
 		return fmt.Errorf("%w: no notice %q", ErrInvalid, kind)
@@ -56,6 +63,11 @@ func (c *Coordinator) NotifyOwner(ctx context.Context, key, kind, account, worke
 		if err != nil || rs.Owner == "" {
 			return err
 		}
+		if to == "" {
+			to = rs.Owner
+		} else if strings.EqualFold(to, rs.Owner) {
+			return nil
+		}
 		mb, err := loadMailbox(t)
 		if err != nil {
 			return err
@@ -70,7 +82,7 @@ func (c *Coordinator) NotifyOwner(ctx context.Context, key, kind, account, worke
 		}
 		text := body + "\n\n" + footer(firm, false) + "\n"
 		part := c.derivedPart(messageIDInfo, workerID, sendKindNotice, "account", key)
-		r := &sendRecord{ID: id, Kind: sendKindNotice, Attempt: 1, State: sendSending, To: []string{rs.Owner},
+		r := &sendRecord{ID: id, Kind: sendKindNotice, Attempt: 1, State: sendSending, To: []string{to},
 			MessageID: messageID(part, strings.ToLower(part[:16]), domainOf(mb.Address))}
 		raw, err := c.buildOut(t, nil, mb, r, []string{sendKindNotice, "account", key}, fmt.Sprintf(words[0], firm), "", nil, text, nil, time.Now().UTC())
 		if err != nil {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdh"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -265,5 +266,86 @@ func TestARotationAgainstAnOlderEdgeRotatesTheSigningKeyOnce(t *testing.T) {
 	r.c.mu.Unlock()
 	if left != 0 || !r.edge.coord.Mailbox(mb.MailboxID).SigningKey.Equal(once) || r.edge.coord.Mailbox(mb.MailboxID).DecryptionKey == nil {
 		t.Fatalf("after the edge took it: %d left", left)
+	}
+}
+
+// ownerPasskeyJoin adds newDev under the owner of f's team with the owner's
+// passkey.
+func ownerPasskeyJoin(t *testing.T, f teamFixture, pk testPasskey, newDev testDevice) {
+	t.Helper()
+	ch, err := f.c.StartPasskeyJoin(newDev.caller("acme"), "acme", newDev.pub(), newDev.enc.PublicKey().Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := mustB64(t, ch.Challenge)
+	if _, err := f.c.PasskeyJoin(newDev.caller("acme"), "acme", pk.request(t, ch, raw, newDev, "acme", "acme", ceremony{})); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Decided 2026-11-19: a device the team's only admin added with their passkey
+// signs lists at once; with another admin, H3 stands.
+func TestASoleAdminsPasskeyJoinedDeviceSignsAtOnce(t *testing.T) {
+	f := newTeamFixture(t)
+	pk := newTestPasskey(t)
+	f.tt.update("m_owner", func(m *ListMember) { m.Rec = pk.rec(t) })
+	if err := f.tt.push(f.owner, "acme", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Another admin (dev) is listed: the passkey-joined device waits for a list.
+	laptop := newTestDevice(t)
+	ownerPasskeyJoin(t, f, pk, laptop)
+	seq, _ := f.tt.head()
+	f.tt.devices["m_owner"] = append(f.tt.devices["m_owner"], laptop)
+	f.tt.since[laptop.id()] = seq
+	if err := f.tt.push(laptop, "acme", nil); !errors.Is(err, ErrNotAdmin) {
+		t.Fatalf("with another admin, a passkey-joined device's list: %v", err)
+	}
+	if err := f.tt.push(f.owner, "acme", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// The owner is the only admin: dev is a reviewer now.
+	f.tt.update("m_admin", func(m *ListMember) { m.Role, m.Workers = RoleReviewer, []string{allWorkers} })
+	if err := f.tt.push(f.owner, "acme", nil); err != nil {
+		t.Fatal(err)
+	}
+	phone := newTestDevice(t)
+	ownerPasskeyJoin(t, f, pk, phone)
+	seq, _ = f.tt.head()
+	f.tt.devices["m_owner"] = append(f.tt.devices["m_owner"], phone)
+	f.tt.since[phone.id()] = seq
+	if err := f.tt.push(phone, "acme", nil); err != nil {
+		t.Fatalf("the only admin's passkey-joined device: %v", err)
+	}
+}
+
+// A device a code join admitted for the only admin still waits: only the
+// passkey, whose assertion every client checks, signs at once.
+func TestASoleAdminsCodeJoinedDeviceWaits(t *testing.T) {
+	f := newTeamFixture(t)
+	f.tt.drop("m_admin")
+	if err := f.tt.push(f.owner, "acme", nil); err != nil {
+		t.Fatal(err)
+	}
+	laptop := newTestDevice(t)
+	st, err := f.c.StartJoin(laptop.caller("acme"), "acme", laptop.pub(), laptop.enc.PublicKey().Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := mustB64(t, st.Nonce)
+	msg, _ := JoinMessage(testAudience, "acme", "m_owner", st.Join, nonce, laptop.pub(), laptop.enc.PublicKey().Bytes())
+	if err := f.c.ApproveJoin(f.owner.caller("acme"), "acme", st.Join, ed25519.Sign(f.owner.key, msg)); err != nil {
+		t.Fatal(err)
+	}
+	seq, _ := f.tt.head()
+	if _, err := f.c.AcceptJoin(laptop.caller("acme"), "acme", st.Join, laptop.include(t, "acme", "acme", seq+1)); err != nil {
+		t.Fatal(err)
+	}
+	f.tt.devices["m_owner"] = append(f.tt.devices["m_owner"], laptop)
+	f.tt.since[laptop.id()] = seq + 1
+	if err := f.tt.push(laptop, "acme", nil); !errors.Is(err, ErrNotAdmin) {
+		t.Fatalf("a code-joined device of the only admin: %v", err)
 	}
 }
