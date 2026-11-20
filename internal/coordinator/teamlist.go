@@ -84,6 +84,10 @@ type TeamList struct {
 	Iat     int64        `json:"iat"`
 	Members []ListMember `json:"members"`
 	Workers []ListWorker `json:"workers"`
+	// Deleted ends the team (launch-plan X4): such a list names no member
+	// and no worker, and is the log's last entry. A team of one isn't
+	// deleted.
+	Deleted bool `json:"deleted,omitempty"`
 }
 
 // ListMember is one member of a team.
@@ -343,6 +347,12 @@ func (l TeamList) checkShape(aud string) error {
 		return errors.New("only the first entry has no prev")
 	case l.Prev != "" && !isDigest(l.Prev):
 		return errors.New("its prev isn't a hash")
+	case l.Deleted && (len(l.Members) != 0 || len(l.Workers) != 0):
+		return errors.New("a list that deletes its team names no member or worker")
+	case l.Deleted && !strings.HasPrefix(l.Team, teamIDPrefix+"_"):
+		return errors.New("only a firm team is deleted")
+	case l.Deleted:
+		return nil
 	case len(l.Members) == 0 || len(l.Members) > MaxMembers:
 		return fmt.Errorf("it must name 1 to %d members", MaxMembers)
 	case len(l.Workers) > MaxTeamWorkers:

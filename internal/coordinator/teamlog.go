@@ -113,6 +113,9 @@ func reduceTeam(team, aud string, log []TeamEntry) (*teamState, error) {
 		if e.Seq != uint64(i+1) {
 			return nil, fmt.Errorf("entry %d is numbered %d", i+1, e.Seq)
 		}
+		if st.deleted {
+			return nil, fmt.Errorf("entry %d follows the team's deletion", e.Seq)
+		}
 		var hash string
 		switch {
 		case e.List != "" && e.Record == nil:
@@ -160,6 +163,13 @@ func reduceTeam(team, aud string, log []TeamEntry) (*teamState, error) {
 
 // applyList makes a list the state; what it leaves out is gone.
 func (s *teamState) applyList(l TeamList, aud string) error {
+	if l.Deleted {
+		s.former = map[string]string{}
+		for id, m := range s.byDevice {
+			s.former[id] = m.Account
+		}
+		s.deleted = true
+	}
 	s.members, s.byID, s.byDevice, s.workers = nil, map[string]*Member{}, map[string]*Member{}, map[string]string{}
 	s.passkeyAdmitted = map[string]bool{}
 	s.name, s.lastList = l.Name, l.Seq
@@ -348,6 +358,12 @@ func (c *Coordinator) checkList(prior *teamState, l TeamList, caller Caller, dek
 	if prior != nil {
 		seq, head = prior.seq, prior.head
 	}
+	if prior != nil && prior.deleted {
+		return ErrTeamDeleted
+	}
+	if l.Deleted && prior == nil {
+		return fmt.Errorf("%w: a team's first list doesn't delete it", ErrListRefused)
+	}
 	if l.Seq != seq+1 || subtle.ConstantTimeCompare([]byte(l.Prev), []byte(head)) != 1 {
 		return fmt.Errorf("%w: it is %d, and the team's last was %d", ErrTeamStale, l.Seq, seq)
 	}
@@ -483,6 +499,9 @@ func (c *Coordinator) appendRecord(caller Caller, team string, rec TeamRecord, p
 func (c *Coordinator) appendRecordLocked(caller Caller, team string, prior *teamState, rec TeamRecord, proof func(*teamState, *Member) error) (uint64, error) {
 	refuse := func(format string, args ...any) error {
 		return fmt.Errorf("%w: %s", ErrListRefused, fmt.Sprintf(format, args...))
+	}
+	if prior.deleted {
+		return 0, ErrTeamDeleted
 	}
 	m := prior.byID[rec.Member]
 	switch {
@@ -766,7 +785,18 @@ const maxTeamBody = 512 << 10
 // (passkeyvouch.go). Called with c.mu held.
 func (c *Coordinator) mayReadLog(caller Caller, team string) error {
 	_, _, err := c.requireMember(caller, team)
-	if err == nil || team != caller.Account {
+	if err == nil {
+		return nil
+	}
+	if _, ok := c.state.Teams[team]; ok {
+		if st, serr := c.teamState(team); serr == nil && st.deleted {
+			if acct, ok := st.former[caller.Device]; ok && acct == caller.Account {
+				return nil
+			}
+			return ErrNoTeam
+		}
+	}
+	if team != caller.Account {
 		return err
 	}
 	st, serr := c.teamState(team)
