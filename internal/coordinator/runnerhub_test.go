@@ -11,7 +11,7 @@ import (
 func TestAPoolThatIsntReadyHasNoRoom(t *testing.T) {
 	var ready atomic.Bool
 	p := NewPool(1, 2, nil)
-	p.Ready = ready.Load
+	p.Ready = func(string) bool { return ready.Load() }
 	if _, ok := p.Acquire("acct1"); ok {
 		t.Fatal("a slot with no runner linked")
 	}
@@ -24,7 +24,7 @@ func TestAPoolThatIsntReadyHasNoRoom(t *testing.T) {
 func TestJobsWaitInTheQueueUntilARunnerLinksIn(t *testing.T) {
 	c, _ := newTestCoordinator(t, "ok", 0)
 	var ready atomic.Bool
-	c.cfg.Pool.Ready = ready.Load
+	c.cfg.Pool.Ready = func(string) bool { return ready.Load() }
 	w, err := c.CreateWorker("acme", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +62,7 @@ func TestTakeWithNoRunnerLinkedGivesUp(t *testing.T) {
 	if h.Ready() {
 		t.Fatal("ready with no links")
 	}
-	if _, err := h.Take(context.Background()); !errors.Is(err, ErrNoRunnerLink) {
+	if _, err := h.Take(context.Background(), "acct1"); !errors.Is(err, ErrNoRunnerLink) {
 		t.Fatalf("%v", err)
 	}
 }

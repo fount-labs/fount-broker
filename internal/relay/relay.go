@@ -45,6 +45,37 @@ type Relay struct {
 	// NewBroker makes the broker for one connection on a job's socket. It
 	// must set Locked, and give it no mail and no package tunnel.
 	NewBroker func(vault *broker.Vault) *broker.Broker
+
+	mu sync.Mutex
+	// bound is the account a coordinator's bind frame gave this runner for
+	// its boot (dialin.go), empty for a pool runner.
+	bound string
+}
+
+// errOtherAccount is a job or bind for an account this runner isn't bound to.
+var errOtherAccount = errors.New("this runner serves one team this boot, and it isn't this one")
+
+// bind locks the runner to account for the rest of the process, which is the
+// boot: the broker isn't restarted alone in an enclave, and if it were, the
+// coordinator still holds the binding for this enclave's link key.
+func (r *Relay) bind(account string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.bound != "" && r.bound != account {
+		return errOtherAccount
+	}
+	if r.bound == "" {
+		log.Printf("bound to a team for this boot")
+	}
+	r.bound = account
+	return nil
+}
+
+// Bound is the account the runner is bound to, or empty.
+func (r *Relay) Bound() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.bound
 }
 
 const headerTimeout = 30 * time.Second
@@ -96,9 +127,18 @@ func (r *Relay) handle(ctx context.Context, conn net.Conn, wait time.Duration, s
 	if started != nil {
 		started()
 	}
+	return r.run(ctx, conn, first)
+}
+
+// run runs the job whose first frame is first.
+func (r *Relay) run(ctx context.Context, conn net.Conn, first frame.Frame) error {
 	job, err := jobwire.DecodeJob(first, jobwire.FromCoordinator)
 	if err != nil {
 		return err
+	}
+	bound := r.Bound()
+	if bound != "" && job.Account != bound {
+		return errOtherAccount
 	}
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -121,7 +161,7 @@ func (r *Relay) handle(ctx context.Context, conn net.Conn, wait time.Duration, s
 		return fmt.Errorf("the supervisor isn't taking jobs: %w", err)
 	}
 	defer sup.Close()
-	if err := jobwire.Send(frame.NewWriter(sup), jobwire.Job{Kind: jobwire.KindJob, Mode: job.Mode, ID: id, Account: job.Account}, first.Body); err != nil {
+	if err := jobwire.Send(frame.NewWriter(sup), jobwire.Job{Kind: jobwire.KindJob, Mode: job.Mode, ID: id, Account: job.Account, Bound: bound != ""}, first.Body); err != nil {
 		return err
 	}
 	log.Printf("job %s: relaying", id)

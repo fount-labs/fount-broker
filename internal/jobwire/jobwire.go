@@ -26,6 +26,16 @@
 // The broker reads only the first frame. It keeps the credentials for the
 // job's own broker socket, adds the job's "id", and relays the rest unread. The
 // coordinator cancels a job by closing the connection.
+//
+// On a link a team's runner dialled in (launch plan work R2), the coordinator
+// first sends, before any job:
+//
+//	{"kind":"bind","account":"tm_…"}  no body
+//
+// The runner serves that account alone for the rest of its boot: a later bind
+// to another account, or a job for another, is refused. It tells the
+// supervisor with "bound":true on each job, and the supervisor locks the
+// same way. A pool runner gets no bind frame and serves any account.
 package jobwire
 
 import (
@@ -52,6 +62,7 @@ const (
 	KindExit      Kind = "exit"
 	KindEnd       Kind = "end"
 	KindError     Kind = "error"
+	KindBind      Kind = "bind"
 )
 
 // Mode is what a job's sandbox does (m4-cloud-runners.md §5.5).
@@ -98,6 +109,41 @@ type Job struct {
 	// Credentials are the job's tokens, by the broker's credential names. The
 	// broker keeps them and never relays them, so a sandbox never holds them.
 	Credentials map[string]string `json:"credentials,omitempty"`
+	// Bound is the broker telling the supervisor its runner serves Account
+	// alone this boot. Only the broker sends it.
+	Bound bool `json:"bound,omitempty"`
+}
+
+// Bind is the frame that binds a runner to one account for its boot.
+type Bind struct {
+	Kind    Kind   `json:"kind"`
+	Account string `json:"account"`
+}
+
+// FrameKind is a header's kind, read loosely: which decoder to use.
+func FrameKind(header []byte) Kind {
+	var k struct {
+		Kind Kind `json:"kind"`
+	}
+	json.Unmarshal(header, &k)
+	return k.Kind
+}
+
+// DecodeBind reads a bind frame strictly.
+func DecodeBind(f frame.Frame) (string, error) {
+	var b Bind
+	dec := json.NewDecoder(bytes.NewReader(f.Header))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&b); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrMalformed, err)
+	}
+	if dec.More() || b.Kind != KindBind || len(f.Body) != 0 {
+		return "", fmt.Errorf("%w: not a bind frame", ErrMalformed)
+	}
+	if !accountPattern.MatchString(b.Account) {
+		return "", fmt.Errorf("%w: account %q", ErrMalformed, b.Account)
+	}
+	return b.Account, nil
 }
 
 // MaxJobFile bounds the first frame's body, fount-runner's job file.
@@ -156,6 +202,9 @@ func DecodeJob(f frame.Frame, hop Hop) (Job, error) {
 	case FromCoordinator:
 		if j.ID != "" {
 			return Job{}, fmt.Errorf("%w: the coordinator doesn't name the sandbox", ErrMalformed)
+		}
+		if j.Bound {
+			return Job{}, fmt.Errorf("%w: the coordinator binds a runner with a bind frame", ErrMalformed)
 		}
 		for name := range j.Credentials {
 			if !policy.KnownCredential(name) {

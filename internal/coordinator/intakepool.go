@@ -23,6 +23,7 @@ func (c *Coordinator) acquireIntake(workerID, account string) (string, error) {
 		m.mu.Unlock()
 	}
 	runner, ok := c.cfg.Pool.Acquire(account)
+	c.noteIntakeWait(workerID, account, !ok)
 	if !ok {
 		return "", errRunnersBusy
 	}

@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -15,10 +16,20 @@ type Pool struct {
 	// recycle restarts a runner that has drained. It runs outside the lock, and
 	// the runner takes no jobs until it returns.
 	recycle func(runnerID string) error
-	// Ready, if set, gates every slot: with runners that dial in, a pool with
-	// no runner linked has no room, and jobs wait in the queue (RunnerHub).
-	Ready func() bool
+	// Ready, if set, gates every slot by account: with runners that dial in,
+	// an account with no runner linked that its jobs may go to has no room,
+	// and its jobs wait in the queue (RunnerHub.ReadyFor).
+	Ready func(account string) bool
+	// Dedicated, if set, says an account runs on a runner of its own, a
+	// team's (RunnerHub.Placement), not on the pool's runners. Its slots are
+	// counted apart, DedicatedSlots at once, and take none of the pool's.
+	Dedicated      func(account string) bool
+	DedicatedSlots int
+	dedicated      map[string]int
 }
+
+// dedicatedPrefix starts the runner id of a dedicated account's slot.
+const dedicatedPrefix = "dedicated:"
 
 type poolRunner struct {
 	id        string
@@ -41,11 +52,21 @@ func NewPool(n, slots int, recycle func(runnerID string) error) *Pool {
 // Acquire takes a slot for account: first on a runner it already holds, then on
 // a free one. It reports false when neither has room, and the job waits.
 func (p *Pool) Acquire(account string) (string, bool) {
-	if p.Ready != nil && !p.Ready() {
+	if p.Ready != nil && !p.Ready(account) {
 		return "", false
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.Dedicated != nil && p.Dedicated(account) {
+		if p.dedicated[account] >= max(p.DedicatedSlots, 1) {
+			return "", false
+		}
+		if p.dedicated == nil {
+			p.dedicated = map[string]int{}
+		}
+		p.dedicated[account]++
+		return dedicatedPrefix + account, true
+	}
 	for _, r := range p.runners {
 		if r.account == account && !r.recycling && r.active < r.slots {
 			r.active++
@@ -66,6 +87,16 @@ func (p *Pool) Acquire(account string) (string, bool) {
 // leaves its account.
 func (p *Pool) Release(runnerID string) error {
 	p.mu.Lock()
+	if account, ok := strings.CutPrefix(runnerID, dedicatedPrefix); ok {
+		defer p.mu.Unlock()
+		if p.dedicated[account] == 0 {
+			return fmt.Errorf("release of %s's runner, which has no job", account)
+		}
+		if p.dedicated[account]--; p.dedicated[account] == 0 {
+			delete(p.dedicated, account)
+		}
+		return nil
+	}
 	r := p.find(runnerID)
 	if r == nil || r.active == 0 {
 		p.mu.Unlock()

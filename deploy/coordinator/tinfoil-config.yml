@@ -66,6 +66,12 @@ containers:
       # fount-infra revokes, or an account whose Cloud lapses, is shut out
       # within the hour.
       - "--cloud-credentials-only"
+      # Team runners (launch plan R2/R3), from the first release with them:
+      # runners named runner-dev-tm-<24 hex> serve that team alone, and
+      # teams' jobs wait for theirs. Uncomment with FOUNT_CONTROL_TOKEN and
+      # the /control/runners shim path below.
+      # - "--team-runner-stage"
+      # - "dev"
     volumes:
       - state:/state
     env:
@@ -76,6 +82,10 @@ containers:
     secrets:
       # The test API's bearer token, 32 random bytes as hex.
       - FOUNT_TEST_API_TOKEN
+      # The team-runner control plane's bearer token (fount-infra
+      # docs/TEAM_RUNNERS.md), 32 random bytes as hex; in Secrets Manager as
+      # fount/coordinator-control-token-<stage>.
+      # - FOUNT_CONTROL_TOKEN
     healthcheck:
       test: ["CMD", "/fount-coordinator", "health", "http://127.0.0.1:8792/health"]
       interval: 30s
@@ -91,4 +101,5 @@ shim:
     - /status
     - /fount-client # the client channel, an HTTP upgrade
     - /fount-link # runner enclaves' links, HTTP upgrades they dial
+    # - /control/runners # team runners' queue for the control plane, behind FOUNT_CONTROL_TOKEN
     - /v0/* # the test API, behind its bearer token

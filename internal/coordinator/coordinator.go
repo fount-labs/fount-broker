@@ -101,6 +101,9 @@ type Coordinator struct {
 	// passkeyChallenges are passkey joins' challenges (passkeyjoin.go), by
 	// nonce; not kept either.
 	passkeyChallenges map[string]*passkeyChallenge
+	// intakeWaits are workers' intakes waiting for a runner slot, which
+	// TeamRunners counts as queued.
+	intakeWaits map[string]intakeWait
 }
 
 func New(cfg Config) (*Coordinator, error) {

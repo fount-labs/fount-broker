@@ -9,10 +9,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/fount-labs/fount-broker/internal/frame"
+	"github.com/fount-labs/fount-broker/internal/jobwire"
 	"github.com/fount-labs/fount-broker/internal/link"
 )
 
@@ -30,25 +34,76 @@ import (
 //
 // The hub answers on link.Path for link.DialInProtocol, on the listener the
 // enclave's shim exposes. While nothing is parked the Pool hands out no slot
-// (Ready), so jobs and intake wait in the queue.
+// (ReadyFor), so jobs and intake wait in the queue.
+//
+// Team runners (launch plan work R2, R3). Every team's runner runs the same
+// measured release as the pool's; what makes one a team's is the name it
+// links in with. The hub knows a runner by its attested link key, which is
+// per boot, and groups its links by it. With TeamStage set, a runner whose
+// first link is named runner-<TeamStage>-tm-<24 hex> is bound to team
+// tm_<hex> for that key: the hub tells it so with a bind frame on each of its
+// links (package jobwire), and hands its links only to that team's jobs.
+// Every other name is a pool runner, for solo accounts. A later link from the
+// same key under another name is refused, so a key is never rebound.
+//
+// Nothing attests the name: it comes from an unmeasured Tinfoil variable.
+// A host that lies about it only sends a team's jobs to another genuine
+// runner, which then serves that team alone this boot; the runner holds the
+// binding too (package relay), and refuses any other account's job.
+//
+// Isolation groups (an ethical wall's own enclave within a team, a paid
+// add-on) aren't modelled yet: the binding is to an account. A group would
+// extend the name and the bind frame to an account and a group, and
+// Placement to the group a job's worker is in.
 type RunnerHub struct {
 	Side *link.Side
 	// Changed, if set, is called when a runner's first link parks, so queued
 	// jobs and waiting intake get another look.
 	Changed func()
-	// TakeWait bounds how long Take waits for a parked link. Zero is
-	// DefaultTakeWait.
+	// TakeWait bounds how long Take waits for a parked link for a pool job.
+	// Zero is DefaultTakeWait. A team's job waits for its runner as long as
+	// the job may run (Take).
 	TakeWait time.Duration
+	// TeamStage, if set, turns team runners on: runners named
+	// runner-<TeamStage>-tm-<24 hex> serve that team alone, and teams' jobs
+	// go only to them. Empty puts every job on every runner, as before.
+	TeamStage string
 
 	mu      sync.Mutex
 	parked  []*parkedLink
-	busy    int
 	runners map[string]*hubRunner
+	// bindings are each runner key's name and account for its boot. They
+	// outlive the key's links, so a runner that drops every link and dials
+	// again can't come back under another name.
+	bindings map[string]*runnerBinding
+	// teams are each team's runner activity, for the control route.
+	teams   map[string]*teamActivity
 	arrived chan struct{} // closed and replaced when a link parks
 	closed  bool
 	ctx     context.Context
 	cancel  context.CancelFunc
 }
+
+// runnerBinding is one runner key's boot: the name its first link gave, and the
+// team that bound it to, or empty for the pool.
+type runnerBinding struct {
+	name, account string
+	last          time.Time
+}
+
+// bindingKeep is how long a binding outlives its key's last link. A runner
+// keeps spare links parked all its boot, so a key with no link for a day is
+// a boot that ended.
+const bindingKeep = 24 * time.Hour
+
+// teamActivity is a team's runner activity since the coordinator started:
+// its runner's first link of each boot, and its jobs' links taken and ended.
+type teamActivity struct {
+	linked, started, ended time.Time
+}
+
+// bindWriteTimeout bounds sending the bind frame on a new link.
+const bindWriteTimeout = 10 * time.Second
 
 // DefaultTakeWait is long enough for a runner to dial a new link when a job
 // took its last parked one.
@@ -59,6 +114,7 @@ const DefaultTakeWait = 2 * time.Minute
 type parkedLink struct {
 	conn    net.Conn
 	runner  string // the hubRunner key
+	account string // the team its runner is bound to, or empty for the pool
 	expires time.Time
 	taken   bool
 	watched chan error // the watch's end
@@ -66,16 +122,91 @@ type parkedLink struct {
 
 // hubRunner is one runner boot, by its attested link key.
 type hubRunner struct {
-	Name   string    `json:"name,omitempty"` // its own claim, unattested
-	Key    string    `json:"key"`            // the attested link key's first bytes, hex
-	Since  time.Time `json:"since"`
-	Parked int       `json:"parked"`
-	Busy   int       `json:"busy"`
+	Name string `json:"name,omitempty"` // its own claim, unattested; not shown for a team's
+	// Team marks a team's runner. /status is public, so it names no team.
+	Team    bool      `json:"team,omitempty"`
+	Key     string    `json:"key"` // the attested link key's first bytes, hex
+	Since   time.Time `json:"since"`
+	Parked  int       `json:"parked"`
+	Busy    int       `json:"busy"`
+	account string
 }
 
 func NewRunnerHub(side *link.Side) *RunnerHub {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &RunnerHub{Side: side, runners: map[string]*hubRunner{}, arrived: make(chan struct{}), ctx: ctx, cancel: cancel}
+	return &RunnerHub{Side: side, runners: map[string]*hubRunner{}, bindings: map[string]*runnerBinding{}, teams: map[string]*teamActivity{},
+		arrived: make(chan struct{}), ctx: ctx, cancel: cancel}
+}
+
+// ErrRunnerRenamed is a link from a runner key that linked in before under
+// another name: its binding is for the boot.
+var ErrRunnerRenamed = errors.New("the runner linked in before under another name")
+
+// teamIDPattern is a firm team's id as MintTeam makes it.
+var teamIDPattern = regexp.MustCompile(`^` + teamIDPrefix + `_[0-9a-f]{24}$`)
+
+// IsTeamID says whether account is a firm team's id.
+func IsTeamID(account string) bool { return teamIDPattern.MatchString(account) }
+
+// TeamRunnerName is team's runner's container name in stage: runner-<stage>-
+// and the id with "_" as "-" (fount-infra docs/TEAM_RUNNERS.md).
+func TeamRunnerName(stage, team string) string {
+	return "runner-" + stage + "-" + strings.Replace(team, "_", "-", 1)
+}
+
+// teamOf is the team a runner's name binds it to, or empty for the pool.
+func (h *RunnerHub) teamOf(name string) string {
+	prefix := "runner-" + h.TeamStage + "-" + teamIDPrefix + "-"
+	if h.TeamStage == "" || !strings.HasPrefix(name, prefix) {
+		return ""
+	}
+	team := teamIDPrefix + "_" + name[len(prefix):]
+	if !IsTeamID(team) {
+		return ""
+	}
+	return team
+}
+
+// Placement is the team whose runner account's jobs go to, or empty for the
+// pool: a team's jobs only to its own runner, a solo account's only to pool
+// runners.
+func (h *RunnerHub) Placement(account string) string {
+	if h.TeamStage != "" && IsTeamID(account) {
+		return account
+	}
+	return ""
+}
+
+// bind is key's binding, made from name on its first link. A key that linked
+// before under another name is refused. It holds h.mu.
+func (h *RunnerHub) bind(key, name string, now time.Time) (*runnerBinding, error) {
+	for k, b := range h.bindings {
+		if h.runners[k] == nil && now.Sub(b.last) > bindingKeep {
+			delete(h.bindings, k)
+		}
+	}
+	b := h.bindings[key]
+	if b == nil {
+		b = &runnerBinding{name: name, account: h.teamOf(name)}
+		h.bindings[key] = b
+		if b.account != "" {
+			h.team(b.account).linked = now
+		}
+	} else if b.name != name {
+		return nil, ErrRunnerRenamed
+	}
+	b.last = now
+	return b, nil
+}
+
+// team is account's activity, made if new. It holds h.mu.
+func (h *RunnerHub) team(account string) *teamActivity {
+	t := h.teams[account]
+	if t == nil {
+		t = &teamActivity{}
+		h.teams[account] = t
+	}
+	return t
 }
 
 var ErrNoRunnerLink = errors.New("no runner enclave has a link to the coordinator")
@@ -110,19 +241,42 @@ func (h *RunnerHub) admit(raw net.Conn, name string) {
 		expires = e.Fresh
 	}
 	key := hex.EncodeToString(e.Key[:8])
-	p := &parkedLink{conn: conn, runner: key, expires: expires, watched: make(chan error, 1)}
+	h.mu.Lock()
+	b, err := h.bind(key, name, time.Now().UTC())
+	h.mu.Unlock()
+	if err != nil {
+		conn.Close()
+		log.Printf("runner %s: refused a link named %q: %v", key, name, err)
+		return
+	}
+	account := b.account
+	if account != "" {
+		conn.SetWriteDeadline(time.Now().Add(bindWriteTimeout))
+		err := jobwire.Send(frame.NewWriter(conn), jobwire.Bind{Kind: jobwire.KindBind, Account: account}, nil)
+		conn.SetWriteDeadline(time.Time{})
+		if err != nil {
+			conn.Close()
+			log.Printf("runner %s: bind it to its team: %v", key, err)
+			return
+		}
+	}
+	p := &parkedLink{conn: conn, runner: key, account: account, expires: expires, watched: make(chan error, 1)}
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
 		conn.Close()
 		return
 	}
-	first := len(h.parked) == 0 && h.busy == 0
 	r := h.runners[key]
-	if r == nil {
-		r = &hubRunner{Name: name, Key: key, Since: time.Now().UTC()}
+	first := r == nil
+	if first {
+		r = &hubRunner{Name: name, Team: account != "", Key: key, Since: time.Now().UTC(), account: account}
 		h.runners[key] = r
-		log.Printf("runner %s (%q) linked in", key, name)
+		if account != "" {
+			log.Printf("runner %s linked in, bound to a team", key)
+		} else {
+			log.Printf("runner %s (%q) linked in", key, name)
+		}
 	}
 	r.Parked++
 	h.parked = append(h.parked, p)
@@ -165,7 +319,6 @@ func (h *RunnerHub) unpark(p *parkedLink, busy bool) {
 	}
 	h.parked = slices.Delete(h.parked, i, i+1)
 	if busy {
-		h.busy++
 		h.forget(p.runner, -1, 1)
 		return
 	}
@@ -183,49 +336,72 @@ func (h *RunnerHub) forget(key string, parked, busy int) {
 	r.Busy += busy
 	if r.Parked == 0 && r.Busy == 0 {
 		delete(h.runners, key)
-		log.Printf("runner %s (%q) has no links left", key, r.Name)
+		if b := h.bindings[key]; b != nil {
+			b.last = time.Now().UTC()
+		}
+		if r.Team {
+			log.Printf("runner %s, a team's, has no links left", key)
+		} else {
+			log.Printf("runner %s (%q) has no links left", key, r.Name)
+		}
 	}
 }
 
-// Ready reports whether any runner has a link, parked or carrying a job: the
-// Pool's gate.
+// Ready reports whether any runner has a link, parked or carrying a job.
 func (h *RunnerHub) Ready() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return len(h.parked) > 0 || h.busy > 0
+	return len(h.runners) > 0
 }
 
-// Take hands out a parked link for one job, waiting up to TakeWait for one.
-// Closing it ends the job's link.
-func (h *RunnerHub) Take(ctx context.Context) (net.Conn, error) {
+// ReadyFor reports whether a runner account's jobs may go to has a link,
+// parked or carrying a job: the Pool's gate. A team with no runner linked has
+// no room, so its jobs wait in the queue until its runner links in.
+func (h *RunnerHub) ReadyFor(account string) bool {
+	want := h.Placement(account)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.runners {
+		if r.account == want {
+			return true
+		}
+	}
+	return false
+}
+
+// Take hands out a parked link for one of account's jobs, from a runner its
+// jobs may go to (Placement). Closing it ends the job's link.
+//
+// A pool job waits up to TakeWait. A team's job waits until ctx ends, which
+// is the job's own timeout: the Pool gave it a slot only once the team's
+// runner had linked in, and if that runner is gone again (stopped, or
+// restarting, which with its harness pull takes minutes), the Lambda that
+// starts team runners sees the job and starts it.
+func (h *RunnerHub) Take(ctx context.Context, account string) (net.Conn, error) {
+	want := h.Placement(account)
 	wait := h.TakeWait
 	if wait == 0 {
 		wait = DefaultTakeWait
 	}
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
+	var timeout <-chan time.Time
+	if want == "" {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		timeout = timer.C
+	}
 	for {
 		h.mu.Lock()
 		if h.closed {
 			h.mu.Unlock()
 			return nil, ErrNoRunnerLink
 		}
-		now := time.Now()
-		var p *parkedLink
-		for len(h.parked) > 0 {
-			// The newest has the most time left.
-			p = h.parked[len(h.parked)-1]
-			if now.Before(p.expires) {
-				break
-			}
-			h.unpark(p, false)
-			p.taken = true
-			p.conn.Close()
-			p = nil
-		}
+		p := h.pick(want, time.Now())
 		if p != nil {
 			p.taken = true
 			h.unpark(p, true)
+			if want != "" {
+				h.team(want).started = time.Now().UTC()
+			}
 		}
 		arrived := h.arrived
 		h.mu.Unlock()
@@ -239,12 +415,30 @@ func (h *RunnerHub) Take(ctx context.Context) (net.Conn, error) {
 		}
 		select {
 		case <-arrived:
-		case <-timer.C:
+		case <-timeout:
 			return nil, fmt.Errorf("%w for %s", ErrNoRunnerLink, wait)
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
 	}
+}
+
+// pick is the newest parked link of a runner bound to want, which has the
+// most time left, closing those past their time. It holds h.mu.
+func (h *RunnerHub) pick(want string, now time.Time) *parkedLink {
+	for i := len(h.parked) - 1; i >= 0; i-- {
+		p := h.parked[i]
+		if !now.Before(p.expires) {
+			h.unpark(p, false)
+			p.taken = true
+			p.conn.Close()
+			continue
+		}
+		if p.account == want {
+			return p
+		}
+	}
+	return nil
 }
 
 // claim stops p's watch and gives its link to a job, unless the watch had
@@ -254,17 +448,19 @@ func (h *RunnerHub) claim(p *parkedLink) (net.Conn, error) {
 	err := <-p.watched
 	if !errors.Is(err, os.ErrDeadlineExceeded) {
 		p.conn.Close()
-		h.done(p.runner)
+		h.done(p)
 		return nil, err
 	}
 	p.conn.SetReadDeadline(time.Time{})
-	return &busyLink{Conn: p.conn, done: func() { h.done(p.runner) }}, nil
+	return &busyLink{Conn: p.conn, done: func() { h.done(p) }}, nil
 }
 
-func (h *RunnerHub) done(key string) {
+func (h *RunnerHub) done(p *parkedLink) {
 	h.mu.Lock()
-	h.busy--
-	h.forget(key, 0, -1)
+	h.forget(p.runner, 0, -1)
+	if p.account != "" {
+		h.team(p.account).ended = time.Now().UTC()
+	}
 	h.mu.Unlock()
 }
 
@@ -284,15 +480,62 @@ func (b *busyLink) Close() error {
 // RunnerStatus is one linked runner, as /status shows it.
 type RunnerStatus = hubRunner
 
-// Runners are the runners with links, oldest first.
+// Runners are the runners with links, oldest first. A team's is shown with
+// no name, which would name the team.
 func (h *RunnerHub) Runners() []RunnerStatus {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	out := make([]RunnerStatus, 0, len(h.runners))
 	for _, r := range h.runners {
-		out = append(out, *r)
+		s := *r
+		if s.Team {
+			s.Name = ""
+		}
+		out = append(out, s)
 	}
 	slices.SortFunc(out, func(a, b RunnerStatus) int { return a.Since.Compare(b.Since) })
+	return out
+}
+
+// TeamLink is a team's runner as the hub sees it.
+type TeamLink struct {
+	// Connected is a runner bound to the team with a link open.
+	Connected bool
+	// Busy is the team's jobs on its runner's links now.
+	Busy int
+	// Last is the latest of its runner's first link of a boot and its jobs'
+	// links taken and ended, since the coordinator started; zero if none.
+	Last time.Time
+}
+
+// TeamLinks are the teams whose runners linked in since the coordinator
+// started.
+func (h *RunnerHub) TeamLinks() map[string]TeamLink {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make(map[string]TeamLink, len(h.teams))
+	for id, t := range h.teams {
+		out[id] = TeamLink{Last: latest(t.linked, t.started, t.ended)}
+	}
+	for _, r := range h.runners {
+		if r.account == "" {
+			continue
+		}
+		l := out[r.account]
+		l.Connected = true
+		l.Busy += r.Busy
+		out[r.account] = l
+	}
+	return out
+}
+
+func latest(ts ...time.Time) time.Time {
+	var out time.Time
+	for _, t := range ts {
+		if t.After(out) {
+			out = t
+		}
+	}
 	return out
 }
 

@@ -49,6 +49,26 @@ type Server struct {
 
 	once  sync.Once
 	slots chan struct{}
+
+	mu sync.Mutex
+	// bound is the account the broker said this runner serves alone this
+	// boot (jobwire.Job.Bound), from the coordinator's bind (launch plan R2).
+	bound string
+}
+
+// admits says whether the supervisor takes a job for account, and binds it
+// for the boot when bound says so: once bound, any other account's job is
+// refused, whatever later jobs say.
+func (s *Server) admits(account string, bound bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.bound != "" {
+		return account == s.bound
+	}
+	if bound {
+		s.bound = account
+	}
+	return true
 }
 
 // How long the broker has to hand over a job's first frame, and then its
@@ -97,6 +117,10 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 	}
 	if s.Account != "" && job.Account != s.Account {
 		fail(errors.New("this runner serves one account, and it isn't this job's"))
+		return
+	}
+	if !s.admits(job.Account, job.Bound) {
+		fail(errors.New("this runner serves one team this boot, and it isn't this job's"))
 		return
 	}
 	select {

@@ -50,6 +50,13 @@ containers:
       - FOUNT_BROKER_PROXY: "https://dev-api.fount.sh"
       - FOUNT_BROKER_FOUNT_API: "https://dev-api.fount.sh"
       - FOUNT_HARNESS_IMAGE: "ghcr.io/fount-labs/fount-runner@sha256:2984c2c42148d6f3c45120644815f0954e0b8a1ae84a1b3d5e206ae83641cee3" # fount-app be741a3e
+      # Bare, so each container's --variable fills it: a team's runner is
+      # created as runner-<stage>-tm-<24 hex> with FOUNT_RUNNER_NAME set to
+      # that, and the coordinator binds it to the team when it links in
+      # (launch plan R2). Unmeasured: a host that lies only sends a team's
+      # jobs to another genuine runner, which then serves that team alone.
+      # Empty, as on runner-a, is a pool runner.
+      - FOUNT_RUNNER_NAME
     secrets:
       # Read-only, for the private harness (fount's runner-image workflow
       # publishes it).

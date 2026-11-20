@@ -56,7 +56,7 @@ func runner(args []string) error {
 	listen := fs.String("listen", "127.0.0.1:7400", "the coordinator's job listener")
 	coordinatorRepo := fs.String("coordinator-repo", os.Getenv("FOUNT_COORDINATOR_REPO"), "GitHub repository whose releases the coordinator must run")
 	coordinatorURL := fs.String("coordinator", os.Getenv("FOUNT_COORDINATOR"), "the coordinator's origin, https://<domain>, to dial for jobs instead of taking them on --listen's "+link.Path)
-	name := fs.String("name", os.Getenv("FOUNT_RUNNER_NAME"), "with --coordinator: this enclave's hostname, a label the coordinator logs and shows on /status; nothing attests it")
+	name := fs.String("name", os.Getenv("FOUNT_RUNNER_NAME"), "with --coordinator: this enclave's container name; runner-<stage>-tm-<24 hex> asks the coordinator to bind it to that team for the boot, anything else is a pool runner; nothing attests it")
 	spare := fs.Int("spare-links", relay.DefaultSpare, "with --coordinator: links kept parked at the coordinator, waiting for jobs")
 	maxLinks := fs.Int("max-links", relay.DefaultMax, "with --coordinator: links at once, parked and carrying jobs; the supervisor's --max-jobs")
 	fs.Parse(args)

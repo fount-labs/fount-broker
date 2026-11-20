@@ -119,7 +119,7 @@ func (r RemoteRunner) run(ctx context.Context, job wireJob) (RunResult, error) {
 	var err error
 	switch {
 	case r.Hub != nil:
-		conn, err = r.Hub.Take(ctx)
+		conn, err = r.Hub.Take(ctx, job.header.Account)
 	case strings.Contains(r.Addr, "://"):
 		conn, err = link.Dial(ctx, r.Addr)
 	default:

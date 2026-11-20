@@ -109,3 +109,32 @@ func FuzzDecodeJob(f *testing.F) {
 		}
 	})
 }
+
+func TestBindFrames(t *testing.T) {
+	ok := frame.Frame{Header: []byte(`{"kind":"bind","account":"tm_0123456789abcdef01234567"}`)}
+	if FrameKind(ok.Header) != KindBind {
+		t.Fatal("kind")
+	}
+	if a, err := DecodeBind(ok); err != nil || a != "tm_0123456789abcdef01234567" {
+		t.Fatalf("%q %v", a, err)
+	}
+	for _, bad := range []frame.Frame{
+		{Header: []byte(`{"kind":"bind","account":""}`)},
+		{Header: []byte(`{"kind":"bind","account":"a b"}`)},
+		{Header: []byte(`{"kind":"bind","account":"tm_x","extra":1}`)},
+		{Header: ok.Header, Body: []byte("x")},
+		{Header: []byte(`{"kind":"job","account":"tm_x"}`)},
+	} {
+		if _, err := DecodeBind(bad); !errors.Is(err, ErrMalformed) {
+			t.Errorf("%s: %v", bad.Header, err)
+		}
+	}
+	// The coordinator binds with a bind frame, never a job's field.
+	j := frame.Frame{Header: []byte(`{"kind":"job","account":"a","bound":true}`), Body: []byte("{}")}
+	if _, err := DecodeJob(j, FromCoordinator); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("bound from the coordinator: %v", err)
+	}
+	if got, err := DecodeJob(frame.Frame{Header: []byte(`{"kind":"job","id":"j-1","account":"a","bound":true}`), Body: []byte("{}")}, FromBroker); err != nil || !got.Bound {
+		t.Fatalf("%+v %v", got, err)
+	}
+}

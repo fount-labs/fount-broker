@@ -28,6 +28,15 @@
 // file's tokens instead, by the broker's names: a device credential, to reach
 // a proxy that doesn't take job credentials yet.
 //
+// With --runners-dial-in, runner enclaves dial the coordinator instead
+// (coordinator.RunnerHub). --team-runner-stage turns team runners on: a
+// runner linking in as runner-<stage>-tm-<24 hex> serves that team alone for
+// its boot, a team's jobs go only to its runner and wait in the queue while
+// it is stopped, and solo accounts' jobs go to the other runners. With
+// $FOUNT_CONTROL_TOKEN as well, the client port serves GET /control/runners
+// behind it, each team's queue and last activity for the control plane that
+// starts and stops team runners (fount-infra docs/TEAM_RUNNERS.md).
+//
 // --job-config is the model settings, a JSON object passed to the runner
 // unread, of every job a thread operation (startThread, sendNote) starts: the
 // coordinator builds those jobs itself: a file, or the object itself when it
@@ -141,6 +150,7 @@ func run() error {
 	timeout := flag.Duration("job-timeout", 30*time.Minute, "longest a job may run")
 	runnerAddr := flag.String("runner-addr", "", "a runner enclave broker's origin, https://<domain>, in place of a runner command")
 	runnersDialIn := flag.Bool("runners-dial-in", false, "runner enclaves dial in on --client-listen's "+link.Path+", checked against --runner-repo, in place of a runner command or --runner-addr")
+	teamStage := flag.String("team-runner-stage", os.Getenv("FOUNT_TEAM_RUNNER_STAGE"), "with --runners-dial-in: turn team runners on; a runner linking in as runner-<stage>-tm-<24 hex> serves that team alone, and teams' jobs go only to theirs")
 	credentials := flag.String("credentials", "", "JSON file of every job's broker credentials, with --runner-addr or --runners-dial-in")
 	jobConfig := flag.String("job-config", "", "JSON file, or a JSON object, of the model settings for every job a thread operation starts; without it those operations are refused with NO_MODEL")
 	test := flag.Bool("test-api", false, "listen beyond loopback, behind the bearer token in $"+testTokenEnv+"; test data only")
@@ -182,6 +192,9 @@ func run() error {
 	if *runnersDialIn && *clientListen == "" {
 		return errors.New("--runners-dial-in needs --client-listen, where runners dial in")
 	}
+	if err := checkTeamStage(*teamStage, *runnersDialIn); err != nil {
+		return err
+	}
 	if *accountJobs < 0 {
 		return fmt.Errorf("--account-jobs %d: a cap of 1 or more, or 0 for none", *accountJobs)
 	}
@@ -196,6 +209,7 @@ func run() error {
 		}
 		if *runnersDialIn {
 			hub = coordinator.NewRunnerHub(side)
+			hub.TeamStage = *teamStage
 			defer hub.Close()
 			hub.Changed = func() {
 				if c := jobs.Load(); c != nil {
@@ -282,6 +296,13 @@ func run() error {
 		}
 		serveBeyond(ctx, stop, "status", statusLn, statusAPI(status, &jobs, runners))
 	}
+	control, err := controlAPI(controlToken(), *teamStage, hub, &jobs)
+	if err != nil {
+		return err
+	}
+	if control != nil && clients == nil {
+		return fmt.Errorf("$%s needs --client-listen, which serves /control/runners", controlTokenEnv)
+	}
 	var channelReady, testReady atomic.Pointer[http.Handler]
 	if clients != nil {
 		clientLn, err := net.Listen("tcp", *clientListen)
@@ -292,7 +313,7 @@ func run() error {
 		if hub != nil {
 			linkIn = hub
 		}
-		serveBeyond(ctx, stop, "client channel", clientLn, clientAPI(statusAPI(status, &jobs, runners), &channelReady, *test, &testReady, linkIn))
+		serveBeyond(ctx, stop, "client channel", clientLn, withControl(clientAPI(statusAPI(status, &jobs, runners), &channelReady, *test, &testReady, linkIn), control))
 	}
 	key, side, err := wrappingKey(ctx, keys, status)
 	if err != nil {
@@ -340,7 +361,12 @@ func run() error {
 	}
 	pool := coordinator.NewPool(*poolRunners, *slots, nil)
 	if hub != nil {
-		pool.Ready = hub.Ready
+		pool.Ready = hub.ReadyFor
+		pool.Dedicated = func(account string) bool { return hub.Placement(account) != "" }
+		pool.DedicatedSlots = *slots
+		if *teamStage != "" {
+			log.Printf("team runners on, stage %s; /control/runners served: %t", *teamStage, control != nil)
+		}
 	}
 	c, err := coordinator.New(coordinator.Config{
 		StateDir: filepath.Join(*dir, "state"),

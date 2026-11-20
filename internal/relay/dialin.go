@@ -150,13 +150,16 @@ func (r *Relay) dialOne(ctx context.Context, d DialIn, started func()) (ran bool
 	}
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
-	err = r.handle(ctx, conn, d.ParkFor, func() { ran = true; started() })
-	if !ran {
+	first, err := r.park(conn, d.ParkFor)
+	if err != nil {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			return false, errParkedOut
 		}
 		return false, err
 	}
+	ran = true
+	started()
+	err = r.run(ctx, conn, first)
 	if err != nil {
 		jobwire.Send(frame.NewWriter(conn), jobwire.Reply{Kind: jobwire.KindError, Message: err.Error()}, nil)
 	}
@@ -170,4 +173,27 @@ func sleep(ctx context.Context, d time.Duration) {
 	case <-ctx.Done():
 	case <-t.C:
 	}
+}
+
+// park waits up to wait for a parked link's job and returns its first frame.
+// A team's runner is told its account first, with a bind frame (package
+// jobwire): it binds for the boot, and a bind to another account ends the
+// link. The coordinator binds a runner by the name it claims, which nothing
+// attests: a host that lies about it only sends a team's jobs to another
+// genuine runner, which then serves that team alone this boot.
+func (r *Relay) park(conn net.Conn, wait time.Duration) (frame.Frame, error) {
+	conn.SetReadDeadline(time.Now().Add(wait))
+	defer conn.SetReadDeadline(time.Time{})
+	f, err := frame.Read(conn)
+	if err != nil || jobwire.FrameKind(f.Header) != jobwire.KindBind {
+		return f, err
+	}
+	account, err := jobwire.DecodeBind(f)
+	if err != nil {
+		return frame.Frame{}, err
+	}
+	if err := r.bind(account); err != nil {
+		return frame.Frame{}, err
+	}
+	return frame.Read(conn)
 }

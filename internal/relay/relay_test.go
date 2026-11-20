@@ -123,8 +123,7 @@ func start(t *testing.T, account string) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	linked := *r
-	linked.Link = runnerEnd
+	linked := &Relay{Sockets: r.Sockets, Link: runnerEnd, NewBroker: r.NewBroker}
 	linkedDone := make(chan struct{})
 	go func() { linked.Serve(ctx, upgrades); close(linkedDone) }()
 	t.Cleanup(func() {
