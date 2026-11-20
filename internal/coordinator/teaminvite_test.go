@@ -122,9 +122,14 @@ func TestAnInviteDoesntWorkAfterItExpires(t *testing.T) {
 	_, now := checkInvite(st, "acme", "m_ann", "i_ann", secret, withEmail(ann.caller("ann"), "ann@firm.com"), time.Now())
 	_, later := checkInvite(st, "acme", "m_ann", "i_ann", secret, withEmail(ann.caller("ann"), "ann@firm.com"), time.Now().Add(61*time.Minute))
 	m := st.byID["m_ann"]
-	proof, _ := json.Marshal(InviteProof{Invite: "i_ann", Secret: b64.EncodeToString(secret), Email: "ann@firm.com"})
-	_, _, late := checkInviteProof(st, testAudience, "acme", TeamRecord{At: m.Invite.Exp, Proof: proof}, m)
-	_, _, inTime := checkInviteProof(st, testAudience, "acme", TeamRecord{At: m.Invite.Exp - 1, Proof: proof}, m)
+	seq := st.seq
+	proof, _ := json.Marshal(InviteProof{Invite: "i_ann", Secret: b64.EncodeToString(secret), Email: "ann@firm.com",
+		InvitePasskey: newTestPasskey(t).invitePasskey(t, "acme", "m_ann", "i_ann", ann, ceremony{})})
+	r := TeamRecord{Account: "ann", Device: ann.include(t, "acme", "ann", seq+1), Proof: proof}
+	r.At = m.Invite.Exp
+	_, _, late := checkInviteProof(st, testAudience, "acme", r, m)
+	r.At = m.Invite.Exp - 1
+	_, _, inTime := checkInviteProof(st, testAudience, "acme", r, m)
 	f.c.mu.Unlock()
 	if now != nil || inTime != nil {
 		t.Fatalf("in time: %v %v", now, inTime)
@@ -134,10 +139,9 @@ func TestAnInviteDoesntWorkAfterItExpires(t *testing.T) {
 	}
 }
 
-// The code join is gone (decided 2026-11-19): its routes are, and no join
-// record is appended. One already in a dev log still replays, checked as
-// before, so those teams keep working.
-func TestTheCodeJoinIsGoneAndAnOldJoinRecordStillReplays(t *testing.T) {
+// The code join is gone (decided 2026-11-19): its routes are, and a join
+// record is refused on append and on replay.
+func TestTheCodeJoinIsGoneAndAJoinRecordIsRefused(t *testing.T) {
 	f := newTeamFixture(t)
 	srv := httptest.NewServer(f.c.AccountHandler(newTestDevice(t).caller("maria")))
 	defer srv.Close()
@@ -162,34 +166,21 @@ func TestTheCodeJoinIsGoneAndAnOldJoinRecordStillReplays(t *testing.T) {
 
 	phone := newTestDevice(t)
 	seq, head := f.tt.head()
-	join := "jn_0123456789abcdef01234567"
-	nonce := make([]byte, joinNonceSize)
+	nonce := make([]byte, 32)
 	rand.Read(nonce)
-	msg, _ := JoinMessage(testAudience, "acme", "m_reviewer", join, nonce, phone.pub(), phone.enc.PublicKey().Bytes())
-	proofBy := func(approver testDevice) json.RawMessage {
-		p, _ := json.Marshal(JoinProof{Join: join, Nonce: b64.EncodeToString(nonce), Approver: approver.id(), Sig: b64.EncodeToString(ed25519.Sign(approver.key, msg))})
-		return p
-	}
-	rec := TeamRecord{Kind: RecordJoin, Seq: seq + 1, Prev: head, Member: "m_reviewer", Account: "maria",
-		Device: phone.include(t, "acme", "maria", seq+1), At: time.Now().Unix(), Proof: proofBy(f.reviewer)}
+	proof, _ := json.Marshal(map[string]string{"join": "jn_0123456789abcdef01234567", "nonce": b64.EncodeToString(nonce), "approver": f.reviewer.id(),
+		"sig": b64.EncodeToString(ed25519.Sign(f.reviewer.key, nonce))})
+	rec := TeamRecord{Kind: "join", Seq: seq + 1, Prev: head, Member: "m_reviewer", Account: "maria",
+		Device: phone.include(t, "acme", "maria", seq+1), At: time.Now().Unix(), Proof: proof}
 	if _, err := f.c.appendRecord(phone.caller("maria"), "acme", rec, func(*teamState, *Member) error { return nil }); !errors.Is(err, ErrListRefused) {
 		t.Fatalf("a new join record: %v", err)
 	}
 	f.c.mu.Lock()
 	log := slices.Clone(f.c.state.Teams["acme"].Log)
 	f.c.mu.Unlock()
-	entry := func(r TeamRecord) TeamEntry {
-		raw, _ := json.Marshal(r)
-		return TeamEntry{Seq: r.Seq, Record: raw, Hash: entryHash(TeamRecordContext, raw)}
-	}
-	st, err := reduceTeam("acme", testAudience, append(slices.Clone(log), entry(rec)))
-	if err != nil || st.byDevice[phone.id()] == nil {
-		t.Fatalf("an old join record: %v", err)
-	}
-	bad := rec
-	bad.Proof = proofBy(f.owner)
-	if _, err := reduceTeam("acme", testAudience, append(slices.Clone(log), entry(bad))); err == nil {
-		t.Error("a join approved by another member's device replayed")
+	raw, _ := json.Marshal(rec)
+	if _, err := reduceTeam("acme", testAudience, append(log, TeamEntry{Seq: rec.Seq, Record: raw, Hash: entryHash(TeamRecordContext, raw)})); err == nil {
+		t.Error("a join record replayed")
 	}
 }
 

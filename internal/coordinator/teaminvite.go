@@ -201,10 +201,12 @@ func (c *Coordinator) AcceptInvite(caller Caller, team, invite, member string, s
 		return TeamLogView{}, err
 	}
 	rec := TeamRecord{Kind: RecordInvite, Member: member, Account: caller.Account, Device: inclusion, Proof: proof}
+	again, email := false, ""
 	seq, err := c.appendRecord(caller, team, rec, func(st *teamState, m *Member) error {
 		if _, err := checkInvite(st, team, member, invite, secret, caller, time.Now()); err != nil {
 			return err
 		}
+		again, email = m.Account != "", m.Email
 		r := rec
 		r.Prev = st.head
 		if _, _, err := checkInviteProof(st, c.cfg.Audience, team, r, m); err != nil {
@@ -215,7 +217,11 @@ func (c *Coordinator) AcceptInvite(caller Caller, team, invite, member string, s
 	if err != nil {
 		return TeamLogView{}, err
 	}
-	c.admitted(team, seq)
+	if again {
+		c.deviceAdded(team, seq, email, noticeMemberBack)
+	} else {
+		c.admitted(team, seq)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.teamLogView(team, 0), nil
@@ -257,15 +263,10 @@ func checkInviteProof(st *teamState, aud, team string, r TeamRecord, m *Member) 
 // origin https://fount.sh, flat client data) and a sign count that rises past
 // any this passkey carried in the log before.
 //
-// A record with no passkey and no assertion is one written before
-// passkey-only joins; it still replays, in dev logs, and lists nothing. The
-// coordinator appends none (AcceptInvite).
+// A record with no passkey is refused, on append and on replay.
 func checkInvitePasskey(st *teamState, aud, team string, r TeamRecord, m *Member, p InviteProof) (*ListRec, uint32, error) {
 	if p.Rec == nil {
-		if p.AuthenticatorData != "" || p.ClientDataJSON != "" || p.Signature != "" {
-			return nil, 0, errors.New("an invite record's assertion names no passkey")
-		}
-		return nil, 0, nil
+		return nil, 0, ErrInvitePasskey
 	}
 	pub, err := p.Rec.public()
 	if err != nil {
@@ -486,10 +487,12 @@ func (c *Coordinator) admitted(team string, seq uint64) {
 const noticeMemberJoined = "member_joined"
 
 // deviceAdded tells the team's owner, and the member at their own address
-// when the list has one, that a member's passkey added a device: content-
-// free, from the team's lead worker, as admitted. The member's other devices
-// and the admins see it in Fount with Remove.
-func (c *Coordinator) deviceAdded(team string, seq uint64, memberEmail string) {
+// when the list has one, that a member's passkey added a device (kind
+// noticeDeviceAdded), or that a member invited again is back on a new
+// computer and their old ones were removed (noticeMemberBack): content-free,
+// from the team's lead worker, as admitted. The member's other devices and
+// the admins see it in Fount with Remove.
+func (c *Coordinator) deviceAdded(team string, seq uint64, memberEmail, kind string) {
 	if c.sender == nil {
 		return
 	}
@@ -500,20 +503,23 @@ func (c *Coordinator) deviceAdded(team string, seq uint64, memberEmail string) {
 		if err != nil || lead == "" {
 			return
 		}
-		key := team + "/" + noticeDeviceAdded + "/" + strconv.FormatUint(seq, 10)
-		if err := c.NotifyOwner(ctx, key, noticeDeviceAdded, team, lead, time.Time{}); err != nil {
+		key := team + "/" + kind + "/" + strconv.FormatUint(seq, 10)
+		if err := c.NotifyOwner(ctx, key, kind, team, lead, time.Time{}); err != nil {
 			log.Printf("team %s: couldn't tell the owner entry %d added a device: %v", team, seq, err)
 		}
 		if memberEmail == "" {
 			return
 		}
-		if err := c.notify(ctx, key+"/member", noticeDeviceAdded, team, lead, time.Time{}, memberEmail); err != nil {
+		if err := c.notify(ctx, key+"/member", kind, team, lead, time.Time{}, memberEmail); err != nil {
 			log.Printf("team %s: couldn't tell the member entry %d added their device: %v", team, seq, err)
 		}
 	}()
 }
 
-const noticeDeviceAdded = "device_added"
+const (
+	noticeDeviceAdded = "device_added"
+	noticeMemberBack  = "member_back"
+)
 
 // TeamMembership is one team the caller's account is a member of.
 type TeamMembership struct {

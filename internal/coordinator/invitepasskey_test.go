@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -213,11 +214,9 @@ func TestAnInviteAcceptsOnlyAPasskeyAssertionOverItself(t *testing.T) {
 			t.Errorf("%s: replayed", name)
 		}
 	}
-	// One written before passkey-only joins, with no passkey at all, still
-	// replays (dev logs) and lists none.
-	st, err := reduceTeam("acme", testAudience, rewrite(func(p *InviteProof) { p.InvitePasskey = InvitePasskey{} }))
-	if err != nil || st.byID["m_ann"].Rec != nil {
-		t.Fatalf("a record from before passkey-only joins: %v", err)
+	// One with no passkey at all, as before passkey-only joins, is refused.
+	if _, err := reduceTeam("acme", testAudience, rewrite(func(p *InviteProof) { p.InvitePasskey = InvitePasskey{} })); err == nil || !strings.Contains(err.Error(), ErrInvitePasskey.Error()) {
+		t.Fatalf("a record with no passkey: %v", err)
 	}
 }
 
@@ -260,8 +259,29 @@ func TestAnExistingMemberInvitedAgainGetsBackInWithANewPasskey(t *testing.T) {
 	if m.Rec == nil || *m.Rec != *fresh.rec(t) || m.Account != "ann" || m.Role != RoleReviewer || m.Invite != nil {
 		t.Fatalf("ann after her second invite: %+v", m)
 	}
-	if _, err := reduceTeam("acme", testAudience, r.log()); err != nil {
+	// Her old computer is removed; the one that took the invite is her only
+	// one, and no other member's devices change.
+	if len(m.Devices) != 1 || m.Devices[0].ID != desk.id() {
+		t.Fatalf("ann's devices after her second invite: %+v", m.Devices)
+	}
+	if _, _, err := f.c.access(r.ann.caller("ann"), f.w1.ID, RoleReviewer); err == nil {
+		t.Error("ann's old computer still reaches the team's workers")
+	}
+	if _, _, err := f.c.access(desk.caller("ann"), f.w1.ID, RoleReviewer); err != nil {
+		t.Errorf("ann's new computer: %v", err)
+	}
+	if _, _, err := f.c.access(f.reviewer.caller("maria"), f.w1.ID, RoleReviewer); err != nil {
+		t.Errorf("another member's device: %v", err)
+	}
+	if w, _ := f.c.Worker(f.w1.ID); slices.ContainsFunc(w.Devices, func(d Device) bool { return d.ID == r.ann.id() }) {
+		t.Error("ann's old computer keeps a wrap")
+	}
+	st, err := reduceTeam("acme", testAudience, r.log())
+	if err != nil {
 		t.Fatalf("the log replays: %v", err)
+	}
+	if m := st.byID["m_ann"]; len(m.Devices) != 1 || st.byDevice[r.ann.id()] != nil || st.byDevice[f.reviewer.id()] == nil {
+		t.Fatal("the replay keeps ann's old computer")
 	}
 	if err := r.passkeyJoinAs(t, newTestDevice(t), lost, ceremony{}); !errors.Is(err, ErrListRefused) {
 		t.Fatalf("the lost passkey after the second invite: %v", err)
@@ -272,12 +292,79 @@ func TestAnExistingMemberInvitedAgainGetsBackInWithANewPasskey(t *testing.T) {
 
 	// A record binding her member to another account doesn't replay.
 	f.c.mu.Lock()
-	st, _ := f.c.teamState("acme")
+	st, _ = f.c.teamState("acme")
 	held := *st.byID["m_ann"]
 	f.c.mu.Unlock()
 	held.Invite = &ListInvite{ID: "i_again", Commit: commit, Exp: time.Now().Add(time.Hour).Unix()}
 	proof, _ := json.Marshal(InviteProof{Invite: "i_again", Secret: b64.EncodeToString(secret), Email: "ann@firm.com"})
 	if _, _, err := checkInviteProof(st, testAudience, "acme", TeamRecord{Account: "eve", Proof: proof, At: time.Now().Unix()}, &held); err == nil {
 		t.Error("an invite record moved a member to another account")
+	}
+}
+
+// An admin can't invite their own member again (accepting it would remove
+// the very computer that signed): their passkey adds their next computer.
+// The team's only admin who accepted an invite, so whose devices a record
+// admitted, signs lists at once, as with a passkey join (H3).
+func TestAnAdminInvitedAgainByTheirOwnListIsRefused(t *testing.T) {
+	f := newTeamFixture(t)
+	secret := make([]byte, InviteSecretSize)
+	commit, _ := InviteCommit("acme", "m_owner", "i_self", secret)
+	f.tt.update("m_owner", func(m *ListMember) {
+		m.Email = "owner@acme.com"
+		m.Invite = &ListInvite{ID: "i_self", Commit: commit, Exp: time.Now().Add(time.Hour).Unix()}
+	})
+	if err := f.tt.push(f.owner, "acme", nil); !errors.Is(err, ErrListRefused) || !strings.Contains(err.Error(), "invite yourself") {
+		t.Fatalf("a list inviting its signer's member again: %v", err)
+	}
+	f.tt.update("m_owner", func(m *ListMember) { m.Invite = nil })
+	f.tt.update("m_admin", func(m *ListMember) {
+		m.Email = "dev@acme.com"
+		m.Invite = &ListInvite{ID: "i_self", Commit: commit, Exp: time.Now().Add(time.Hour).Unix()}
+	})
+	if err := f.tt.push(f.owner, "acme", nil); err != nil {
+		t.Fatalf("an admin inviting another admin again: %v", err)
+	}
+}
+
+func TestTheOnlyAdminInvitedAgainSignsLists(t *testing.T) {
+	for _, stays := range []bool{true, false} {
+		f := newTeamFixture(t)
+		secret := make([]byte, InviteSecretSize)
+		copy(secret, "the owner's second invite secret")
+		commit, _ := InviteCommit("acme", "m_owner", "i_back", secret)
+		f.tt.update("m_owner", func(m *ListMember) {
+			m.Email = "owner@acme.com"
+			m.Invite = &ListInvite{ID: "i_back", Commit: commit, Exp: time.Now().Add(time.Hour).Unix()}
+		})
+		if !stays {
+			f.tt.update("m_admin", func(m *ListMember) { m.Role, m.Workers = RoleReviewer, []string{allWorkers} })
+		}
+		if err := f.tt.push(f.admin, "dev", nil); err != nil {
+			t.Fatal(err)
+		}
+		// Until it is taken, the owner's own lists keep the invite another
+		// admin opened.
+		if stays {
+			if err := f.tt.push(f.owner, "acme", nil); err != nil {
+				t.Fatalf("the owner's list keeping their open invite: %v", err)
+			}
+		}
+		seq, _ := f.tt.head()
+		desk, p := newTestDevice(t), newTestPasskey(t)
+		if _, err := f.c.AcceptInvite(withEmail(desk.caller("acme"), "owner@acme.com"), "acme", "i_back", "m_owner", secret, desk.include(t, "acme", "acme", seq+1),
+			p.invitePasskey(t, "acme", "m_owner", "i_back", desk, ceremony{})); err != nil {
+			t.Fatal(err)
+		}
+		f.tt.devices["m_owner"] = []testDevice{desk}
+		f.tt.since[desk.id()] = seq + 1
+		f.tt.update("m_owner", func(m *ListMember) { m.Invite, m.Rec = nil, p.rec(t) })
+		err := f.tt.push(desk, "acme", nil)
+		if stays && !errors.Is(err, ErrNotAdmin) {
+			t.Fatalf("with another admin, a re-invited admin's new computer signed: %v", err)
+		}
+		if !stays && err != nil {
+			t.Fatalf("the only admin, invited again, is locked out: %v", err)
+		}
 	}
 }

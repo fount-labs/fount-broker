@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"math/big"
 	"os"
+	"slices"
 	"testing"
 )
 
@@ -55,9 +56,11 @@ type passkeyJoinVectors struct {
 	// InviteMember, entry 2 the invite record by InviteAccount's new device
 	// (the new keys above) listing the passkey (sign count 3), entry 3 a
 	// passkey join of a third device by that passkey (count 4). InviteRefused
-	// are other entries 2, each to be refused; InviteLegacy is an entry 2
-	// from before passkey-only joins, with no passkey: it replays (dev logs)
-	// and lists none.
+	// are other entries 2, each to be refused, among them one with no passkey,
+	// as before passkey-only joins. InviteAgain is an entry 4, a list inviting
+	// InviteMember again, and InviteBack an entry 5, the invite record of a
+	// fourth device with a new passkey: it removes both of the member's
+	// devices and lists the new passkey, and leaves the owner's alone.
 	InviteMember       string               `json:"invite_member"`
 	InviteAccount      string               `json:"invite_account"`
 	InviteEmail        string               `json:"invite_email"`
@@ -67,7 +70,8 @@ type passkeyJoinVectors struct {
 	InviteChallenge    string               `json:"invite_challenge"`
 	InviteLog          TeamLogView          `json:"invite_log"`
 	InviteRefused      map[string]TeamEntry `json:"invite_refused"`
-	InviteLegacy       TeamEntry            `json:"invite_legacy"`
+	InviteAgain        TeamEntry            `json:"invite_again"`
+	InviteBack         TeamEntry            `json:"invite_back"`
 }
 
 const passkeyJoinVectorsPath = "testdata/team-passkey-join-vectors.json"
@@ -306,8 +310,43 @@ func makeInvitePasskeyVectors(t *testing.T, v *passkeyJoinVectors, owner ed25519
 		"no_signature":          inviteEntry(with(func(a *accept) { a.noSig = true }), newIncl),
 		"assertion_without_rec": inviteEntry(with(func(a *accept) { a.rec = nil }), newIncl),
 		"malformed_rec":         inviteEntry(with(func(a *accept) { a.rec = &ListRec{Cred: v.PasskeyCred, Pub: b64.EncodeToString([]byte{4, 1, 2})} }), newIncl),
+		"no_passkey":            inviteEntry(nil, newIncl),
 	}
-	v.InviteLegacy = inviteEntry(nil, newIncl)
+
+	// Invited again: the owner's list at 4 reopens an invite on m_ann, now
+	// bound to InviteAccount with two devices, and a fourth device takes it
+	// with a new passkey.
+	againSecret := seq(0xe1)
+	againCommit, _ := InviteCommit(v.Team, v.InviteMember, "i_again0123456789", againSecret)
+	again, err := SignTeamList(owner, TeamList{Aud: v.Audience, Team: v.Team, Seq: 4, Prev: third.Hash, Iat: 1798762004,
+		Members: []ListMember{
+			{ID: v.InviteMember, Account: v.InviteAccount, Email: v.InviteEmail, Role: RoleReviewer, Workers: []string{allWorkers}, Rec: rec,
+				Devices: []string{newIncl, thirdIncl}, Invite: &ListInvite{ID: "i_again0123456789", Commit: againCommit, Exp: 1798848000}},
+			{ID: v.Member, Account: v.Team, Role: RoleAdmin, Devices: []string{ownerIncl}},
+		},
+		Workers: []ListWorker{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	againPayload, _, _ := splitToken(again)
+	v.InviteAgain = TeamEntry{Seq: 4, List: again, Hash: entryHash(TeamListContext, againPayload)}
+	backKey := ed25519.NewKeyFromSeed(seq(0xf1))
+	backEnc := seq(0x51)
+	backIncl, err := SignTeamInclusion(backKey, backEnc, TeamInclusion{Aud: v.Audience, Team: v.Team, Acct: v.InviteAccount, Seq: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backPk, err := ecdsa.ParseRawPrivateKey(elliptic.P256(), seq(0x61))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backCh, _ := InvitePasskeyChallenge(v.Audience, v.Team, v.InviteMember, "i_again0123456789", backKey.Public().(ed25519.PublicKey), backEnc)
+	backRec := &ListRec{Cred: b64.EncodeToString(seq(0x42)[:16]), Pub: pubOf(backPk)}
+	bauth, bclient, bsig := sign(accept{key: backPk, client: clientOf(backCh, "https://fount.sh", ""), flags: 0x1d, count: 1})
+	bp, _ := json.Marshal(InviteProof{Invite: "i_again0123456789", Secret: b64.EncodeToString(againSecret), Email: v.InviteEmail,
+		InvitePasskey: InvitePasskey{Rec: backRec, AuthenticatorData: bauth, ClientDataJSON: bclient, Signature: bsig}})
+	raw, _ = json.Marshal(TeamRecord{Kind: RecordInvite, Seq: 5, Prev: v.InviteAgain.Hash, Member: v.InviteMember, Account: v.InviteAccount, Device: backIncl, At: 1798762005, Proof: bp})
+	v.InviteBack = TeamEntry{Seq: 5, Record: raw, Hash: entryHash(TeamRecordContext, raw)}
 }
 
 // highS is sig with s above n/2, which ECDSA verifies as well: so the
@@ -391,8 +430,15 @@ func TestPasskeyJoinVectors(t *testing.T) {
 			t.Errorf("invite %s: replayed", name)
 		}
 	}
-	st, err = reduceTeam(v.Team, v.Audience, []TeamEntry{v.InviteLog.Entries[0], v.InviteLegacy})
-	if err != nil || st.byID[v.InviteMember].Rec != nil {
-		t.Fatalf("invite_legacy: %v", err)
+	if _, ok := v.InviteRefused["no_passkey"]; !ok {
+		t.Fatal("no invite_refused no_passkey vector")
+	}
+	st, err = reduceTeam(v.Team, v.Audience, append(slices.Clone(v.InviteLog.Entries), v.InviteAgain, v.InviteBack))
+	if err != nil {
+		t.Fatalf("invite_back: %v", err)
+	}
+	m := st.byID[v.InviteMember]
+	if len(m.Devices) != 1 || m.Rec == nil || m.Rec.Pub == v.PasskeyPub || len(st.byID[v.Member].Devices) != 1 || len(st.byDevice) != 2 {
+		t.Fatal("invite_back doesn't leave the member only the new device and the new passkey")
 	}
 }

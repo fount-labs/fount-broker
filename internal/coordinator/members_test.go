@@ -832,13 +832,14 @@ func TestAnInviteRecordAdmitsOnceAndBindsTheAccount(t *testing.T) {
 	ann, eve := newTestDevice(t), newTestDevice(t)
 	ok := func(*teamState, *Member) error { return nil }
 	seq, _ := f.tt.head()
+	pk := newTestPasskey(t)
 	proofOf := func(secret []byte, email string) json.RawMessage {
-		p, _ := json.Marshal(InviteProof{Invite: "i_ann", Secret: b64.EncodeToString(secret), Email: email})
+		p, _ := json.Marshal(InviteProof{Invite: "i_ann", Secret: b64.EncodeToString(secret), Email: email, InvitePasskey: pk.invitePasskey(t, "acme", "m_zed", "i_ann", ann, ceremony{})})
 		return p
 	}
-	good := proofOf(secret, "ann@firm.com")
 	rec := func(d testDevice, account string, since uint64) TeamRecord {
-		return TeamRecord{Kind: RecordInvite, Member: "m_zed", Account: account, Device: d.include(t, "acme", account, since), Proof: good}
+		p, _ := json.Marshal(InviteProof{Invite: "i_ann", Secret: b64.EncodeToString(secret), Email: "ann@firm.com", InvitePasskey: pk.invitePasskey(t, "acme", "m_zed", "i_ann", d, ceremony{})})
+		return TeamRecord{Kind: RecordInvite, Member: "m_zed", Account: account, Device: d.include(t, "acme", account, since), Proof: p}
 	}
 	withProof := func(r TeamRecord, p json.RawMessage) TeamRecord { r.Proof = p; return r }
 	for _, tc := range []struct {
@@ -857,8 +858,8 @@ func TestAnInviteRecordAdmitsOnceAndBindsTheAccount(t *testing.T) {
 		{"for another account than the caller", ann.caller("eve"), rec(ann, "ann", seq+1), ok},
 		{"an account already a member", f.reviewer.caller("maria"), rec(f.reviewer, "maria", seq+1), ok},
 		{"a device already admitted", f.reviewer.caller("ann"), rec(f.reviewer, "ann", seq+1), ok},
-		{"a join before the invite is taken", ann.caller("ann"), TeamRecord{Kind: RecordJoin, Member: "m_zed", Account: "ann", Device: ann.include(t, "acme", "ann", seq+1)}, ok},
-		{"a code join, which is gone", ann.caller("maria"), TeamRecord{Kind: RecordJoin, Member: "m_reviewer", Account: "maria", Device: ann.include(t, "acme", "maria", seq+1)}, ok},
+		{"a join before the invite is taken", ann.caller("ann"), TeamRecord{Kind: "join", Member: "m_zed", Account: "ann", Device: ann.include(t, "acme", "ann", seq+1)}, ok},
+		{"a code join, which is gone", ann.caller("maria"), TeamRecord{Kind: "join", Member: "m_reviewer", Account: "maria", Device: ann.include(t, "acme", "maria", seq+1)}, ok},
 		{"no kind", ann.caller("ann"), TeamRecord{Kind: "admin", Member: "m_zed", Account: "ann"}, ok},
 		{"no member", ann.caller("ann"), TeamRecord{Kind: RecordInvite, Member: "m_nobody", Account: "ann", Device: ann.include(t, "acme", "ann", seq+1)}, ok},
 	} {

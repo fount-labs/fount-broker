@@ -240,7 +240,7 @@ func (c *Coordinator) PasskeyJoin(caller Caller, team string, req PasskeyJoinReq
 		email = m.Email
 	}
 	c.mu.Unlock()
-	c.deviceAdded(team, seq, email)
+	c.deviceAdded(team, seq, email, noticeDeviceAdded)
 	return v, nil
 }
 
@@ -378,6 +378,12 @@ func passkeyStatus(err error) int {
 		return http.StatusServiceUnavailable
 	}
 	return statusOf(err)
+}
+
+// joinKeys is a device's keys, as a passkey join's challenge asks for them.
+type joinKeys struct {
+	Key string `json:"key"`
+	Enc string `json:"enc"`
 }
 
 // startPasskeyJoin is POST /v1/teams/{team}/passkey-join/challenge {key, enc}.

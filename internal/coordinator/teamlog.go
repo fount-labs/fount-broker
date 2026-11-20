@@ -27,12 +27,11 @@ const TeamRecordContext = "fount-team-record-v1\n"
 // (teaminvite.go), and a member's new device added by that passkey
 // (passkeyjoin.go). Each checks its proof and calls appendRecord.
 //
-// RecordJoin, a new device approved by another of the member's with a
-// six-digit code, is gone (decided 2026-11-19): no new one is appended, and
-// one already in a dev log still replays (teamjoinreplay.go).
+// The six-digit code join is gone (decided 2026-11-19): a "join" record, and
+// an invite record that lists no passkey, are refused on append and on
+// replay alike.
 const (
 	RecordInvite      = "invite"
-	RecordJoin        = "join"
 	RecordPasskeyJoin = "passkey-join"
 )
 
@@ -40,13 +39,10 @@ const (
 // device.
 
 // recordAdmits are the record kinds that admit a device.
-var recordAdmits = map[string]bool{RecordInvite: true, RecordJoin: true, RecordPasskeyJoin: true}
+var recordAdmits = map[string]bool{RecordInvite: true, RecordPasskeyJoin: true}
 
-// recordKinds are the kinds a log replays; appendKinds those appended now.
-var (
-	recordKinds = map[string]bool{RecordInvite: true, RecordJoin: true, RecordPasskeyJoin: true, RecordPasskeyVouch: true}
-	appendKinds = map[string]bool{RecordInvite: true, RecordPasskeyJoin: true, RecordPasskeyVouch: true}
-)
+// recordKinds are the kinds a log holds.
+var recordKinds = map[string]bool{RecordInvite: true, RecordPasskeyJoin: true, RecordPasskeyVouch: true}
 
 var (
 	// ErrTeamStale is an entry that isn't the head's next: a replay, a list
@@ -111,7 +107,7 @@ func (c *Coordinator) teamState(id string) (*teamState, error) {
 // last list and the records after it. The log holds only entries that were
 // checked when they were appended, so a failure here is a damaged volume.
 func reduceTeam(team, aud string, log []TeamEntry) (*teamState, error) {
-	st := &teamState{usedInvites: map[string]bool{}, passkeyCounts: map[string]uint32{}, passkeyJoined: map[string]bool{}, vouched: map[string]bool{}, byID: map[string]*Member{}, byDevice: map[string]*Member{}, workers: map[string]string{}}
+	st := &teamState{usedInvites: map[string]bool{}, passkeyCounts: map[string]uint32{}, passkeyAdmitted: map[string]bool{}, vouched: map[string]bool{}, byID: map[string]*Member{}, byDevice: map[string]*Member{}, workers: map[string]string{}}
 	head := ""
 	for i, e := range log {
 		if e.Seq != uint64(i+1) {
@@ -165,7 +161,7 @@ func reduceTeam(team, aud string, log []TeamEntry) (*teamState, error) {
 // applyList makes a list the state; what it leaves out is gone.
 func (s *teamState) applyList(l TeamList, aud string) error {
 	s.members, s.byID, s.byDevice, s.workers = nil, map[string]*Member{}, map[string]*Member{}, map[string]string{}
-	s.passkeyJoined = map[string]bool{}
+	s.passkeyAdmitted = map[string]bool{}
 	s.name, s.lastList = l.Name, l.Seq
 	for _, w := range l.Workers {
 		s.workers[w.ID] = w.DEK
@@ -198,16 +194,17 @@ func (s *teamState) applyRecord(r TeamRecord, team, aud string) error {
 		if err != nil {
 			return err
 		}
-		if rec != nil {
-			m.Rec = rec
-			if count != 0 {
-				s.passkeyCounts[rec.Pub] = count
-			}
+		m.Rec = rec
+		if count != 0 {
+			s.passkeyCounts[rec.Pub] = count
 		}
-	case RecordJoin:
-		if err := checkJoinProof(s, aud, team, r, m); err != nil {
-			return err
+		// A member invited again gets back in with this device alone: the
+		// computers they had are removed, as if a list left them out.
+		for _, d := range m.Devices {
+			delete(s.byDevice, d.ID)
+			delete(s.passkeyAdmitted, d.ID)
 		}
+		m.Devices = nil
 	case RecordPasskeyJoin:
 		count, err := checkPasskeyJoinProof(s, aud, team, r, m)
 		if err != nil {
@@ -243,9 +240,7 @@ func (s *teamState) applyRecord(r TeamRecord, team, aud string) error {
 	m.Devices = append(m.Devices, d)
 	slices.SortFunc(m.Devices, func(a, b TeamDevice) int { return cmpString(a.ID, b.ID) })
 	s.byDevice[d.ID] = m
-	if r.Kind == RecordPasskeyJoin {
-		s.passkeyJoined[d.ID] = true
-	}
+	s.passkeyAdmitted[d.ID] = true
 	return nil
 }
 
@@ -384,6 +379,15 @@ func (c *Coordinator) checkList(prior *teamState, l TeamList, caller Caller, dek
 		if lm.Invite != nil && prior != nil && prior.usedInvites[lm.Invite.ID] {
 			return refuse("invite %s was used", lm.Invite.ID)
 		}
+		// Accepting an invite again removes the member's computers, so an
+		// admin's list can't open one on its signer's own member: their
+		// passkey adds their next computer. One another admin opened, the
+		// member's own lists keep.
+		if prior != nil && lm.Invite != nil && lm.Account != "" && (old == nil || old.Invite == nil || *old.Invite != *lm.Invite) {
+			if _, signer := prior.device(caller.Device); signer != nil && signer.ID == lm.ID {
+				return refuse("you can't invite yourself again; add your new computer with your passkey")
+			}
+		}
 		for _, token := range lm.Devices {
 			d, err := parseTeamInclusion(token, c.cfg.Audience, l.Team, lm.Account)
 			if err != nil {
@@ -482,7 +486,7 @@ func (c *Coordinator) appendRecordLocked(caller Caller, team string, prior *team
 	}
 	m := prior.byID[rec.Member]
 	switch {
-	case !appendKinds[rec.Kind]:
+	case !recordKinds[rec.Kind]:
 		return 0, refuse("no record kind %.20q", rec.Kind)
 	case m == nil:
 		return 0, refuse("no member %.40q", rec.Member)
@@ -513,9 +517,9 @@ func (c *Coordinator) appendRecordLocked(caller Caller, team string, prior *team
 			return 0, refuse("a device admits only itself")
 		case d.Since != rec.Seq:
 			return 0, refuse("device %s's inclusion is for entry %d, and it must be for %d", d.ID, d.Since, rec.Seq)
-		case prior.byDevice[d.ID] != nil:
+		case prior.byDevice[d.ID] != nil && !(rec.Kind == RecordInvite && prior.byDevice[d.ID] == m):
 			return 0, refuse("device %s is admitted already", d.ID)
-		case len(m.Devices) >= MaxMemberDevices:
+		case rec.Kind != RecordInvite && len(m.Devices) >= MaxMemberDevices:
 			return 0, refuse("member %s has %d devices", m.ID, MaxMemberDevices)
 		}
 	} else if rec.Device != "" {
