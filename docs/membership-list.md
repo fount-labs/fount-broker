@@ -223,6 +223,21 @@ this worker" without a rewrite, and a removal takes effect in them at once.
 
 ---
 
+**A deleted worker's address** (launch-plan X4). When an entry leaves a worker out, the same commit
+puts its edge mailbox in `State.Releases`. Each mail pass asks the edge to remove it (`POST
+/coordinator/remove`, signed by the generation key) and drops the entry once the edge answers:
+removed, removed before, unknown, not enrolled, or a handle's own address, which the edge keeps.
+Anything else is retried next pass, and the list survives a restart. The edge keeps a tombstone, so
+the address can't be taken by another handle and comes back to its own only after 30 days.
+
+**Deleting a team** (launch-plan X4). An admin deletes a firm team with a list that says
+`"deleted": true` and names no member and no worker. It's checked like any list (an admin signs
+it, in order), so it leaves out every worker, and each worker's address is released as above. It
+is the log's last entry: no list or record follows it, so the id can't be taken back, and
+`/v1/teams` stops listing it. The devices the team admitted just before it may still read the log,
+so they see the deletion and stop following the team. A team of one, whose id is its account,
+isn't deleted.
+
 ### 2.5 Invites, second devices, signed approvals and rotation (T)
 
 `lp(ctx, f…)` is `lengthPrefixed`: the context, then each field as a big-endian u16 length and its

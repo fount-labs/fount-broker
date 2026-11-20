@@ -54,6 +54,10 @@ type Coordination struct {
 	newOwnerLimit int
 	added         map[string]map[string]bool
 
+	// RemoveFailures answers this many POST /coordinator/remove calls 503
+	// before taking one.
+	RemoveFailures int
+
 	// OnInvite sends an invite the fake took (POST /coordinator/invite):
 	// the fake edge's send path, which answers it and keeps its sent
 	// record under mailbox. nil answers 501, as an edge with sending off.
@@ -81,6 +85,8 @@ type CoordinatedMailbox struct {
 	Owners         []string
 	RoutingVersion uint64
 	Proved         []string
+	// Removed is set by POST /coordinator/remove, which also unenrolls it.
+	Removed bool
 }
 
 func NewCoordination(authority ed25519.PublicKey) *Coordination {
@@ -276,7 +282,7 @@ func (c *Coordination) Serve(w http.ResponseWriter, r *http.Request, body []byte
 		}
 		json.NewEncoder(w).Encode(map[string]uint64{"generation": c.gen})
 	case "POST /coordinator/lapse", "POST /coordinator/changes", "POST /coordinator/signing-key", "POST /coordinator/decryption-key", "POST /coordinator/invite",
-		"POST /coordinator/routing", "POST /coordinator/pause":
+		"POST /coordinator/routing", "POST /coordinator/pause", "POST /coordinator/remove":
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		c.calls = append(c.calls, route)
@@ -300,6 +306,8 @@ func (c *Coordination) Serve(w http.ResponseWriter, r *http.Request, body []byte
 			c.routing(w, body)
 		case "POST /coordinator/pause":
 			c.pause(w, body)
+		case "POST /coordinator/remove":
+			c.remove(w, body)
 		case "POST /coordinator/signing-key":
 			c.rotate(w, body, addressKey)
 		case "POST /coordinator/decryption-key":
@@ -430,6 +438,36 @@ func (c *Coordination) routing(w http.ResponseWriter, body []byte) {
 		c.touch(m)
 	}
 	json.NewEncoder(w).Encode(map[string]any{"version": req.Version, "owners": len(req.Owners)})
+}
+
+// remove is POST /coordinator/remove: an enrolled worker's address leaves
+// the edge; removed again is 200. c.mu held.
+func (c *Coordination) remove(w http.ResponseWriter, body []byte) {
+	var req struct {
+		MailboxID string `json:"mailbox_id"`
+	}
+	if json.Unmarshal(body, &req) != nil || len(req.MailboxID) != 64 {
+		refuse(http.StatusBadRequest, "", "bad request body").Write(w)
+		return
+	}
+	if c.RemoveFailures > 0 {
+		c.RemoveFailures--
+		refuse(http.StatusServiceUnavailable, "", "write conflict, retry").Write(w)
+		return
+	}
+	m := c.mailboxes[req.MailboxID]
+	switch {
+	case m == nil:
+		refuse(http.StatusNotFound, "", "no such mailbox").Write(w)
+		return
+	case !m.Enrolled && !m.Removed:
+		refuse(http.StatusConflict, "not_coordinated", "this mailbox is not under a coordinator").Write(w)
+		return
+	}
+	if !m.Removed {
+		m.Removed, m.Enrolled = true, false
+	}
+	json.NewEncoder(w).Encode(map[string]any{"mailbox_id": req.MailboxID, "removed": true})
 }
 
 // pause is POST /coordinator/pause: the worker's own pause. c.mu held.

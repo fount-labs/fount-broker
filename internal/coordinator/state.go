@@ -30,6 +30,9 @@ type State struct {
 	// first list hasn't been appended yet, each with the account it was made
 	// for: one at a time per account.
 	TeamMints map[string]string `json:"teamMints,omitempty"`
+	// Releases are deleted workers' edge mailboxes (hex) still to remove
+	// at the edge (release.go).
+	Releases []string `json:"releases,omitempty"`
 	// Restored is set on a volume a backup was restored onto (restore.go).
 	Restored *RestoreMark `json:"restored,omitempty"`
 }

@@ -114,6 +114,8 @@ var (
 	ErrRole = errors.New("your role doesn't allow this")
 	// ErrNoTeam is a team the caller isn't a member of, or none.
 	ErrNoTeam = errors.New("no such team")
+	// ErrTeamDeleted is a change to a team an admin deleted.
+	ErrTeamDeleted = fmt.Errorf("%w: the team was deleted", ErrNoTeam)
 )
 
 // rank orders roles; anything else ranks above both, so nothing satisfies it.
@@ -173,6 +175,11 @@ type teamState struct {
 	start string
 	// vouched are the passkeys (by public key) that vouched for the team.
 	vouched map[string]bool
+	// deleted is set by the list that deletes the team, and former are the
+	// devices the team admitted just before it, by id, with their account:
+	// they may still read the log, to see the deletion.
+	deleted bool
+	former  map[string]string
 }
 
 // device is a device the state admits, and its member.
@@ -217,7 +224,7 @@ func (s *teamState) adminDevices() []TeamDevice {
 // reviewer, or drops one of an admin's devices: each held the team workers'
 // address keys, whose signing key must then rotate (§5).
 func lostAdmin(prev, next *teamState) bool {
-	if prev == nil {
+	if prev == nil || next.deleted {
 		return false
 	}
 	for _, m := range prev.members {
