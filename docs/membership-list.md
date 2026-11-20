@@ -272,8 +272,8 @@ bytes. Vectors for every format here: `internal/coordinator/testdata/team-invite
   worker's edge owner list (`POST /coordinator/routing`) as a notice owner
   (`MailSettings.NoticeOwners`), one new one per write so the edge's daily new-owner cap holds
   back only that member. The edge then proves them as any owner (its "Reply to turn on email
-  updates" mail, the `OwnerWait`, and a notice to the owners it has proved); the invite email
-  says to expect it. A notice owner isn't a requester: their email starts no work and is held. An
+  updates" mail, and a notice to the owners it has proved) and mails them as soon as they reply;
+  the invite email says to expect it. A notice owner isn't a requester: their email starts no work and is held. An
   approval by email from one also needs them to still reach the worker when it arrives. Leaving
   the team takes them off the edge's list on the next pass; a list change kicks the team's
   workers.
