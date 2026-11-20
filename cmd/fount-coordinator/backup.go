@@ -39,6 +39,8 @@ type backupFlags struct {
 	keyMode string
 	dir     string
 	getenv  func(string) string
+	// mail is --mail, which with the vault's key needs backups.
+	mail bool
 	// authority is --coordinator-authority-key, with --wrapping-key vault.
 	authority string
 	// vault is what the Cloud vaults gave this boot, with --wrapping-key
@@ -54,6 +56,10 @@ func (f backupFlags) on() bool { return f.bucket != "" }
 func (f backupFlags) check() error {
 	if !f.on() {
 		switch {
+		case f.mail && f.keyMode == keyVault:
+			// A production coordinator's volume is the only copy of every
+			// worker's mail and keys: losing it, with no backup, loses them.
+			return errors.New("--mail with --wrapping-key vault needs --backup-bucket: without backups, a lost volume loses every worker's mail and keys")
 		case f.devVault != "":
 			return errors.New("--dev-vault needs --backup-bucket")
 		case f.restore != "" || f.dryRun:

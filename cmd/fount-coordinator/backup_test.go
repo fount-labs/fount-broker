@@ -94,6 +94,20 @@ func TestBackupFlags(t *testing.T) {
 	if err := (backupFlags{keyMode: keyDev, getenv: testEnv}).check(); err != nil {
 		t.Fatalf("no backups: %v", err)
 	}
+	if err := (backupFlags{keyMode: keyDev, mail: true, getenv: testEnv}).check(); err != nil {
+		t.Fatalf("dev mail with no backups: %v", err)
+	}
+	noEnv := func(string) string { return "" }
+	if err := (backupFlags{keyMode: keyVault, getenv: noEnv}).check(); err != nil {
+		t.Fatalf("the vault's key, no mail, no backups: %v", err)
+	}
+	if err := (backupFlags{keyMode: keyVault, mail: true, getenv: noEnv}).check(); err == nil || !strings.Contains(err.Error(), "--mail with --wrapping-key vault needs --backup-bucket") {
+		t.Errorf("the vault's key, mail, no backups: %v", err)
+	}
+	vaultMail := backupFlags{bucket: ok.bucket, region: ok.region, keyMode: keyVault, authority: testAuthority, mail: true, dir: dir, getenv: noEnv}
+	if err := vaultMail.check(); err != nil {
+		t.Fatalf("the vault's key, mail, backups: %v", err)
+	}
 	for name, c := range map[string]struct {
 		edit func(*backupFlags)
 		want string
