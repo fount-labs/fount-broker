@@ -118,6 +118,9 @@ func (f *fakeMailEdge) serve(w http.ResponseWriter, r *http.Request) {
 		if f.paused != nil {
 			body["paused"] = *f.paused
 		}
+		if c := f.coord.Mailbox(mb); c.Paused {
+			body["paused"] = true
+		}
 		if c := f.coord.Mailbox(mb); c.Lapsed {
 			body["lapsed"], body["hold_until"] = true, c.HoldUntil
 		}
@@ -844,8 +847,6 @@ func TestAnEmailedAnswerResumesTheWaitingJob(t *testing.T) {
 }
 
 func TestAPausedWorkerHoldsRequests(t *testing.T) {
-	r := newMailRig(t, MailConfig{})
-	w, mb := r.worker()
 	paused := true
 	for _, tc := range []struct {
 		paused *bool
@@ -854,6 +855,9 @@ func TestAPausedWorkerHoldsRequests(t *testing.T) {
 		{&paused, "the worker is paused"},
 		{nil, "Fount couldn't tell whether the worker is paused"},
 	} {
+		// A rig each: the worker keeps a pause the edge said.
+		r := newMailRig(t, MailConfig{})
+		w, mb := r.worker()
 		r.edge.mu.Lock()
 		r.edge.paused = tc.paused
 		r.edge.mu.Unlock()

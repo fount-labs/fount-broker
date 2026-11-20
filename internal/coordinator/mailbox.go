@@ -181,12 +181,24 @@ type MailSettings struct {
 	AcknowledgeRev uint64   `json:"acknowledgeRevision"`
 	Pairing        *Pairing `json:"pairing,omitempty"`
 	PairingRev     uint64   `json:"pairingRevision"`
-	// RoutingUnsent is set when the requester list changed since a device
-	// last wrote it to the edge (PUT /routing). The owner-change key that
-	// signs it is never granted to Cloud, so a device does that and says so
-	// with routingSaved. Proofs are connect replies for it to carry.
-	RoutingUnsent bool           `json:"routingUnsent"`
-	Proofs        []ConnectProof `json:"proofs,omitempty"`
+	// RoutingUnsent is set when the requester list changed since the edge
+	// last took it. Since the security review (2026-11-19, H1) the edge
+	// takes an enrolled worker's list only from its coordinator (POST
+	// /coordinator/routing), so the mail loop sends it (mailpush.go).
+	// Proofs are connect replies for it to carry. RoutingVersion is the
+	// version the edge last took the list at (the creating device's, then
+	// the coordinator's), or the last it refused as stale: the next write
+	// goes above it.
+	RoutingUnsent  bool           `json:"routingUnsent"`
+	Proofs         []ConnectProof `json:"proofs,omitempty"`
+	RoutingVersion uint64         `json:"routingVersion,omitempty"`
+	// Paused is the worker's own pause (setPaused): mail is held, not run.
+	// PauseUnsent says the edge hasn't taken it yet; until it has, the
+	// coordinator holds mail itself. The edge's pause, as its listing
+	// says, is taken in when nothing is unsent.
+	Paused      bool   `json:"paused"`
+	PausedRev   uint64 `json:"pausedRevision"`
+	PauseUnsent bool   `json:"pauseUnsent,omitempty"`
 	// JobsPerDay caps the jobs mail starts by itself: Desktop's
 	// limits.jobsPerDay. 0 is the default.
 	JobsPerDay int `json:"jobsPerDay,omitempty"`

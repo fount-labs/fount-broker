@@ -466,6 +466,7 @@ func TestEveryOperationChecksTheRole(t *testing.T) {
 		{"PUT", base + "/root/instructions.md", "x", 403, 204},
 		{"POST", base + "/jobs", `{"threadId":"t2","sessionId":"s2","instruction":"hi","config":{}}`, 403, 202},
 		{"POST", base + "/ops", `{"opId":"op_auto","kind":"setAutoRun","args":{"on":true,"baseRevision":0}}`, 403, 200},
+		{"POST", base + "/ops", `{"opId":"op_pause","kind":"setPaused","args":{"on":true,"baseRevision":0}}`, 403, 200},
 		{"POST", base + "/ops", `{"opId":"op_req","kind":"addRequester","args":{"address":"lee@client.example","baseRevision":0}}`, 403, 200},
 		{"POST", base + "/threads/thr_0123456789abcdef01234567/ops", `{"opId":"op_x","threadId":"thr_0123456789abcdef01234567","baseRevision":0,"kind":"runHeldMail","args":{"mailId":"m_1"}}`, 200, 200},
 		{"POST", base + "/ops", op("noSuchKind"), 403, 403},

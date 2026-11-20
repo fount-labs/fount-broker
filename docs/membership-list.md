@@ -300,7 +300,7 @@ The table is one map in code, `opRoles`, keyed by route pattern or operation kin
 | `approveDraft`, `discardDraft`, `sendAgain`, `keepFileAsCopy`, `redoOnLatest` | reviewer |
 | `answerQuestion`, `dismissQuestion`, `forwardQuestion`, `runHeldMail`, `markRead` | reviewer |
 | `POST /teams/{team}/log` (a list) | admin, checked by the list's signer rule |
-| `addRequester`, `removeRequester`, `setRequesterMode`, `setDefaultMode`, `setAutoRun`, `setAcknowledge`, `pairingStart`, `pairingConfirm`, `routingSaved`, `setThreadReplyMode` | admin |
+| `addRequester`, `removeRequester`, `setRequesterMode`, `setDefaultMode`, `setAutoRun`, `setAcknowledge`, `setPaused`, `pairingStart`, `pairingConfirm`, `routingSaved`, `setThreadReplyMode` | admin |
 | `PUT /workers/{id}/root/{path}`, `POST /workers/{id}/jobs` (a raw JobSpec) | admin |
 
 `POST /workers` (a new worker, before a list adds it to the team) needs no role: it makes a

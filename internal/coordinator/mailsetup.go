@@ -290,6 +290,7 @@ func writeMailSetup(t *Tree, s *MailSetup, now time.Time) error {
 		}
 	}
 	ms.RoutingUnsent = s.RoutingVersion == 0 && len(ms.Requesters) > 0
+	ms.RoutingVersion = max(ms.RoutingVersion, s.RoutingVersion)
 	if s.AutoRun != ms.AutoRun {
 		ms.AutoRun, ms.AutoRunSince = s.AutoRun, now
 		ms.AutoRunRev++

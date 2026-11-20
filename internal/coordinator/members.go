@@ -86,6 +86,7 @@ var opRoles = map[string]Role{
 	"setDefaultMode":     RoleAdmin,
 	"setAutoRun":         RoleAdmin,
 	"setAcknowledge":     RoleAdmin,
+	"setPaused":          RoleAdmin,
 	"pairingStart":       RoleAdmin,
 	"pairingConfirm":     RoleAdmin,
 	"routingSaved":       RoleAdmin,

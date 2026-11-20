@@ -45,6 +45,9 @@ type Coordination struct {
 	// noDecryptionRoute answers POST /coordinator/decryption-key 404, as an
 	// edge from before it.
 	noDecryptionRoute bool
+	// refuseProofs answers a POST /coordinator/routing with proofs 422, as
+	// the edge does for an expired connect reply.
+	refuseProofs bool
 
 	// OnInvite sends an invite the fake took (POST /coordinator/invite):
 	// the fake edge's send path, which answers it and keeps its sent
@@ -68,6 +71,11 @@ type CoordinatedMailbox struct {
 	SigningKey ed25519.PublicKey
 	// DecryptionKey is the X25519 public key a rotation set, nil before one.
 	DecryptionKey []byte
+	// Owners and RoutingVersion are the owner list POST /coordinator/routing
+	// wrote last, and Proved the owners a connect proof proved.
+	Owners         []string
+	RoutingVersion uint64
+	Proved         []string
 }
 
 func NewCoordination(authority ed25519.PublicKey) *Coordination {
@@ -205,7 +213,8 @@ func (c *Coordination) advance(gen uint64, key ed25519.PublicKey) *Refusal {
 
 // Serve answers the coordinator routes: PUT /coordinator (with addressKey,
 // the mailbox's address key, or nil when the fake doesn't know it),
-// POST /coordinator/generation, /coordinator/lapse and /coordinator/changes.
+// POST /coordinator/generation, /coordinator/lapse, /coordinator/changes,
+// /coordinator/routing, /coordinator/pause and the rotations and invite.
 // It returns false for any other path.
 func (c *Coordination) Serve(w http.ResponseWriter, r *http.Request, body []byte, addressKey func(mailbox string) ed25519.PublicKey) bool {
 	route := r.Method + " " + r.URL.Path
@@ -261,7 +270,8 @@ func (c *Coordination) Serve(w http.ResponseWriter, r *http.Request, body []byte
 			return true
 		}
 		json.NewEncoder(w).Encode(map[string]uint64{"generation": c.gen})
-	case "POST /coordinator/lapse", "POST /coordinator/changes", "POST /coordinator/signing-key", "POST /coordinator/decryption-key", "POST /coordinator/invite":
+	case "POST /coordinator/lapse", "POST /coordinator/changes", "POST /coordinator/signing-key", "POST /coordinator/decryption-key", "POST /coordinator/invite",
+		"POST /coordinator/routing", "POST /coordinator/pause":
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		c.calls = append(c.calls, route)
@@ -281,6 +291,10 @@ func (c *Coordination) Serve(w http.ResponseWriter, r *http.Request, body []byte
 		switch route {
 		case "POST /coordinator/lapse":
 			c.lapse(w, body)
+		case "POST /coordinator/routing":
+			c.routing(w, body)
+		case "POST /coordinator/pause":
+			c.pause(w, body)
 		case "POST /coordinator/signing-key":
 			c.rotate(w, body, addressKey)
 		case "POST /coordinator/decryption-key":
@@ -335,6 +349,100 @@ func (c *Coordination) lapse(w http.ResponseWriter, body []byte) {
 		c.touch(m)
 	}
 	json.NewEncoder(w).Encode(map[string]any{"mailbox_id": req.MailboxID, "lapsed": m.Lapsed, "hold_until": m.HoldUntil})
+}
+
+// routing is POST /coordinator/routing: the edge's version rule (never
+// backwards; the stored version again only with the same list) and limits.
+// c.mu held.
+func (c *Coordination) routing(w http.ResponseWriter, body []byte) {
+	var req struct {
+		MailboxID string   `json:"mailbox_id"`
+		Version   uint64   `json:"version"`
+		Owners    []string `json:"owners"`
+		Proofs    []struct {
+			Owner     string `json:"owner"`
+			MessageID string `json:"messageId"`
+		} `json:"proofs"`
+	}
+	if json.Unmarshal(body, &req) != nil {
+		refuse(http.StatusBadRequest, "", "bad request body").Write(w)
+		return
+	}
+	if _, err := hex.DecodeString(req.MailboxID); err != nil || len(req.MailboxID) != 64 {
+		refuse(http.StatusBadRequest, "", "bad mailbox id").Write(w)
+		return
+	}
+	m := c.mailboxes[req.MailboxID]
+	if m == nil || !m.Enrolled {
+		refuse(http.StatusConflict, "not_coordinated", "this mailbox is not under a coordinator").Write(w)
+		return
+	}
+	if req.Version == 0 {
+		refuse(http.StatusBadRequest, "", "version must be >= 1").Write(w)
+		return
+	}
+	if len(req.Owners) > 64 {
+		refuse(http.StatusBadRequest, "", "too many owners").Write(w)
+		return
+	}
+	var proved []string
+	for _, p := range req.Proofs {
+		if c.refuseProofs || p.MessageID == "" || !slices.Contains(req.Owners, p.Owner) {
+			refuse(http.StatusUnprocessableEntity, "", "connect proof invalid or expired").Write(w)
+			return
+		}
+		proved = append(proved, p.Owner)
+	}
+	if req.Version < m.RoutingVersion || req.Version == m.RoutingVersion && !slices.Equal(req.Owners, m.Owners) {
+		refuse(http.StatusConflict, "", "routing version did not advance").Write(w)
+		return
+	}
+	if req.Version > m.RoutingVersion {
+		m.Owners, m.RoutingVersion = slices.Clone(req.Owners), req.Version
+		m.Proved = append(m.Proved, proved...)
+		c.touch(m)
+	}
+	json.NewEncoder(w).Encode(map[string]any{"version": req.Version, "owners": len(req.Owners)})
+}
+
+// pause is POST /coordinator/pause: the worker's own pause. c.mu held.
+func (c *Coordination) pause(w http.ResponseWriter, body []byte) {
+	var req struct {
+		MailboxID string `json:"mailbox_id"`
+		Paused    *bool  `json:"paused"`
+	}
+	if json.Unmarshal(body, &req) != nil || req.Paused == nil {
+		refuse(http.StatusBadRequest, "", "bad request body").Write(w)
+		return
+	}
+	m := c.mailboxes[req.MailboxID]
+	if m == nil || !m.Enrolled {
+		refuse(http.StatusConflict, "not_coordinated", "this mailbox is not under a coordinator").Write(w)
+		return
+	}
+	if m.Paused != *req.Paused {
+		m.Paused = *req.Paused
+		c.touch(m)
+	}
+	json.NewEncoder(w).Encode(map[string]any{"mailbox_id": req.MailboxID, "paused": m.Paused})
+}
+
+// RefuseProofs makes the fake refuse every connect proof on POST
+// /coordinator/routing, as the edge does once they expire, or not.
+func (c *Coordination) RefuseProofs(refuse bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.refuseProofs = refuse
+}
+
+// SetRouting sets mailbox's owner list and version directly, as a device's
+// PUT /routing before it was enrolled would have.
+func (c *Coordination) SetRouting(mailbox string, version uint64, owners []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	m := c.box(mailbox)
+	m.Owners, m.RoutingVersion = slices.Clone(owners), version
+	c.touch(m)
 }
 
 // rotate is POST /coordinator/signing-key: the new key must prove it's held
