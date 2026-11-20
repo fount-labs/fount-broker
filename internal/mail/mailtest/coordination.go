@@ -48,6 +48,11 @@ type Coordination struct {
 	// refuseProofs answers a POST /coordinator/routing with proofs 422, as
 	// the edge does for an expired connect reply.
 	refuseProofs bool
+	// newOwnerLimit caps the owners a mailbox's lists may ever add (the
+	// edge's daily cap, never refilled here); 0 is no cap. added counts
+	// each mailbox's, by address.
+	newOwnerLimit int
+	added         map[string]map[string]bool
 
 	// OnInvite sends an invite the fake took (POST /coordinator/invite):
 	// the fake edge's send path, which answers it and keeps its sent
@@ -397,6 +402,28 @@ func (c *Coordination) routing(w http.ResponseWriter, body []byte) {
 		refuse(http.StatusConflict, "", "routing version did not advance").Write(w)
 		return
 	}
+	if c.newOwnerLimit > 0 && req.Version > m.RoutingVersion {
+		seen := c.added[req.MailboxID]
+		n := len(seen)
+		for _, o := range req.Owners {
+			if !seen[o] && !slices.Contains(m.Owners, o) {
+				n++
+			}
+		}
+		if n > c.newOwnerLimit {
+			refuse(http.StatusTooManyRequests, "", "new-owner limit reached, retry later").Write(w)
+			return
+		}
+		if seen == nil {
+			seen = map[string]bool{}
+			c.added[req.MailboxID] = seen
+		}
+		for _, o := range req.Owners {
+			if !slices.Contains(m.Owners, o) {
+				seen[o] = true
+			}
+		}
+	}
 	if req.Version > m.RoutingVersion {
 		m.Owners, m.RoutingVersion = slices.Clone(req.Owners), req.Version
 		m.Proved = append(m.Proved, proved...)
@@ -433,6 +460,14 @@ func (c *Coordination) RefuseProofs(refuse bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.refuseProofs = refuse
+}
+
+// LimitNewOwners refuses, 429, a routing write that would take a mailbox's
+// added owners past n, counted from now.
+func (c *Coordination) LimitNewOwners(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.newOwnerLimit, c.added = n, map[string]map[string]bool{}
 }
 
 // SetRouting sets mailbox's owner list and version directly, as a device's

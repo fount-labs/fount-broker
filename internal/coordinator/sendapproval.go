@@ -21,7 +21,9 @@ import (
 //
 //   - it answers that Message-ID in an In-Reply-To or References a DKIM
 //     signature aligned with its From covers;
-//   - it is from the owner the approval email went to, whose own mode is Full;
+//   - it is from the reviewer the approval email went to, whose own mode is
+//     Full, and who still reviews the worker: the owner, or a member of its
+//     team who reaches it (reviewers.go), as a device's approval must be;
 //   - intake read the owner's words above the quote as "yes" (or the like);
 //   - the token wasn't used, hasn't expired, and the draft is still pending at
 //     that draft_rev with the same binding.
@@ -57,8 +59,9 @@ func (c *Coordinator) approvalToken(workerID, threadID, draftID string, a *appro
 
 // askApproval sends a reviewer on Full, to, the draft with an approval
 // token: the owner's is the draft's Ask, every other reviewer's one of its
-// Asks.
-func (c *Coordinator) askApproval(t *Tree, th *threadRecord, mb *Mailbox, rs *replySettings, id, draftID string, d *draftEntry, to string, now time.Time) error {
+// Asks. requester says to's other replies start work; a member who isn't
+// one is told theirs wait.
+func (c *Coordinator) askApproval(t *Tree, th *threadRecord, mb *Mailbox, rs *replySettings, id, draftID string, d *draftEntry, to string, requester bool, now time.Time) error {
 	keys, err := c.mailKeys(mb)
 	if err != nil {
 		return err
@@ -88,7 +91,11 @@ func (c *Coordinator) askApproval(t *Tree, th *threadRecord, mb *Mailbox, rs *re
 	b.WriteString(renderBody(d.Text, names, footer(firm, true)))
 	b.WriteString("\n----- End of the reply -----\n\n")
 	fmt.Fprintf(&b, "To send it exactly as it is, reply to this email with \"yes\". That works once, until %s.\n", ask.ExpiresAt.Format("2 Jan 2006 15:04 MST"))
-	b.WriteString("Anything else you write back goes to the worker as a note.\n\n")
+	if requester {
+		b.WriteString("Anything else you write back goes to the worker as a note.\n\n")
+	} else {
+		b.WriteString("Anything else you write back waits in Fount until someone runs it.\n\n")
+	}
 	b.WriteString("Open it in Fount: " + fountLink(th.WorkerID, th.ID) + "\n\n" + footer(firm, false) + "\n")
 	r := &sendRecord{
 		ID: id, Kind: sendKindNotice, ThreadID: th.ID, Attempt: 1, State: sendSending, To: []string{ask.To},
@@ -209,12 +216,17 @@ func (c *Coordinator) emailApproval(t *Tree, th *threadRecord, mb *Mailbox, s *M
 		if err != nil {
 			return false, err
 		}
-		why := emailApprovalRefused(e.Draft, ask, rs, s, sender, check, in, now)
+		why := ""
+		if !slices.Contains(c.reviewers(th.WorkerID, rs, s), sender) {
+			why = sender + " no longer reviews this worker"
+		} else {
+			why = emailApprovalRefused(e.Draft, ask, rs, s, sender, check, in, now)
+		}
 		if why != "" {
 			return true, th.event(rev, now, "approval_refused", map[string]string{"draftId": e.ID, "reason": why})
 		}
 		ask.UsedBy = msg.ID
-		a := approval{By: sender, Via: viaEmail, DKIM: alignedDomain(check), Email: msg.ID}
+		a := approval{By: sender, Via: viaEmail, DKIM: alignedDomain(check), Email: msg.ID, Member: c.memberID(th.WorkerID, sender)}
 		if err := c.approve(t, th, e, a, rev, now); err != nil {
 			if isRefusal(err) {
 				return true, th.event(rev, now, "approval_refused", map[string]string{"draftId": e.ID, "reason": "the draft was already sent or discarded"})
