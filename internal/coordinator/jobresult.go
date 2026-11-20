@@ -135,3 +135,18 @@ func (s *turnSummary) check() error {
 	}
 	return nil
 }
+
+// enclaveFile is jobs/<job id>/'s record of where the job ran: the
+// coordinator's own, written from the link the job took.
+const enclaveFile = "enclave.json"
+
+// readEnclave reads an enclave record, or nil for one that doesn't hold.
+func readEnclave(data []byte) *RunnerEnclave {
+	e := &RunnerEnclave{}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if dec.Decode(e) != nil || (e.Kind != enclavePool && e.Kind != enclaveTeam) {
+		return nil
+	}
+	return e
+}

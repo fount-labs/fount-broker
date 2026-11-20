@@ -130,6 +130,7 @@ func (r RemoteRunner) run(ctx context.Context, job wireJob) (RunResult, error) {
 		return RunResult{}, fmt.Errorf("reach the runner: %w", err)
 	}
 	defer conn.Close()
+	enclave, hubbed := EnclaveOf(conn)
 	if r.Link != nil && r.Hub == nil {
 		tc, err := r.Link.Client(ctx, conn)
 		if err != nil {
@@ -142,6 +143,9 @@ func (r RemoteRunner) run(ctx context.Context, job wireJob) (RunResult, error) {
 	defer stop()
 
 	result, err := r.exchange(conn, job)
+	if hubbed {
+		result.Enclave = &enclave
+	}
 	if ctx.Err() != nil {
 		return result, fmt.Errorf("runner stopped: %w", ctx.Err())
 	}

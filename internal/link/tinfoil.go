@@ -138,7 +138,8 @@ func TinfoilKeyChecker(repo, id string) (KeyChecker, error) {
 			// otherwise be trusted for as long as a connection lasts.
 			return Endorsement{}, errors.New("the verification has no freshness deadline")
 		}
-		return Endorsement{Key: key, Fresh: fresh}, nil
+		release := Release{Repo: repo, Tag: verified.CodeTag(), Digest: verified.CodeDigest()}
+		return Endorsement{Key: key, Fresh: fresh, Release: release}, nil
 	}, nil
 }
 

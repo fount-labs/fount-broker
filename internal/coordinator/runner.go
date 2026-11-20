@@ -51,6 +51,9 @@ type RunResult struct {
 	Seconds   float64
 	PeakBytes int64
 	OOMKills  int64
+	// Enclave is where a runner enclave that dialled in ran it; nil for a
+	// local runner or one the coordinator dialled.
+	Enclave *RunnerEnclave
 }
 
 const (

@@ -115,6 +115,7 @@ type parkedLink struct {
 	conn    net.Conn
 	runner  string // the hubRunner key
 	account string // the team its runner is bound to, or empty for the pool
+	release link.Release
 	expires time.Time
 	taken   bool
 	watched chan error // the watch's end
@@ -260,7 +261,7 @@ func (h *RunnerHub) admit(raw net.Conn, name string) {
 			return
 		}
 	}
-	p := &parkedLink{conn: conn, runner: key, account: account, expires: expires, watched: make(chan error, 1)}
+	p := &parkedLink{conn: conn, runner: key, account: account, release: e.Release, expires: expires, watched: make(chan error, 1)}
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -452,7 +453,7 @@ func (h *RunnerHub) claim(p *parkedLink) (net.Conn, error) {
 		return nil, err
 	}
 	p.conn.SetReadDeadline(time.Time{})
-	return &busyLink{Conn: p.conn, done: func() { h.done(p) }}, nil
+	return &busyLink{Conn: p.conn, enclave: p.enclave(), done: func() { h.done(p) }}, nil
 }
 
 func (h *RunnerHub) done(p *parkedLink) {
@@ -467,8 +468,43 @@ func (h *RunnerHub) done(p *parkedLink) {
 // busyLink is a taken link; closing it counts its job's end once.
 type busyLink struct {
 	net.Conn
-	once sync.Once
-	done func()
+	enclave RunnerEnclave
+	once    sync.Once
+	done    func()
+}
+
+// Where a job ran, as RunnerEnclave.Kind says it.
+const (
+	enclavePool = "pool"
+	enclaveTeam = "team"
+)
+
+// RunnerEnclave is where a job ran, as its turn shows it: the shared pool's
+// runner or the team's own, and the release the coordinator verified that
+// runner runs when it linked in. It names no team.
+type RunnerEnclave struct {
+	Kind   string `json:"kind"`
+	Repo   string `json:"repo,omitempty"`
+	Tag    string `json:"tag,omitempty"`
+	Digest string `json:"digest,omitempty"`
+}
+
+func (p *parkedLink) enclave() RunnerEnclave {
+	kind := enclavePool
+	if p.account != "" {
+		kind = enclaveTeam
+	}
+	return RunnerEnclave{Kind: kind, Repo: p.release.Repo, Tag: p.release.Tag, Digest: p.release.Digest}
+}
+
+// EnclaveOf is where the job on conn, a link Take handed out, runs; false
+// for any other connection.
+func EnclaveOf(conn net.Conn) (RunnerEnclave, bool) {
+	b, ok := conn.(*busyLink)
+	if !ok {
+		return RunnerEnclave{}, false
+	}
+	return b.enclave, true
 }
 
 func (b *busyLink) Close() error {

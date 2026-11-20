@@ -28,6 +28,8 @@ const (
 	otherTeam = "tm_ffffffffffffffffffffffff"
 )
 
+var testRelease = link.Release{Repo: "fount-labs/fount-cloud-runner", Tag: "v0.4.0", Digest: "5f2c"}
+
 // teamHub is a coordinator's RunnerHub with team runners on, behind HTTP.
 type teamHub struct {
 	hub *coordinator.RunnerHub
@@ -36,7 +38,14 @@ type teamHub struct {
 
 func startTeamHub(t *testing.T) *teamHub {
 	t.Helper()
-	h := coordinator.NewRunnerHub(unattested(t))
+	side := unattested(t)
+	// As a Tinfoil checker would, the hub's end says what release it verified.
+	side.Endorse = func(doc, nonce []byte) (link.Endorsement, error) {
+		e, err := link.CheckUnattestedKey(doc, nonce)
+		e.Release = testRelease
+		return e, err
+	}
+	h := coordinator.NewRunnerHub(side)
 	h.TeamStage = "dev"
 	h.TakeWait = 5 * time.Second
 	web := httptest.NewServer(h)
@@ -122,18 +131,29 @@ func TestJobsGoOnlyToTheRunnerTheyArePlacedOn(t *testing.T) {
 	mine := startRunner(t, h, teamName, link.ParkFor)
 	waitFor(t, "both runners", func() bool { return h.hub.ReadyFor(team) && h.hub.ReadyFor("acct1") })
 	runner := coordinator.RemoteRunner{Hub: h.hub}
+	ranOn := func(r coordinator.RunResult, kind string) {
+		t.Helper()
+		want := coordinator.RunnerEnclave{Kind: kind, Repo: testRelease.Repo, Tag: testRelease.Tag, Digest: testRelease.Digest}
+		if r.Enclave == nil || *r.Enclave != want {
+			t.Fatalf("the job ran on %+v, want %+v", r.Enclave, want)
+		}
+	}
 	for range 3 {
-		if _, err := runner.Run(context.Background(), "r", team, jobDirs(t)); err != nil {
+		result, err := runner.Run(context.Background(), "r", team, jobDirs(t))
+		if err != nil {
 			t.Fatal(err)
 		}
+		ranOn(result, "team")
 		select {
 		case <-mine.sandbox.sawJob:
 		case <-pool.sandbox.sawJob:
 			t.Fatal("a team's job ran on the pool")
 		}
-		if _, err := runner.Run(context.Background(), "r", "acct1", jobDirs(t)); err != nil {
+		result, err = runner.Run(context.Background(), "r", "acct1", jobDirs(t))
+		if err != nil {
 			t.Fatal(err)
 		}
+		ranOn(result, "pool")
 		select {
 		case <-pool.sandbox.sawJob:
 		case <-mine.sandbox.sawJob:

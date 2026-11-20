@@ -650,6 +650,11 @@ func (c *Coordinator) runJob(ctx context.Context, job Job, w Worker, spec JobSpe
 		results = &Results{Writes: map[string][]byte{}}
 	}
 	results.Writes[prefixJobs+job.ID+"/events.jsonl"] = result.Events
+	if result.Enclave != nil {
+		if data, err := json.Marshal(result.Enclave); err == nil {
+			results.Writes[prefixJobs+job.ID+"/"+enclaveFile] = data
+		}
+	}
 	if len(result.Stderr) > 0 {
 		results.Writes[prefixJobs+job.ID+"/stderr.txt"] = result.Stderr
 	}
