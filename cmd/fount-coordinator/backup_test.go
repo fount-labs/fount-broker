@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -253,5 +254,24 @@ func TestBackupsUnderTheVaultsKey(t *testing.T) {
 	// No authority, no counter: the side is nil.
 	if s, err := newVaultSide(pair.Vaults(), nil, fetched); s != nil || err != nil {
 		t.Fatalf("a side without an authority: %+v %v", s, err)
+	}
+}
+
+func TestTheDevSeedComesFromAnEnvSecret(t *testing.T) {
+	seed := make([]byte, ed25519.SeedSize)
+	seed[0] = 7
+	t.Setenv("TEST_MAIL_AUTHORITY", base64.StdEncoding.EncodeToString(seed))
+	got, err := devSeed("env:TEST_MAIL_AUTHORITY")
+	if err != nil || string(got) != string(seed) {
+		t.Fatalf("devSeed(env:) = %x, %v", got, err)
+	}
+	for _, v := range []string{"", "not base64", base64.StdEncoding.EncodeToString(seed[:16])} {
+		t.Setenv("TEST_MAIL_AUTHORITY", v)
+		if _, err := devSeed("env:TEST_MAIL_AUTHORITY"); err == nil {
+			t.Errorf("devSeed took %q", v)
+		}
+	}
+	if _, err := os.Stat("env:TEST_MAIL_AUTHORITY"); err == nil {
+		t.Error("env: made a file")
 	}
 }

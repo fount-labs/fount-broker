@@ -155,7 +155,7 @@ func run() error {
 	cloudOnly := flag.Bool("cloud-credentials-only", false, "with --client-listen: take only hour-long Cloud credentials, not device credentials")
 	mailLoop := flag.Bool("mail", false, "receive Cloud workers' mail from the mail edge: each worker with a mailbox gets its requests as thread turns")
 	entitlementsAPI := flag.String("mail-entitlements", "", "with --mail: fount-infra's API, https://api.fount.sh/, which issues Cloud mailboxes' entitlements to this coordinator (POST coordinator/mail-entitlement, signed with the job-signing key), so they renew with every laptop closed; without it nothing renews them")
-	mailAuthority := flag.String("mail-generation-authority", "", "with --mail and --wrapping-key dev: a file holding the Ed25519 seed a dev edge has as COORDINATOR_AUTHORITY_KEY, made on first run; the coordinator signs its own generation certificates with it, standing in for the vault")
+	mailAuthority := flag.String("mail-generation-authority", "", "with --mail and --wrapping-key dev: a file holding the Ed25519 seed a dev edge has as COORDINATOR_AUTHORITY_KEY, made on first run, or env:NAME for a base64 seed in $NAME; the coordinator signs its own generation certificates with it, standing in for the vault")
 	audience := flag.String("client-audience", os.Getenv("FOUNT_CLIENT_AUDIENCE"), "with --client-listen: the coordinator's origin, https://<host>, which worker grants must name")
 	backups := backupFlags{getenv: os.Getenv}
 	flag.StringVar(&backups.bucket, "backup-bucket", os.Getenv("FOUNT_BACKUP_BUCKET"), "back the volume up to this S3 bucket, its endpoint https://<bucket>.s3.<region>.amazonaws.com; credentials from the vault with --wrapping-key vault, else from $AWS_ACCESS_KEY_ID and $AWS_SECRET_ACCESS_KEY")
@@ -509,8 +509,17 @@ func mailConfig(on bool, authority, keyMode, dir string, gen mail.GenerationSour
 	return cfg, nil
 }
 
-// devSeed reads a 32-byte seed from path, making one on first use.
+// devSeed reads a 32-byte seed from path, making one on first use. A path
+// env:NAME reads it as base64 from $NAME instead, for an enclave given it as a
+// secret, so the dev edge's COORDINATOR_AUTHORITY_KEY is known before boot.
 func devSeed(path string) ([]byte, error) {
+	if name, ok := strings.CutPrefix(path, "env:"); ok {
+		seed, err := base64.StdEncoding.DecodeString(strings.TrimSpace(os.Getenv(name)))
+		if err != nil || len(seed) != ed25519.SeedSize {
+			return nil, fmt.Errorf("$%s isn't a base64 %d-byte seed", name, ed25519.SeedSize)
+		}
+		return seed, nil
+	}
 	data, err := os.ReadFile(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
