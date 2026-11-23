@@ -519,9 +519,37 @@ func (c *Coordinator) deviceAdded(team string, seq uint64, memberEmail, kind str
 }
 
 const (
-	noticeDeviceAdded = "device_added"
-	noticeMemberBack  = "member_back"
+	noticeDeviceAdded     = "device_added"
+	noticeMemberBack      = "member_back"
+	noticeRecoveryStarted = "recovery_started"
 )
+
+// recoveryStarted tells the team's owner and every admin at their own
+// address that a recovery started (teamrecovery.go): content-free, from the
+// team's lead worker, as deviceAdded. Desktop shows it to the admins with
+// Cancel.
+func (c *Coordinator) recoveryStarted(team string, seq uint64, admins []string) {
+	if c.sender == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		lead, err := c.noticeLead(team)
+		if err != nil || lead == "" {
+			return
+		}
+		key := team + "/" + noticeRecoveryStarted + "/" + strconv.FormatUint(seq, 10)
+		if err := c.NotifyOwner(ctx, key, noticeRecoveryStarted, team, lead, time.Time{}); err != nil {
+			log.Printf("team %s: couldn't tell the owner entry %d started a recovery: %v", team, seq, err)
+		}
+		for _, to := range admins {
+			if err := c.notify(ctx, key+"/"+to, noticeRecoveryStarted, team, lead, time.Time{}, to); err != nil {
+				log.Printf("team %s: couldn't tell an admin entry %d started a recovery: %v", team, seq, err)
+			}
+		}
+	}()
+}
 
 // TeamMembership is one team the caller's account is a member of.
 type TeamMembership struct {

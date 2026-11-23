@@ -35,14 +35,14 @@ const (
 	RecordPasskeyJoin = "passkey-join"
 )
 
-// A member's passkey vouching for their own team (passkeyvouch.go) admits no
-// device.
+// A member's passkey vouching for their own team (passkeyvouch.go), and a
+// recovery-start (teamrecovery.go), admit no device.
 
 // recordAdmits are the record kinds that admit a device.
 var recordAdmits = map[string]bool{RecordInvite: true, RecordPasskeyJoin: true}
 
 // recordKinds are the kinds a log holds.
-var recordKinds = map[string]bool{RecordInvite: true, RecordPasskeyJoin: true, RecordPasskeyVouch: true}
+var recordKinds = map[string]bool{RecordInvite: true, RecordPasskeyJoin: true, RecordPasskeyVouch: true, RecordRecoveryStart: true}
 
 var (
 	// ErrTeamStale is an entry that isn't the head's next: a replay, a list
@@ -107,7 +107,7 @@ func (c *Coordinator) teamState(id string) (*teamState, error) {
 // last list and the records after it. The log holds only entries that were
 // checked when they were appended, so a failure here is a damaged volume.
 func reduceTeam(team, aud string, log []TeamEntry) (*teamState, error) {
-	st := &teamState{usedInvites: map[string]bool{}, passkeyCounts: map[string]uint32{}, passkeyAdmitted: map[string]bool{}, vouched: map[string]bool{}, byID: map[string]*Member{}, byDevice: map[string]*Member{}, workers: map[string]string{}}
+	st := &teamState{usedInvites: map[string]bool{}, passkeyCounts: map[string]uint32{}, passkeyAdmitted: map[string]bool{}, recoveries: map[string]recovery{}, vouched: map[string]bool{}, byID: map[string]*Member{}, byDevice: map[string]*Member{}, workers: map[string]string{}}
 	head := ""
 	for i, e := range log {
 		if e.Seq != uint64(i+1) {
@@ -171,8 +171,8 @@ func (s *teamState) applyList(l TeamList, aud string) error {
 		s.deleted = true
 	}
 	s.members, s.byID, s.byDevice, s.workers = nil, map[string]*Member{}, map[string]*Member{}, map[string]string{}
-	s.passkeyAdmitted = map[string]bool{}
-	s.name, s.lastList = l.Name, l.Seq
+	s.passkeyAdmitted, s.recoveries = map[string]bool{}, map[string]recovery{}
+	s.name, s.lastList, s.lastAt = l.Name, l.Seq, max(s.lastAt, l.Iat)
 	for _, w := range l.Workers {
 		s.workers[w.ID] = w.DEK
 	}
@@ -215,6 +215,7 @@ func (s *teamState) applyRecord(r TeamRecord, team, aud string) error {
 			delete(s.passkeyAdmitted, d.ID)
 		}
 		m.Devices = nil
+		delete(s.recoveries, m.ID)
 	case RecordPasskeyJoin:
 		count, err := checkPasskeyJoinProof(s, aud, team, r, m)
 		if err != nil {
@@ -232,7 +233,14 @@ func (s *teamState) applyRecord(r TeamRecord, team, aud string) error {
 			s.passkeyCounts[m.Rec.Pub] = count
 		}
 		s.vouched[m.Rec.Pub] = true
+	case RecordRecoveryStart:
+		device, err := checkRecoveryStart(s, aud, team, r, m)
+		if err != nil {
+			return err
+		}
+		s.recoveries[m.ID] = recovery{Seq: r.Seq, Device: device, At: r.At}
 	}
+	s.lastAt = max(s.lastAt, r.At)
 	if r.Kind == RecordInvite {
 		s.usedInvites[m.Invite.ID] = true
 		m.Invite, m.Account = nil, r.Account
@@ -311,7 +319,7 @@ func (c *Coordinator) AppendTeamList(caller Caller, team, token string, deks map
 			deks[id] = DEK{}
 		}
 	}()
-	now := time.Now()
+	now := c.now()
 	l, payload, err := parseTeamList(token, c.cfg.Audience, caller, team, now)
 	if err != nil {
 		return TeamLogView{}, err
@@ -378,7 +386,7 @@ func (c *Coordinator) checkList(prior *teamState, l TeamList, caller Caller, dek
 		if lm := listMemberOf(l, caller.Device, c.cfg.Audience); lm == nil || lm.Role != RoleAdmin || lm.Account != caller.Account {
 			return fmt.Errorf("%w: a team's first list names its signer as an admin", ErrNotAdmin)
 		}
-	} else if err := prior.maySignLists(caller); err != nil {
+	} else if err := prior.maySignLists(caller, l.Iat, now); err != nil {
 		return err
 	}
 	refuse := func(format string, args ...any) error {
@@ -526,7 +534,7 @@ func (c *Coordinator) appendRecordLocked(caller Caller, team string, prior *team
 			return 0, refuse("account %s is member %s", rec.Account, o.ID)
 		}
 	}
-	rec.Seq, rec.Prev, rec.At = prior.seq+1, prior.head, time.Now().Unix()
+	rec.Seq, rec.Prev, rec.At = prior.seq+1, prior.head, c.now().Unix()
 	if recordAdmits[rec.Kind] {
 		d, err := parseTeamInclusion(rec.Device, c.cfg.Audience, team, rec.Account)
 		switch {

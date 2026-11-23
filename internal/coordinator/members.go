@@ -47,6 +47,9 @@ var opRoles = map[string]Role{
 	"POST /teams/{team}/passkey-join/challenge": roleCaller,
 	"POST /teams/{team}/passkey-join":           roleCaller,
 	"POST /teams/{team}/passkey-vouch":          roleCaller,
+	// A recovery (teamrecovery.go): StartRecovery checks the device and the
+	// record its signature.
+	"POST /teams/{team}/recovery-start": roleCaller,
 	// Authorized by their proof: an invite's secret, verified email and
 	// passkey.
 	"GET /teams": roleCaller,
@@ -170,6 +173,11 @@ type teamState struct {
 	// passkeyAdmitted are the devices a record admitted, with the member's
 	// passkey, since the last list (teamsigner.go).
 	passkeyAdmitted map[string]bool
+	// recoveries are the open recoveries since the last list, by member
+	// (teamrecovery.go), and lastAt the latest time an entry carries: a
+	// list's iat or a record's at.
+	recoveries map[string]recovery
+	lastAt     int64
 	// start is the hash of the team's first entry, which a passkey-vouch
 	// signs (passkeyvouch.go).
 	start string

@@ -1,6 +1,9 @@
 package coordinator
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // Who may sign a team's lists (security review 2026-11-19, H3).
 //
@@ -28,11 +31,16 @@ import "fmt"
 // admitted are those whose inclusion is for that list or an earlier entry;
 // one a record admitted since has an inclusion for the record's entry,
 // after the last list. Desktop's team_log.rs keeps the same rule.
+//
+// While an admin has such a device, one their passkey added may start a
+// recovery instead, and signs RecoveryDelay later unless a list ends it
+// first (teamrecovery.go).
 
 // maySignLists refuses caller as a list's signer in s: it must be a device
 // of an admin of the caller's account, and one a list included or, when no
-// admin has such a device, one their passkey added.
-func (s *teamState) maySignLists(caller Caller) error {
+// admin has such a device, one their passkey added, or one whose recovery
+// waited RecoveryDelay by the list's iat and now.
+func (s *teamState) maySignLists(caller Caller, iat int64, now time.Time) error {
 	d, m := s.device(caller.Device)
 	switch {
 	case m == nil || m.Role != RoleAdmin || m.Account != caller.Account:
@@ -40,6 +48,8 @@ func (s *teamState) maySignLists(caller Caller) error {
 	case d.Since <= s.lastList:
 		return nil
 	case s.passkeyAdmitted[d.ID] && !s.listedAdmin():
+		return nil
+	case s.passkeyAdmitted[d.ID] && s.recovered(m, d.ID, iat, now):
 		return nil
 	}
 	return fmt.Errorf("%w: a device a record admitted signs no list until a list includes it", ErrNotAdmin)

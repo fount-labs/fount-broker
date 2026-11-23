@@ -1,0 +1,11 @@
+{
+  "comment": "A recovery-start's signature (internal/coordinator/teamrecovery.go). Bytes are hex unless named base64url. Test keys only. Rewrite: RECOVERY_VECTORS_WRITE=1 go test -run TestRecoveryVectors ./internal/coordinator",
+  "audience": "https://coordinator.example",
+  "team": "tm_0123456789abcdef01234567",
+  "member": "m_owner",
+  "prev": "kJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq8",
+  "device_seed": "0708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20212223242526",
+  "device": "62dad5bb09cd5a45a09f25dad719d568",
+  "message": "666f756e742d7465616d2d7265636f766572792d73746172742d763100001b68747470733a2f2f636f6f7264696e61746f722e6578616d706c65001b746d5f30313233343536373839616263646566303132333435363700076d5f6f776e6572002b6b4a47536b3553566c7065596d5a71626e4a32656e3643686f714f6b7061616e714b6d717136797472713800203632646164356262303963643561343561303966323564616437313964353638",
+  "proof": "{\"device\":\"62dad5bb09cd5a45a09f25dad719d568\",\"sig\":\"jlrmC1Lrp63OadKq35Gu4hpjyk9cf3oIKn6Aa6QpKgTb8pF-KsU0wR4q66t-DgjZaY9t4vdcI67iMfr5j6gICg\"}"
+}
