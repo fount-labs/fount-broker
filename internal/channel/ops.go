@@ -28,6 +28,7 @@ import (
 //	POST v1/teams/{team}/invites/{invite}/{open,accept,send}
 //	POST v1/teams/{team}/passkey-join     POST v1/teams/{team}/passkey-join/challenge
 //	POST v1/teams/{team}/passkey-vouch    POST v1/teams/{team}/recovery-start
+//	POST v1/teams/{team}/billing-statement  POST v1/teams/{team}/billing-refresh
 //
 // The v2 grant and revoke routes stay, so Desktop hears they are retired
 // (410) rather than that the broker refused them.
@@ -119,7 +120,8 @@ func teamOp(method string, rest []string) (ok, changes bool) {
 		return post || method == http.MethodGet, method == http.MethodGet
 	case len(rest) == 3 && rest[0] == "invites" && teamID.MatchString(rest[1]):
 		return post && (rest[2] == "open" || rest[2] == "accept" || rest[2] == "send"), false
-	case len(rest) == 1 && (rest[0] == "passkey-join" || rest[0] == "passkey-vouch" || rest[0] == "recovery-start"):
+	case len(rest) == 1 && (rest[0] == "passkey-join" || rest[0] == "passkey-vouch" || rest[0] == "recovery-start" ||
+		rest[0] == "billing-statement" || rest[0] == "billing-refresh"):
 		return post, false
 	case len(rest) == 2 && rest[0] == "passkey-join" && rest[1] == "challenge":
 		return post, false

@@ -67,6 +67,10 @@ type Config struct {
 	// Backup backs the volume up and counts security changes in the vault
 	// (backup.go, RunBackups). Nil does neither.
 	Backup *BackupConfig
+	// TeamBilling signs firm teams' billing statements and asks fount-infra
+	// for their subscriptions (teambilling.go, RunTeamBilling). Nil does
+	// neither.
+	TeamBilling TeamBiller
 }
 
 type Coordinator struct {
@@ -106,6 +110,8 @@ type Coordinator struct {
 	intakeWaits map[string]intakeWait
 	// clock is the team log's time, time.Now unless a test sets it.
 	clock func() time.Time
+	// billing is the team billing loop's (teambilling.go).
+	billing teamBillingLoop
 }
 
 // now is the team log's time: lists' age, records' at and recoveries' wait.

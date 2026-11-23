@@ -97,6 +97,7 @@ func (c *Coordinator) lapsed(ctx context.Context, w Worker, r Renewed, now time.
 	if r.Lapsed.Edge {
 		c.notice(ctx, w, &r, NoticeLapsed, r.Lapsed.At, r.Lapsed.HoldUntil)
 	}
+	c.teamBillingSoon(w.Team)
 	return c.holdNotices(ctx, w, r, now)
 }
 
@@ -116,6 +117,7 @@ func (c *Coordinator) resumed(ctx context.Context, w Worker, r Renewed, now time
 	}
 	at := r.Lapsed.At
 	r.Lapsed = nil
+	c.teamBillingSoon(w.Team)
 	c.notice(ctx, w, &r, NoticeResumed, at, time.Time{})
 	log.Printf("worker %s: resumed, as its account paid", w.ID)
 	return r

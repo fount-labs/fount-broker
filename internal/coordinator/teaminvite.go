@@ -557,6 +557,9 @@ type TeamMembership struct {
 	// who has one signs the accept with one prompt; it checks the assertion
 	// against Rec's key, so a wrong Rec only costs that prompt.
 	Rec *ListRec `json:"rec,omitempty"`
+	// Billing is a firm team's subscription, as fount-infra last answered
+	// (teambilling.go); none for a solo account's team.
+	Billing *TeamBillingView `json:"billing,omitempty"`
 }
 
 // Memberships are the teams whose state lists the caller's account, by
@@ -573,7 +576,7 @@ func (c *Coordinator) Memberships(caller Caller) []TeamMembership {
 		for _, m := range st.members {
 			if m.Account != "" && m.Account == caller.Account {
 				_, holder := st.device(caller.Device)
-				out = append(out, TeamMembership{Team: id, Name: st.name, Member: m.ID, Role: m.Role, Admitted: holder == m, Passkey: m.Rec != nil, Rec: m.Rec})
+				out = append(out, TeamMembership{Team: id, Name: st.name, Member: m.ID, Role: m.Role, Admitted: holder == m, Passkey: m.Rec != nil, Rec: m.Rec, Billing: c.teamBillingFor(id)})
 			}
 		}
 	}
