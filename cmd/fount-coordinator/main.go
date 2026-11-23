@@ -122,6 +122,7 @@ import (
 	"github.com/fount-labs/fount-broker/internal/link"
 	"github.com/fount-labs/fount-broker/internal/mail"
 	"github.com/fount-labs/fount-broker/internal/route"
+	"github.com/fount-labs/fount-broker/internal/teambill"
 )
 
 func main() {
@@ -168,6 +169,7 @@ func run() error {
 	cloudOnly := flag.Bool("cloud-credentials-only", false, "with --client-listen: take only hour-long Cloud credentials, not device credentials")
 	mailLoop := flag.Bool("mail", false, "receive Cloud workers' mail from the mail edge: each worker with a mailbox gets its requests as thread turns")
 	entitlementsAPI := flag.String("mail-entitlements", "", "with --mail: fount-infra's API, https://api.fount.sh/, which issues Cloud mailboxes' entitlements to this coordinator (POST coordinator/mail-entitlement, signed with the job-signing key), so they renew with every laptop closed; without it nothing renews them")
+	teamBillingAPI := flag.String("team-billing", "", "fount-infra's API, https://api.fount.sh/, which firm teams' subscriptions are asked of (POST coordinator/team-entitlement) and whose billing statements this coordinator signs, both with the job-signing key; without it teams have no billing")
 	mailAuthority := flag.String("mail-generation-authority", "", "with --mail and --wrapping-key dev: a file holding the Ed25519 seed a dev edge has as COORDINATOR_AUTHORITY_KEY, made on first run, or env:NAME for a base64 seed in $NAME; the coordinator signs its own generation certificates with it, standing in for the vault")
 	audience := flag.String("client-audience", os.Getenv("FOUNT_CLIENT_AUDIENCE"), "with --client-listen: the coordinator's origin, https://<host>, which worker grants must name")
 	vol := volumeFlags{}
@@ -382,6 +384,16 @@ func run() error {
 			return fmt.Errorf("--mail-entitlements: %w", err)
 		}
 	}
+	var biller coordinator.TeamBiller
+	if *teamBillingAPI != "" {
+		signing, _, err := jobKeys(*dir)
+		if err != nil {
+			return fmt.Errorf("the job-signing key: %w", err)
+		}
+		if biller, err = teambill.New(*teamBillingAPI, signing); err != nil {
+			return fmt.Errorf("--team-billing: %w", err)
+		}
+	}
 	pool := coordinator.NewPool(*poolRunners, *slots, nil)
 	if hub != nil {
 		pool.Ready = hub.ReadyFor
@@ -406,6 +418,7 @@ func run() error {
 		Intake:      intake,
 		Mail:        mailCfg,
 		Backup:      backups.config(dur),
+		TeamBilling: biller,
 	})
 	if err != nil {
 		return err
@@ -417,6 +430,7 @@ func run() error {
 	if dur != nil {
 		go c.RunBackups(ctx)
 	}
+	go c.RunTeamBilling(ctx)
 
 	if clients != nil {
 		clients.Handler = handler(c)

@@ -56,6 +56,9 @@ var opRoles = map[string]Role{
 	"POST /teams/{team}/invites/{invite}/open":   roleCaller,
 	"POST /teams/{team}/invites/{invite}/accept": roleCaller,
 	"POST /teams/{team}/invites/{invite}/send":   RoleAdmin,
+	// Billing (teambilling.go): any member, an admin statement an admin.
+	"POST /teams/{team}/billing-statement": roleCaller,
+	"POST /teams/{team}/billing-refresh":   roleCaller,
 
 	// A thread's work: any member who reaches the worker.
 	"startThread":     RoleReviewer,

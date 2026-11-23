@@ -59,6 +59,9 @@ type Team struct {
 	ID     string      `json:"id"`
 	Log    []TeamEntry `json:"log"`
 	Rotate []string    `json:"rotate,omitempty"`
+	// Billing is a firm team's subscription as fount-infra last answered
+	// (teambilling.go).
+	Billing *TeamBilling `json:"billing,omitempty"`
 
 	state *teamState
 }

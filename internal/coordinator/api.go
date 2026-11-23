@@ -57,6 +57,8 @@ func (c *Coordinator) Handler() http.Handler {
 //	POST /v1/teams/{team}/recovery-start  {"prev","sig"}: a passkey-added admin device starts its wait to sign (teamrecovery.go)
 //	POST /v1/workers/{id}/grant, /revoke  the retired v2 grants: 410
 //	PUT  /v1/workers/{id}/mail            {"v":1,"sealed"}: the address, its keys and the worker's setup, under its DEK (mailsetup.go)
+//	POST /v1/teams/{team}/billing-statement  {"kind":"admin"|"seat"}: a statement for fount-infra (teambilling.go)
+//	POST /v1/teams/{team}/billing-refresh    the firm team's billing, asked of fount-infra now
 //
 // A caller without an account or device panics: it would be no one's API,
 // and never the dev API's every account.
@@ -91,6 +93,8 @@ func (a *api) accountRoutes(mux router) {
 	mux.HandleFunc("POST /v1/teams/{team}/invites/{invite}/open", a.openInvite)
 	mux.HandleFunc("POST /v1/teams/{team}/invites/{invite}/accept", a.acceptInvite)
 	mux.HandleFunc("POST /v1/teams/{team}/invites/{invite}/send", a.sendInvite)
+	mux.HandleFunc("POST /v1/teams/{team}/billing-statement", a.billingStatement)
+	mux.HandleFunc("POST /v1/teams/{team}/billing-refresh", a.billingRefresh)
 	mux.HandleFunc("PUT /v1/workers/{id}/mail", a.setUpMail)
 	a.routes(mux, "/v1")
 }
