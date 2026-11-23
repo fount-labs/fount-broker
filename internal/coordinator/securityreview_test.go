@@ -283,8 +283,9 @@ func ownerPasskeyJoin(t *testing.T, f teamFixture, pk testPasskey, newDev testDe
 	}
 }
 
-// Decided 2026-11-19: a device the team's only admin added with their passkey
-// signs lists at once; with another admin, H3 stands.
+// Decided 2026-11-19, narrowed 2026-11-23: a device an admin's passkey added
+// signs lists at once only when no admin, the member included, has a device
+// a list included; else one that has includes it.
 func TestASoleAdminsPasskeyJoinedDeviceSignsAtOnce(t *testing.T) {
 	f := newTeamFixture(t)
 	pk := newTestPasskey(t)
@@ -306,7 +307,8 @@ func TestASoleAdminsPasskeyJoinedDeviceSignsAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The owner is the only admin: dev is a reviewer now.
+	// The owner is the only admin (dev is a reviewer now), with listed
+	// devices: one phished assertion's device can't drop them.
 	f.tt.update("m_admin", func(m *ListMember) { m.Role, m.Workers = RoleReviewer, []string{allWorkers} })
 	if err := f.tt.push(f.owner, "acme", nil); err != nil {
 		t.Fatal(err)
@@ -314,9 +316,41 @@ func TestASoleAdminsPasskeyJoinedDeviceSignsAtOnce(t *testing.T) {
 	phone := newTestDevice(t)
 	ownerPasskeyJoin(t, f, pk, phone)
 	seq, _ = f.tt.head()
-	f.tt.devices["m_owner"] = append(f.tt.devices["m_owner"], phone)
+	held := f.tt.devices["m_owner"]
+	f.tt.devices["m_owner"] = []testDevice{phone}
 	f.tt.since[phone.id()] = seq
+	if err := f.tt.push(phone, "acme", nil); !errors.Is(err, ErrNotAdmin) {
+		t.Fatalf("the only admin's passkey-joined device, with their listed devices: %v", err)
+	}
+	f.tt.devices["m_owner"] = append(held, phone)
+	if err := f.tt.push(f.owner, "acme", nil); err != nil {
+		t.Fatalf("the owner's listed device including the new one: %v", err)
+	}
 	if err := f.tt.push(phone, "acme", nil); err != nil {
-		t.Fatalf("the only admin's passkey-joined device: %v", err)
+		t.Fatalf("a passkey-joined device a list included: %v", err)
+	}
+}
+
+// The only admin whose devices a list removed, every one, signs lists with
+// the next their passkey adds: no one is left to include it.
+func TestASoleAdminWithNoListedDeviceSignsWithAPasskeyJoinedOne(t *testing.T) {
+	f := newTeamFixture(t)
+	pk := newTestPasskey(t)
+	f.tt.update("m_owner", func(m *ListMember) { m.Rec = pk.rec(t) })
+	f.tt.update("m_admin", func(m *ListMember) { m.Role, m.Workers = RoleReviewer, []string{allWorkers} })
+	f.tt.devices["m_owner"] = nil
+	if err := f.tt.push(f.owner, "acme", nil); err != nil {
+		t.Fatalf("the owner's list removing their own devices: %v", err)
+	}
+	if err := f.tt.push(f.owner, "acme", nil); !errors.Is(err, ErrNotAdmin) {
+		t.Fatalf("a removed device's list: %v", err)
+	}
+	desk := newTestDevice(t)
+	ownerPasskeyJoin(t, f, pk, desk)
+	seq, _ := f.tt.head()
+	f.tt.devices["m_owner"] = []testDevice{desk}
+	f.tt.since[desk.id()] = seq
+	if err := f.tt.push(desk, "acme", nil); err != nil {
+		t.Fatalf("the only admin, with no listed device, is locked out: %v", err)
 	}
 }

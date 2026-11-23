@@ -14,12 +14,15 @@ import "fmt"
 //
 // One exception: a device the member's own passkey added (a passkey-join
 // record, or an invite record, which carries the assertion of the passkey it
-// lists) signs lists at once when no other admin has a device a list
-// included. Then no one else could ever include it, and an admin who lost
-// every computer would be locked out of their own team; the passkey is the
-// admin's own, and the record that admitted the device carries its
-// assertion, which every client checks again. With another such admin, the
-// H3 rule stands: that admin includes the new device.
+// lists) signs lists at once when no admin, the member included, has a
+// device a list included. Then no one could ever include it, and an admin
+// whose every device was removed (by a list, or by accepting an invite
+// again) would be locked out of their own team; the passkey is the admin's
+// own, and the record that admitted the device carries its assertion, which
+// every client checks again. While any admin has such a device, even the
+// member's own, the H3 rule stands: that device includes the new one, so
+// one phished passkey assertion can't sign a list that drops the owner's
+// computers (security review 2026-11-23).
 //
 // A list includes every device the team keeps, so the devices a list
 // admitted are those whose inclusion is for that list or an earlier entry;
@@ -27,8 +30,8 @@ import "fmt"
 // after the last list. Desktop's team_log.rs keeps the same rule.
 
 // maySignLists refuses caller as a list's signer in s: it must be a device
-// of an admin of the caller's account, and one a list included or, for the
-// team's only admin, their passkey added.
+// of an admin of the caller's account, and one a list included or, when no
+// admin has such a device, one their passkey added.
 func (s *teamState) maySignLists(caller Caller) error {
 	d, m := s.device(caller.Device)
 	switch {
@@ -36,20 +39,20 @@ func (s *teamState) maySignLists(caller Caller) error {
 		return ErrNotAdmin
 	case d.Since <= s.lastList:
 		return nil
-	case s.passkeyAdmitted[d.ID] && !s.otherListedAdmin(m):
+	case s.passkeyAdmitted[d.ID] && !s.listedAdmin():
 		return nil
 	}
 	return fmt.Errorf("%w: a device a record admitted signs no list until a list includes it", ErrNotAdmin)
 }
 
-// otherListedAdmin reports whether an admin other than m has a device a list
-// included: one who can include m's new devices.
-func (s *teamState) otherListedAdmin(m *Member) bool {
-	for _, o := range s.members {
-		if o == m || o.Role != RoleAdmin {
+// listedAdmin reports whether an admin has a device a list included: one
+// who can include an admin's new devices.
+func (s *teamState) listedAdmin() bool {
+	for _, m := range s.members {
+		if m.Role != RoleAdmin {
 			continue
 		}
-		for _, d := range o.Devices {
+		for _, d := range m.Devices {
 			if d.Since <= s.lastList {
 				return true
 			}
