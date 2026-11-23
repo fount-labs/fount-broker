@@ -464,10 +464,11 @@ func (c *Coordinator) firstAttempt(ctx context.Context, workerID string) {
 	}
 }
 
-// admitted tells the team's owner that a device joined (decision 26 step 5):
-// content-free, from the team's lead worker. The window to cancel is any
-// admin's next list, which removes the device by leaving it out; Desktop
-// shows recent admissions in the members dialog with Remove beside them.
+// admitted tells the team's owner and every admin that a device joined
+// (decision 26 step 5): content-free, from the team's lead worker
+// (notifyAdmins). The window to cancel is any admin's next list, which
+// removes the device by leaving it out; Desktop shows recent admissions in
+// the members dialog with Remove beside them.
 func (c *Coordinator) admitted(team string, seq uint64) {
 	if c.sender == nil {
 		return
@@ -475,25 +476,21 @@ func (c *Coordinator) admitted(team string, seq uint64) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		lead, err := c.noticeLead(team)
-		if err != nil || lead == "" {
-			return
-		}
 		key := team + "/" + noticeMemberJoined + "/" + strconv.FormatUint(seq, 10)
-		if err := c.NotifyOwner(ctx, key, noticeMemberJoined, team, lead, time.Time{}); err != nil {
-			log.Printf("team %s: couldn't tell the owner entry %d admitted a device: %v", team, seq, err)
+		if _, err := c.notifyAdmins(ctx, key, noticeMemberJoined, team, "", time.Time{}, nil); err != nil {
+			log.Printf("team %s: couldn't tell every admin entry %d admitted a device: %v", team, seq, err)
 		}
 	}()
 }
 
 const noticeMemberJoined = "member_joined"
 
-// deviceAdded tells the team's owner, and the member at their own address
-// when the list has one, that a member's passkey added a device (kind
-// noticeDeviceAdded), or that a member invited again is back on a new
-// computer and their old ones were removed (noticeMemberBack): content-free,
-// from the team's lead worker, as admitted. The member's other devices and
-// the admins see it in Fount with Remove.
+// deviceAdded tells the team's owner and every admin, and the member at
+// their own address when the list has one, that a member's passkey added a
+// device (kind noticeDeviceAdded), or that a member invited again is back on
+// a new computer and their old ones were removed (noticeMemberBack):
+// content-free, from the team's lead worker, as admitted. The member's other
+// devices and the admins see it in Fount with Remove.
 func (c *Coordinator) deviceAdded(team string, seq uint64, memberEmail, kind string) {
 	if c.sender == nil {
 		return
@@ -501,18 +498,19 @@ func (c *Coordinator) deviceAdded(team string, seq uint64, memberEmail, kind str
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		lead, err := c.noticeLead(team)
-		if err != nil || lead == "" {
-			return
-		}
 		key := team + "/" + kind + "/" + strconv.FormatUint(seq, 10)
-		if err := c.NotifyOwner(ctx, key, kind, team, lead, time.Time{}); err != nil {
-			log.Printf("team %s: couldn't tell the owner entry %d added a device: %v", team, seq, err)
+		reached, err := c.notifyAdmins(ctx, key, kind, team, "", time.Time{}, nil)
+		if err != nil {
+			log.Printf("team %s: couldn't tell every admin entry %d added a device: %v", team, seq, err)
 		}
-		if memberEmail == "" {
+		if memberEmail == "" || slices.ContainsFunc(reached, func(a string) bool { return strings.EqualFold(a, memberEmail) }) {
 			return
 		}
-		if err := c.notify(ctx, key+"/member", kind, team, lead, time.Time{}, memberEmail); err != nil {
+		lead, err := c.noticeLead(team)
+		if err == nil && lead != "" {
+			err = c.notify(ctx, key+"/member", kind, team, lead, time.Time{}, memberEmail)
+		}
+		if err != nil {
 			log.Printf("team %s: couldn't tell the member entry %d added their device: %v", team, seq, err)
 		}
 	}()
@@ -526,8 +524,8 @@ const (
 
 // recoveryStarted tells the team's owner and every admin at their own
 // address that a recovery started (teamrecovery.go): content-free, from the
-// team's lead worker, as deviceAdded. Desktop shows it to the admins with
-// Cancel.
+// team's lead worker, as deviceAdded. admins are the log's admins with an
+// address, invited ones too. Desktop shows it to the admins with Cancel.
 func (c *Coordinator) recoveryStarted(team string, seq uint64, admins []string) {
 	if c.sender == nil {
 		return
@@ -535,18 +533,9 @@ func (c *Coordinator) recoveryStarted(team string, seq uint64, admins []string) 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		lead, err := c.noticeLead(team)
-		if err != nil || lead == "" {
-			return
-		}
 		key := team + "/" + noticeRecoveryStarted + "/" + strconv.FormatUint(seq, 10)
-		if err := c.NotifyOwner(ctx, key, noticeRecoveryStarted, team, lead, time.Time{}); err != nil {
-			log.Printf("team %s: couldn't tell the owner entry %d started a recovery: %v", team, seq, err)
-		}
-		for _, to := range admins {
-			if err := c.notify(ctx, key+"/"+to, noticeRecoveryStarted, team, lead, time.Time{}, to); err != nil {
-				log.Printf("team %s: couldn't tell an admin entry %d started a recovery: %v", team, seq, err)
-			}
+		if _, err := c.notifyAdmins(ctx, key, noticeRecoveryStarted, team, "", time.Time{}, admins); err != nil {
+			log.Printf("team %s: couldn't tell every admin entry %d started a recovery: %v", team, seq, err)
 		}
 	}()
 }

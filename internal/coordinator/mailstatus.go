@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"log"
 	"time"
 )
 
@@ -37,6 +38,13 @@ type MailStatus struct {
 	// their mailboxes are under this generation at the edge.
 	Workers  int `json:"workers"`
 	Enrolled int `json:"enrolled"`
+	// UnsentNotices counts the account and team notices no one could be
+	// sent (sendowner.go): no email agent of the account has a mailbox, or
+	// every address failed. LastUnsentNotice is the latest's kind and why,
+	// naming no address.
+	UnsentNotices      int        `json:"unsent_notices"`
+	LastUnsentNotice   string     `json:"last_unsent_notice,omitempty"`
+	LastUnsentNoticeAt *time.Time `json:"last_unsent_notice_at,omitempty"`
 }
 
 // mailStatus is the part of MailStatus the loop records; m.mu guards it.
@@ -46,6 +54,40 @@ type mailStatus struct {
 	lastError   string
 	lastErrorAt time.Time
 	lastPass    time.Time
+	// unsent are the notice keys no one could be sent, so a retry of one
+	// counts once; lastUnsent is the latest's kind and why.
+	unsent       map[string]bool
+	unsentCount  int
+	lastUnsent   string
+	lastUnsentAt time.Time
+}
+
+// maxUnsentKeys bounds unsent: past it, keys are forgotten and a retry of an
+// old one counts again.
+const maxUnsentKeys = 1024
+
+// noticeUnsent raises the alert for a notice of kind for account that no one
+// could be sent: an error-level log line with the stable event name
+// notice_unsent, and MailStatus's UnsentNotices, once per key.
+func (c *Coordinator) noticeUnsent(key, kind, account, why string) {
+	if m := c.mail; m != nil {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.status.unsent[key] {
+			return
+		}
+	}
+	log.Printf("ERROR notice_unsent: kind=%s account=%s: no one could be sent it: %s", kind, account, why)
+	m := c.mail
+	if m == nil {
+		return
+	}
+	if m.status.unsent == nil || len(m.status.unsent) >= maxUnsentKeys {
+		m.status.unsent = map[string]bool{}
+	}
+	m.status.unsent[key] = true
+	m.status.unsentCount++
+	m.status.lastUnsent, m.status.lastUnsentAt = kind+": "+why, time.Now()
 }
 
 func (m *mailLoop) noteError(err error) {
@@ -76,6 +118,13 @@ func (c *Coordinator) MailStatus() *MailStatus {
 		LastError:  m.status.lastError,
 		Workers:    workers,
 		Enrolled:   len(m.enrolled),
+
+		UnsentNotices:    m.status.unsentCount,
+		LastUnsentNotice: m.status.lastUnsent,
+	}
+	if !m.status.lastUnsentAt.IsZero() {
+		at := m.status.lastUnsentAt.UTC()
+		s.LastUnsentNoticeAt = &at
 	}
 	if s.Phase == "" {
 		s.Phase = MailStarting

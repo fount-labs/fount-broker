@@ -92,7 +92,7 @@ func (c *Coordinator) askApproval(t *Tree, th *threadRecord, mb *Mailbox, rs *re
 	b.WriteString("\n----- End of the reply -----\n\n")
 	fmt.Fprintf(&b, "To send it exactly as it is, reply to this email with \"yes\". That works once, until %s.\n", ask.ExpiresAt.Format("2 Jan 2006 15:04 MST"))
 	if requester {
-		b.WriteString("Anything else you write back goes to the worker as a note.\n\n")
+		b.WriteString("Anything else you write back goes to the email agent as a note.\n\n")
 	} else {
 		b.WriteString("Anything else you write back waits in Fount until someone runs it.\n\n")
 	}
@@ -218,7 +218,7 @@ func (c *Coordinator) emailApproval(t *Tree, th *threadRecord, mb *Mailbox, s *M
 		}
 		why := ""
 		if !slices.Contains(c.reviewers(th.WorkerID, rs, s), sender) {
-			why = sender + " no longer reviews this worker"
+			why = sender + " no longer reviews this email agent"
 		} else {
 			why = emailApprovalRefused(e.Draft, ask, rs, s, sender, check, in, now)
 		}
@@ -262,7 +262,7 @@ func emailApprovalRefused(d *draftEntry, ask *approvalAsk, rs *replySettings, s 
 	}
 	for _, to := range d.To {
 		if s.requester(to) == nil {
-			return to + " can't send this worker work"
+			return to + " can't send this email agent work"
 		}
 	}
 	return ""
