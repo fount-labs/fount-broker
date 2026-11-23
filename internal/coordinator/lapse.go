@@ -20,8 +20,8 @@ import (
 //   - it tells the edge (POST /coordinator/lapse), which holds the worker's
 //     mail instead of bouncing it, until the entitlement's expiry plus 30
 //     days, and refuses its sends;
-//   - the owner is emailed at each step: past due, paused, a week before the
-//     hold ends, mail bouncing, and resumed.
+//   - the owner, and on a team every admin, is emailed at each step: past
+//     due, paused, a week before the hold ends, mail bouncing, and resumed.
 //
 // When Issue answers again, the edge is told the worker resumed, and its
 // renewal goes on as before.

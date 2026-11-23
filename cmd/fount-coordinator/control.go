@@ -83,8 +83,9 @@ func controlAPI(token, stage string, hub *coordinator.RunnerHub, jobs *atomic.Po
 }
 
 // mailControl is GET /control/mail: the mail loop's phase, its last error,
-// and how many workers' mailboxes are enrolled (coordinator.MailStatus). The
-// error can name a worker, so it is behind the token. Without mail it is 404.
+// how many workers' mailboxes are enrolled, and the owner notices no one could
+// be sent (coordinator.MailStatus). The error can name a worker, so it is
+// behind the token. Without mail it is 404.
 func mailControl(authorized func(http.ResponseWriter, *http.Request) bool, jobs *atomic.Pointer[coordinator.Coordinator]) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !authorized(w, r) {
