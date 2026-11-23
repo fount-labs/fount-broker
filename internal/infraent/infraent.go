@@ -40,7 +40,7 @@ const (
 	Version = 1
 	// VersionPay is a request with a payer apart from the license account.
 	VersionPay = 2
-	Type    = "fount-mail-renewal"
+	Type       = "fount-mail-renewal"
 	// Lifetime is how long a request lasts; fount-infra refuses one longer
 	// than five minutes.
 	Lifetime = 5 * time.Minute
