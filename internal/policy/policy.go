@@ -203,13 +203,21 @@ var Destinations = map[string]Destination{
 			"code": {Types: []string{"string"}, Required: true, Pattern: regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)},
 		}},
 	},
-	// Trades the device's signature for a fresh device credential.
+	// Trades the device's signature for a fresh device credential. The body
+	// is empty, or carries a team's seat statement from the coordinator
+	// (base64url claims "." base64url Ed25519 signature) so the credential
+	// bills the team (fount team-billing-plan.md D4). Forwarded as sent: the
+	// signature covers it.
 	"fount.device_renew": {
 		Route:         RouteFountAPI,
 		Method:        "POST",
 		Path:          "device/renew",
 		Accept:        []string{"", "application/json"},
+		ContentType:   "application/json",
 		ClientHeaders: deviceSignatureHeaders,
+		Body: Body{Kind: BodyObject, OrEmpty: true, MaxBytes: 2048, Fields: map[string]Field{
+			"seat": {Types: []string{"string"}, Pattern: seatStatementPattern},
+		}},
 	},
 	// Trades the device's signature for an hour-long Cloud credential, the one
 	// a cloud_session carries to the coordinator. Signed like a renewal.
@@ -268,6 +276,10 @@ var Destinations = map[string]Destination{
 // deviceIDPattern is a device id: the first 16 bytes of SHA-256 of the
 // device's public key, in lowercase hex.
 var deviceIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// seatStatementPattern is a fount-team-seat statement (internal/teambill):
+// base64url claims, ".", a base64url Ed25519 signature.
+var seatStatementPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,1000}\.[A-Za-z0-9_-]{86}$`)
 
 // deviceSignatureHeaders are the headers of a device-signed request: the
 // device id, the Unix time in seconds, and an Ed25519 signature (64 bytes,

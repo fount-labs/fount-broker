@@ -19,6 +19,8 @@ type Body struct {
 	// Fields lists the top-level keys a BodyObject may have. Any other key
 	// refuses the request.
 	Fields map[string]Field
+	// OrEmpty lets a BodyObject destination also take no body at all.
+	OrEmpty bool
 }
 
 type BodyKind int
@@ -64,6 +66,9 @@ func (b Body) Check(body []byte) error {
 	case BodyOpaque:
 		return nil
 	case BodyObject:
+		if b.OrEmpty && len(body) == 0 {
+			return nil
+		}
 		return b.checkObject(body)
 	}
 	return fmt.Errorf("unknown body kind %d", b.Kind)
