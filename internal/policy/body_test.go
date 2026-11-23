@@ -179,6 +179,9 @@ func TestDeviceDestinations(t *testing.T) {
 		{"fount.device_credential", "POST", "device/credential", true, CredentialNone},
 		{"fount.device_renew", "POST", "device/renew", true, CredentialNone},
 		{"fount.device_cloud_credential", "POST", "device/cloud-credential", true, CredentialNone},
+		{"fount.team_checkout", "POST", "device/team-checkout", true, CredentialNone},
+		{"fount.team_portal", "POST", "device/team-portal", true, CredentialNone},
+		{"fount.team_cancel", "POST", "device/team-cancel", true, CredentialNone},
 		{"fount.devices", "GET", "devices", false, CredentialLicense},
 		{"fount.device_revoke", "DELETE", "devices/", false, CredentialLicense},
 	} {
@@ -225,6 +228,79 @@ func TestDeviceDestinations(t *testing.T) {
 	} {
 		if revoke.MatchString(path) != ok {
 			t.Errorf("revoke path %q: want ok=%v", path, ok)
+		}
+	}
+}
+
+func TestNumberPattern(t *testing.T) {
+	body := Body{Kind: BodyObject, Fields: map[string]Field{
+		"n": {Types: []string{"number"}, Required: true, Pattern: regexp.MustCompile(`^[1-9][0-9]?$`)},
+	}}
+	for in, ok := range map[string]bool{
+		`{"n":1}`:    true,
+		`{"n":99}`:   true,
+		`{"n":0}`:    false,
+		`{"n":100}`:  false,
+		`{"n":1.5}`:  false,
+		`{"n":1e1}`:  false,
+		`{"n":-1}`:   false,
+		`{"n":"1"}`:  false,
+		`{"n": 7 }`:  true,
+		`{"n":null}`: false,
+	} {
+		if err := body.Check([]byte(in)); (err == nil) != ok {
+			t.Errorf("Check(%q) = %v, want ok=%v", in, err, ok)
+		}
+	}
+}
+
+func TestTeamBillingBodies(t *testing.T) {
+	sig := strings.Repeat("A", 85) + "g"
+	stmt := "eyJ2IjoxfQ." + sig
+	url := "https://fount.sh/success"
+	checkout := Destinations["fount.team_checkout"].Body
+	for body, ok := range map[string]bool{
+		`{"statement":"` + stmt + `","seats":3,"successUrl":"` + url + `","cancelUrl":"https://fount.sh/account"}`:      true,
+		`{"statement":"` + stmt + `","seats":1,"successUrl":"http://localhost:5173/success","cancelUrl":"` + url + `"}`: true,
+		`{"statement":"` + stmt + `","seats":999,"successUrl":"` + url + `","cancelUrl":"` + url + `"}`:                 true,
+		`{"statement":"` + stmt + `","seats":0,"successUrl":"` + url + `","cancelUrl":"` + url + `"}`:                   false,
+		`{"statement":"` + stmt + `","seats":1000,"successUrl":"` + url + `","cancelUrl":"` + url + `"}`:                false,
+		`{"statement":"` + stmt + `","seats":2.5,"successUrl":"` + url + `","cancelUrl":"` + url + `"}`:                 false,
+		`{"statement":"` + stmt + `","seats":"3","successUrl":"` + url + `","cancelUrl":"` + url + `"}`:                 false,
+		`{"statement":"` + stmt + `","successUrl":"` + url + `","cancelUrl":"` + url + `"}`:                             false,
+		`{"statement":"` + stmt + `","seats":3,"successUrl":"javascript:alert(1)","cancelUrl":"` + url + `"}`:           false,
+		`{"statement":"` + stmt + `","seats":3,"successUrl":"https://a b","cancelUrl":"` + url + `"}`:                   false,
+		`{"statement":"` + stmt + `","seats":3,"successUrl":"` + url + `","cancelUrl":"` + url + `","tier":"pro"}`:      false,
+		`{"statement":"not a statement","seats":3,"successUrl":"` + url + `","cancelUrl":"` + url + `"}`:                false,
+		`{"statement":"eyJ2IjoxfQ.short","seats":3,"successUrl":"` + url + `","cancelUrl":"` + url + `"}`:               false,
+		``: false,
+	} {
+		if err := checkout.Check([]byte(body)); (err == nil) != ok {
+			t.Errorf("team_checkout body %q: %v, want ok=%v", body, err, ok)
+		}
+	}
+
+	portal := Destinations["fount.team_portal"].Body
+	for body, ok := range map[string]bool{
+		`{"statement":"` + stmt + `","returnUrl":"https://fount.sh/account"}`:    true,
+		`{"statement":"` + stmt + `"}`:                                           false,
+		`{"statement":"` + stmt + `","returnUrl":"ftp://fount.sh/"}`:             false,
+		`{"statement":"` + stmt + `","returnUrl":"https://fount.sh/","seats":3}`: false,
+	} {
+		if err := portal.Check([]byte(body)); (err == nil) != ok {
+			t.Errorf("team_portal body %q: %v, want ok=%v", body, err, ok)
+		}
+	}
+
+	cancel := Destinations["fount.team_cancel"].Body
+	for body, ok := range map[string]bool{
+		`{"statement":"` + stmt + `"}`: true,
+		`{}`:                           false,
+		`{"statement":"` + stmt + `","returnUrl":"` + url + `"}`:         false,
+		`{"statement":"` + strings.Repeat("A", 2<<10) + "." + sig + `"}`: false,
+	} {
+		if err := cancel.Check([]byte(body)); (err == nil) != ok {
+			t.Errorf("team_cancel body %q: %v, want ok=%v", body, err, ok)
 		}
 	}
 }

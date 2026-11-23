@@ -25,7 +25,7 @@ refused before anything is sent.
 | `tinfoil.websearch`, `tinfoil.webfetch` | Fount's proxy, to Tinfoil's attested web enclave, then Exa | to the enclave |
 | `openrouter.chat_completions` | Fount's proxy, to OpenRouter | no |
 | `openrouter_byok.chat_completions` | OpenRouter, with the user's key | no |
-| `fount.device_credential`, `fount.device_renew`, `fount.devices`, `fount.device_revoke`, `fount.feedback_report` | `api.fount.sh` | no |
+| `fount.device_credential`, `fount.device_renew`, `fount.device_cloud_credential`, `fount.team_checkout`, `fount.team_portal`, `fount.team_cancel`, `fount.devices`, `fount.device_revoke`, `fount.feedback_report` | `api.fount.sh` | no |
 | `models.*`, `vision.*`, `latex.index` | S3, Hugging Face and the Tectonic bundle host, pinned by SHA-256 | no body |
 | `latex.file` | The Tectonic bundle host, one file's byte range from the embedded index | no body |
 | `updates.*` | Fount's GitHub releases. Fount verifies each package's signature, not the broker | no body |
@@ -58,6 +58,7 @@ request. If the closed app were malicious, these are the channels it could use:
 | `fount.feedback_report` | Fount | Up to 2 MiB, including free text. The app draws the preview you see |
 | Python package tunnel | PyPI, GitHub | Paths on those hosts. `github.com` serves any repository, so a path can carry data |
 | `fount.device_credential`, `fount.device_renew` | Fount | A sign-in code of up to 128 URL-safe characters, and a device id, timestamp and signature in fixed shapes. The app signs these itself; the broker forwards the three `Fount-*` headers and the body unchanged and adds no bearer |
+| `fount.team_checkout`, `fount.team_portal`, `fount.team_cancel` | Fount, and Stripe through it | A team statement in a fixed shape, a seat count of 1 to 999, and up to two `http(s)` return URLs (fount-infra accepts only its allowlisted origins). Device-signed like a renewal |
 | `fount.devices`, `fount.device_revoke` | Fount | Which of 2^128 device ids to revoke |
 | Mail writes (`mailbox`, `address`, `routing`, `connect`, `renew`, `recover`, `pause`) and challenges (`recover_challenge`, `pause_challenge`) | The edge enclave, and its storage for what it keeps | Up to 64 KiB of signed JSON, or of public keys and a passkey assertion. The edge refuses anything that isn't a valid request |
 | Mail `send` | The edge enclave, which delivers it over SMTP to the mail servers of the worker's requesters | Up to 34 MiB: a whole email of up to 25 MiB the app wrote, files attached, base64 in signed JSON. The edge sends only as the worker whose key signed it, and only to that worker's requesters |
