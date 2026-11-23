@@ -685,6 +685,9 @@ func (c *Coordinator) followTeam(team string, w *Worker, next *teamState, dek DE
 		if nw.WrappedDEK, err = c.cfg.Key.Wrap(w.ID, dek); err != nil {
 			return nil, err
 		}
+		if nw.License == "" {
+			nw.License = w.Account
+		}
 		nw.Team, nw.Account, nw.DEKCommitment = team, team, next.workers[w.ID]
 	} else {
 		held, err := c.cfg.Key.Unwrap(w.ID, w.WrappedDEK)

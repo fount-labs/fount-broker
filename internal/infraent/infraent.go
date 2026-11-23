@@ -11,7 +11,10 @@
 //	POST <base>/coordinator/mail-entitlement
 //	Authorization: Bearer base64url(claims) "." base64url(Ed25519 signature)
 //
-// over the exact claims bytes, no body. The answer is fount-infra's
+// over the exact claims bytes, no body. A request names the mailbox's license
+// account (acct), whose hash the entitlement carries, and, when another
+// account pays for it (a team worker's team), that payer (pay, version 2);
+// version 1 is a request whose payer is acct. The answer is fount-infra's
 // lambda/coordinator-mail-entitlement: the same token Desktop's
 // /mail/entitlement mints, so a mailbox Desktop made renews unchanged.
 package infraent
@@ -35,6 +38,8 @@ import (
 
 const (
 	Version = 1
+	// VersionPay is a request with a payer apart from the license account.
+	VersionPay = 2
 	Type    = "fount-mail-renewal"
 	// Lifetime is how long a request lasts; fount-infra refuses one longer
 	// than five minutes.
@@ -50,6 +55,9 @@ type Claims struct {
 	V    int    `json:"v"`
 	Typ  string `json:"typ"`
 	Acct string `json:"acct"`
+	// Pay is the account whose subscription must entitle the mailbox, in a
+	// version 2 request only.
+	Pay string `json:"pay,omitempty"`
 	// Dk is the address's request-signing key, standard base64: the key the
 	// entitlement is bound to, as Desktop's /mail/entitlement deviceKey.
 	Dk  string `json:"dk"`
@@ -82,14 +90,23 @@ func New(base string, key ed25519.PrivateKey) (*Client, error) {
 	return &Client{Base: u.String(), Key: key}, nil
 }
 
-// Request is a signed renewal request for account and the address key.
-func (c *Client) Request(account string, signing ed25519.PublicKey) (string, error) {
+// Request is a signed renewal request for the license account, the payer
+// and the address key. A payer that is empty or the account itself makes a
+// version 1 request.
+func (c *Client) Request(account, pay string, signing ed25519.PublicKey) (string, error) {
 	if account == "" || len(signing) != ed25519.PublicKeySize {
 		return "", errors.New("a renewal request names an account and a 32-byte address key")
 	}
+	v := Version
+	if pay == account {
+		pay = ""
+	}
+	if pay != "" {
+		v = VersionPay
+	}
 	iat := c.now().Unix()
 	payload, err := json.Marshal(Claims{
-		V: Version, Typ: Type, Acct: account,
+		V: v, Typ: Type, Acct: account, Pay: pay,
 		Dk:  base64.StdEncoding.EncodeToString(signing),
 		Kid: jobcred.PublicKey(c.Key),
 		Iat: iat, Exp: iat + int64(Lifetime/time.Second),
@@ -119,7 +136,7 @@ type refusal struct {
 // lapsed (its past_due grace has ended, or it has no paid plan), wrapping
 // coordinator.ErrAccountLapsed; anything else is an error to retry.
 func (c *Client) Issue(ctx context.Context, req coordinator.EntitlementRequest) (coordinator.Entitlement, error) {
-	token, err := c.Request(req.Account, req.SigningKey)
+	token, err := c.Request(req.Account, req.Pay, req.SigningKey)
 	if err != nil {
 		return coordinator.Entitlement{}, err
 	}

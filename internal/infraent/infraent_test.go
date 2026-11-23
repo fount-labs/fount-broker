@@ -61,7 +61,7 @@ func verify(t *testing.T, token string) Claims {
 
 func TestRequest(t *testing.T) {
 	c := &Client{Key: key, Now: func() time.Time { return now }}
-	token, err := c.Request("0123456789abcdef0123456789abcdef", address)
+	token, err := c.Request("0123456789abcdef0123456789abcdef", "", address)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,14 +78,43 @@ func TestRequest(t *testing.T) {
 	if token != vector {
 		t.Fatalf("token\n%s\nwant\n%s", token, vector)
 	}
+	// An account that pays for itself is a version 1 request.
+	if same, _ := c.Request("0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef", address); same != vector {
+		t.Fatalf("a payer that is the account: %s", same)
+	}
+}
+
+// vectorPay is the version 2 request fount-infra's
+// coordinator-mail-entitlement.test.ts verifies: vector's, paid by a team.
+const vectorPay = "eyJ2IjoyLCJ0eXAiOiJmb3VudC1tYWlsLXJlbmV3YWwiLCJhY2N0IjoiMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYiLCJwYXkiOiJ0bV8wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1NjciLCJkayI6IkJ3Y0hCd2NIQndjSEJ3Y0hCd2NIQndjSEJ3Y0hCd2NIQndjSEJ3Y0hCd2M9Iiwia2lkIjoiaW9qajNYUUo4Wlg5VXRzdFBMcGRjc3BuQ2I4ZGxCSWI4M1NJQWJRUGIxdyIsImlhdCI6MTgwMDAwMDAwMCwiZXhwIjoxODAwMDAwMzAwfQ.xvCKRFp1hfCNG-cPRnHHcCsNT5HNz__gJD87SjpIHCwrxc1grpUKdBSvQHGjOr1p-wn0Z6P_ldW4-juQK_IiAw"
+
+// A worker a team pays for names its license account and the team.
+func TestRequestPay(t *testing.T) {
+	c := &Client{Key: key, Now: func() time.Time { return now }}
+	token, err := c.Request("0123456789abcdef0123456789abcdef", "tm_0123456789abcdef01234567", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := verify(t, token)
+	want := Claims{
+		V: 2, Typ: "fount-mail-renewal", Acct: "0123456789abcdef0123456789abcdef", Pay: "tm_0123456789abcdef01234567",
+		Dk:  base64.StdEncoding.EncodeToString(address),
+		Kid: jobcred.PublicKey(key), Iat: now.Unix(), Exp: now.Unix() + 300,
+	}
+	if got != want {
+		t.Fatalf("claims %+v, want %+v", got, want)
+	}
+	if token != vectorPay {
+		t.Fatalf("token\n%s\nwant\n%s", token, vectorPay)
+	}
 }
 
 func TestRequestRefuses(t *testing.T) {
 	c := &Client{Key: key}
-	if _, err := c.Request("", address); err == nil {
+	if _, err := c.Request("", "", address); err == nil {
 		t.Fatal("a request with no account")
 	}
-	if _, err := c.Request("acct", address[:31]); err == nil {
+	if _, err := c.Request("acct", "", address[:31]); err == nil {
 		t.Fatal("a request with a short key")
 	}
 }
@@ -113,7 +142,7 @@ func TestIssue(t *testing.T) {
 		w.Write([]byte(`{"entitlement":"tok.sig","issuedAt":1800000000,"expiresAt":1803000000,"graceEnds":null}`))
 	}))
 	defer srv.Close()
-	ent, err := client(t, srv).Issue(context.Background(), coordinator.EntitlementRequest{Account: "acct1", WorkerID: "w1", MailboxID: "mb1", SigningKey: address})
+	ent, err := client(t, srv).Issue(context.Background(), coordinator.EntitlementRequest{Account: "acct1", Pay: "tm_1", WorkerID: "w1", MailboxID: "mb1", SigningKey: address})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +153,7 @@ func TestIssue(t *testing.T) {
 		t.Fatalf("asked %s %s with %q", seen.Method, seen.URL.Path, body)
 	}
 	claims := verify(t, strings.TrimPrefix(seen.Header.Get("Authorization"), "Bearer "))
-	if claims.Acct != "acct1" || claims.Dk != base64.StdEncoding.EncodeToString(address) {
+	if claims.V != 2 || claims.Acct != "acct1" || claims.Pay != "tm_1" || claims.Dk != base64.StdEncoding.EncodeToString(address) {
 		t.Fatalf("claims %+v", claims)
 	}
 	// The worker and the mailbox stay with the coordinator.

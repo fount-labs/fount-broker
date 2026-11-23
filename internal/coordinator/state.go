@@ -57,6 +57,13 @@ type Worker struct {
 	// address, so the mail loop knows to read it (mailbox.go). Its keys are
 	// in the worker's tree.
 	Mailbox string `json:"mailbox,omitempty"`
+	// License is the account whose license hash the worker's mailbox was
+	// made under, which the edge binds every address under its handle to
+	// (fount-mail-edge ErrLicenseMismatch): its creator's, kept when a list
+	// adds the worker and Account becomes the team, which pays. Empty for a
+	// worker no list has added, and for one added before it was kept;
+	// Account is both then.
+	License string `json:"license,omitempty"`
 }
 
 type JobState string

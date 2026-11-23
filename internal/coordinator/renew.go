@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"errors"
@@ -24,7 +25,11 @@ type Entitlements interface {
 }
 
 type EntitlementRequest struct {
+	// Account is the mailbox's license account, whose hash the entitlement
+	// carries; Pay is the account whose subscription must entitle it, a
+	// team worker's team. Pay is Account when empty.
 	Account   string
+	Pay       string
 	WorkerID  string
 	MailboxID string
 	// SigningKey is the address's request-signing public key, which the
@@ -144,7 +149,7 @@ func (c *Coordinator) renew(ctx context.Context, w Worker, last Renewed, now tim
 	}); err != nil {
 		return failed(last, now, err), err
 	}
-	ent, err := m.cfg.Entitlements.Issue(ctx, EntitlementRequest{Account: w.Account, WorkerID: w.ID, MailboxID: w.Mailbox, SigningKey: signing})
+	ent, err := m.cfg.Entitlements.Issue(ctx, EntitlementRequest{Account: cmp.Or(w.License, w.Account), Pay: w.Account, WorkerID: w.ID, MailboxID: w.Mailbox, SigningKey: signing})
 	if errors.Is(err, ErrAccountLapsed) {
 		return c.lapsed(ctx, w, last, now, err), err
 	}

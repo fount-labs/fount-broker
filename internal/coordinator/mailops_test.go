@@ -252,7 +252,7 @@ func TestCloudMailboxesRenewDaily(t *testing.T) {
 		t.Fatalf("%d issued, %d presented", len(ents.issued), len(r.edge.renews))
 	}
 	keys, _ := mb.keys()
-	if req := ents.issued[0]; req.Account != "acct_1" || req.WorkerID != w.ID || !req.SigningKey.Equal(keys.SigningPublic()) {
+	if req := ents.issued[0]; req.Account != "acct_1" || req.Pay != "acct_1" || req.WorkerID != w.ID || !req.SigningKey.Equal(keys.SigningPublic()) {
 		t.Fatalf("%+v", req)
 	}
 	v, _ := r.c.mailView(anyDevice, w.ID)
@@ -284,6 +284,52 @@ func TestCloudMailboxesRenewDaily(t *testing.T) {
 	sweep(now.Add(renewRetry + renewAfter + time.Minute))
 	if len(ents.issued) != 3 {
 		t.Fatal("not renewed after a day")
+	}
+}
+
+// A worker made by an account and then added to a firm team renews under
+// its creator's license, which the edge bound its mailbox to, paid for by the
+// team.
+func TestATeamWorkerRenewsUnderItsCreatorsLicense(t *testing.T) {
+	ents := &fakeEntitlements{}
+	r := newMailRig(t, MailConfig{Entitlements: ents})
+	me := newTestDevice(t)
+	team, err := r.c.MintTeam(me.caller("acct_1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tt := newTestTeam(t, r.c, team)
+	tt.set("m_owner", "acct_1", RoleAdmin, me)
+	if err := tt.push(me, "acct_1", nil); err != nil {
+		t.Fatal(err)
+	}
+	w, err := tt.addWorker(me, "acct_1", mustDEK(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Team != team || w.Account != team || w.License != "acct_1" {
+		t.Fatalf("the team worker: team %s account %s license %s", w.Team, w.Account, w.License)
+	}
+	mb := newMailbox(t, testWorkerAddr)
+	r.edge.register(mb)
+	if err := r.c.SetMailbox(w.ID, mb, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Another list keeps the license.
+	tt.set("m_rev", "acct_2", RoleReviewer, newTestDevice(t))
+	if err := tt.push(me, "acct_1", nil); err != nil {
+		t.Fatal(err)
+	}
+	r.start()
+	if got, _ := r.c.Worker(w.ID); got.License != "acct_1" || got.Account != team {
+		t.Fatalf("after another list and a restart: account %s license %s", got.Account, got.License)
+	}
+	r.c.mailPass(context.Background(), time.Now())
+	if len(ents.issued) != 1 {
+		t.Fatalf("%d issued", len(ents.issued))
+	}
+	if req := ents.issued[0]; req.Account != "acct_1" || req.Pay != team || req.WorkerID != w.ID {
+		t.Fatalf("renewed as %+v", req)
 	}
 }
 
