@@ -20,7 +20,7 @@ const (
 	prefixRoot  = "root/"
 	prefixFount = "fount/" // the workspace's .fount folder: sessions and transcripts
 	prefixIndex = "index/" // the kept index (§5.5), opaque
-	prefixJobs  = "jobs/"  // per job: the runner's events and stderr, and proposed file versions
+	prefixJobs  = "jobs/"  // per job: the runner's events and stderr, proposed file versions, and its outbox
 	// pathIndexed is rootDigest of the files the kept index was built from.
 	pathIndexed = "indexed"
 )
@@ -32,6 +32,15 @@ const fountDir = ".fount"
 const (
 	dirMode  = 0o777
 	fileMode = 0o666
+)
+
+// The worker root's folders (§5.5): the worker's Files, the reply's files, and
+// a job's scratch space. outbox/ and scratch/ are never kept in the tree, so
+// every job starts with them empty.
+const (
+	dirFiles   = "files/"
+	dirOutbox  = "outbox/"
+	dirScratch = "scratch/"
 )
 
 // materialize writes a worker's tree into a job's folders and returns the hash of
@@ -70,7 +79,26 @@ func materialize(t *Tree, dirs JobDirs) (map[string]string, error) {
 			return nil, err
 		}
 	}
+	for _, d := range []string{dirFiles, dirOutbox, dirScratch} {
+		if err := os.MkdirAll(filepath.Join(dirs.Workspace, d), dirMode); err != nil {
+			return nil, err
+		}
+	}
 	return given, nil
+}
+
+// writeListings writes threads/index.md and each thread's thread.md into an
+// agent job's workspace, from the thread records, and adds them to given.
+// They are never kept, so they can't go stale; a change a job makes to them
+// is dropped as any input's is.
+func writeListings(t *Tree, workspace string, given map[string]string) error {
+	for rel, data := range threadListings(t) {
+		if err := writeInto(workspace, rel, data); err != nil {
+			return err
+		}
+		given[rel] = hashOf(data)
+	}
+	return nil
 }
 
 func writeInto(dir, rel string, data []byte) error {
@@ -101,29 +129,27 @@ const (
 )
 
 // collect reads back what a job left and keeps only what a job may write
-// (§5.5): the thread's outputs/<job id>/, the workspace's .fount folder and
-// changes to the worker's files, everything outside threads/ and the read-only
-// instructions.md and memory.md, as proposals. scratch/ is thrown away, and so
-// is the index, which only the index step writes. Anything else the runner
-// changed or added, an input, is dropped and counted.
-func collect(dirs JobDirs, given map[string]string, threadID, jobID string) (*Results, error) {
+// (§5.5): the workspace's .fount folder; outbox/, the reply's files, at
+// jobs/<job id>/outbox/; and each change or new file under files/ as a
+// proposal. scratch/ is thrown away, and so is the index, which only the
+// index step writes. Anything else the runner changed or added, an input, is
+// dropped and counted: threads/, instructions.md, memory.md, and anything
+// outside the worker root's folders.
+func collect(dirs JobDirs, given map[string]string, jobID string) (*Results, error) {
 	r := &Results{Writes: map[string][]byte{}}
 	budget := &budget{}
-	outputs := "threads/" + threadID + "/outputs/" + jobID + "/"
 	err := walkFiles(dirs.Workspace, budget, func(rel string, data []byte) {
 		switch {
 		case strings.HasPrefix(rel, fountDir+"/"):
 			r.Writes[prefixFount+strings.TrimPrefix(rel, fountDir+"/")] = data
-		case strings.HasPrefix(rel, outputs):
-			if _, existed := given[rel]; !existed {
-				r.Writes[prefixRoot+rel] = data
-			}
-		case strings.HasPrefix(rel, "scratch/"):
+		case strings.HasPrefix(rel, dirOutbox):
+			r.Writes[jobOutbox(jobID)+strings.TrimPrefix(rel, dirOutbox)] = data
+		case strings.HasPrefix(rel, dirScratch):
 		case given[rel] == hashOf(data):
-		case isInput(rel):
-			r.Dropped = append(r.Dropped, rel)
-		default:
+		case strings.HasPrefix(rel, dirFiles):
 			r.Writes[prefixJobs+jobID+"/proposed/"+rel] = data
+		default:
+			r.Dropped = append(r.Dropped, rel)
 		}
 	}, &r.Dropped)
 	if err != nil {
@@ -132,7 +158,57 @@ func collect(dirs JobDirs, given map[string]string, threadID, jobID string) (*Re
 	if err := keepBases(r, given, jobID); err != nil {
 		return nil, err
 	}
+	if err := keepOutboxSources(r, given, jobID); err != nil {
+		return nil, err
+	}
 	return r, nil
+}
+
+// jobOutbox is where a job's outbox is kept in the tree, ending in "/": the
+// files its draft carries until it's sent or discarded.
+func jobOutbox(jobID string) string { return prefixJobs + jobID + "/outbox/" }
+
+// outboxSourcesPath holds, for each outbox file whose bytes equal a file the
+// job was given, that file: a move in, or a copy (§5.5, "A move never
+// deletes in Cloud").
+func outboxSourcesPath(jobID string) string { return prefixJobs + jobID + "/outbox.json" }
+
+// outboxSource is the given file an outbox file is: its path in the worker
+// root and the version's hash.
+type outboxSource struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+}
+
+// keepOutboxSources records which given file each outbox file is, if any,
+// preferring the worker's Files, then the first path.
+func keepOutboxSources(r *Results, given map[string]string, jobID string) error {
+	byHash := map[string]string{}
+	for rel, hash := range given {
+		cur, ok := byHash[hash]
+		files, curFiles := strings.HasPrefix(rel, dirFiles), strings.HasPrefix(cur, dirFiles)
+		if !ok || files && !curFiles || files == curFiles && rel < cur {
+			byHash[hash] = rel
+		}
+	}
+	sources := map[string]outboxSource{}
+	for p, data := range r.Writes {
+		if strings.HasPrefix(p, jobOutbox(jobID)) {
+			hash := hashOf(data)
+			if from, ok := byHash[hash]; ok {
+				sources[p] = outboxSource{Path: from, SHA256: hash}
+			}
+		}
+	}
+	if len(sources) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(sources)
+	if err != nil {
+		return err
+	}
+	r.Writes[outboxSourcesPath(jobID)] = data
+	return nil
 }
 
 // basesPath holds, for each file a job proposed, the hash of the version it
@@ -156,13 +232,6 @@ func keepBases(r *Results, given map[string]string, jobID string) error {
 	}
 	r.Writes[basesPath(jobID)] = data
 	return nil
-}
-
-// isInput says whether a path is one a job reads but never changes: the
-// threads, and the instructions and memory, which change only by proposals in
-// .fount.
-func isInput(rel string) bool {
-	return strings.HasPrefix(rel, "threads/") || rel == "instructions.md" || rel == "memory.md"
 }
 
 // collectIndex reads back the index the index step built.

@@ -563,7 +563,15 @@ type intook struct {
 	ran    bool
 	r      IntakeResult
 	unread error
+	// replyFolder is the folder intake was told the email gets, for an
+	// owner's reply on a thread: its instruction names it.
+	replyFolder string
 }
+
+// errFolderMoved is a reply whose folder name changed between intake and
+// placing it, as another message took the number first. It waits for the
+// next pass, which runs intake again with the folder it gets.
+var errFolderMoved = errors.New("the thread's next message folder changed while intake ran")
 
 // errNeedsIntake is place finding a message that becomes a turn or is held,
 // with no intake run for it yet. The tree change is dropped, intake runs, and
@@ -635,7 +643,8 @@ func (c *Coordinator) intakeMail(ctx context.Context, workerID string, msg *mail
 				return err
 			}
 			if sender != "" && th.hasParticipant(sender) {
-				req.ReplyFolder = "threads/" + th.ID + "/" + MessageFolder(asMail(msg))
+				name, address := senderOf(msg)
+				req.ReplyFolder = th.rootThreadDir() + th.nextMessageFolder(time.UnixMilli(msg.ReceivedAt), name, address)
 			}
 			return nil
 		}); err != nil {
@@ -647,11 +656,11 @@ func (c *Coordinator) intakeMail(ctx context.Context, workerID string, msg *mail
 	case errors.Is(err, ErrIntake):
 		// The error isn't logged: it can quote the email.
 		log.Printf("worker %s: intake couldn't read mail %s", workerID, msg.ID)
-		return intook{ran: true, unread: err}, nil
+		return intook{ran: true, unread: err, replyFolder: req.ReplyFolder}, nil
 	case err != nil:
 		return intook{}, err
 	}
-	return intook{ran: true, r: r}, nil
+	return intook{ran: true, r: r, replyFolder: req.ReplyFolder}, nil
 }
 
 // actOnMail decides one message and applies what it causes, with its ledger
@@ -700,6 +709,16 @@ func received(msg *mail.Message) decide.Received {
 		Reused: msg.Reused, Quarantined: msg.Quarantined, EnvelopeSender: msg.Envelope.Sender,
 		SenderCheck: msg.SenderCheck, SenderCheckError: msg.SenderCheckError,
 	}
+}
+
+// senderOf is the sender's display name and address, lowercased, as the
+// edge's check read them, or empty.
+func senderOf(msg *mail.Message) (string, string) {
+	check := checkOf(msg)
+	if check == nil {
+		return "", ""
+	}
+	return check.From.Name, strings.ToLower(strings.TrimSpace(check.From.Address))
 }
 
 // checkOf is the edge's check, or nil when there's none to read.
@@ -805,7 +824,7 @@ func (c *Coordinator) place(t *Tree, workerID string, mb *Mailbox, s *MailSettin
 			subject = check.Headers.Subject
 		}
 		var err error
-		if th, err = newMailThread(workerID, subject, now); err != nil {
+		if th, err = newMailThread(t, workerID, subject, now); err != nil {
 			return act, err
 		}
 		if _, err := threadHandle(t, th); err != nil {
@@ -818,6 +837,13 @@ func (c *Coordinator) place(t *Tree, workerID string, mb *Mailbox, s *MailSettin
 	}
 	if s.requester(sender) != nil && !th.hasParticipant(sender) && (verdict == string(decide.Request) || verdict == verdictThreadReply) {
 		th.Participants = append(th.Participants, sender)
+	}
+	// The email's folder is numbered before anything it causes, such as a
+	// reply an approval by email sends.
+	name, _ := senderOf(msg)
+	folder := th.takeMessageFolder(time.UnixMilli(msg.ReceivedAt), name, sender)
+	if in.replyFolder != "" && in.replyFolder != th.rootThreadDir()+folder {
+		return act, intakeStopped{errFolderMoved}
 	}
 
 	// What a reply on th is besides a turn of its own, decided here and
@@ -832,7 +858,6 @@ func (c *Coordinator) place(t *Tree, workerID string, mb *Mailbox, s *MailSettin
 		verdict, reason = verdictApproval, ""
 	}
 
-	folder := MessageFolder(asMail(msg))
 	entry := &mailEntry{
 		EdgeID: msg.ID, ReceivedAt: msg.ReceivedAt, Sender: sender, Signed: alignedDomain(check),
 		CheckError: check == nil, Verdict: verdict, Reason: reason,
@@ -853,7 +878,7 @@ func (c *Coordinator) place(t *Tree, workerID string, mb *Mailbox, s *MailSettin
 			why = "it looks automatic"
 		}
 		if why == "" {
-			js, err := in.r.Spec.JobSpec(th.ID, th.SessionID, folder, c.cfg.JobConfig)
+			js, err := in.r.Spec.JobSpec(th, folder, c.cfg.JobConfig)
 			if err != nil {
 				why = "Fount couldn't read this email"
 			} else {
@@ -881,7 +906,7 @@ func (c *Coordinator) place(t *Tree, workerID string, mb *Mailbox, s *MailSettin
 			spec = answer
 		}
 	}
-	if err := writeMailFolder(t, mailFolderPath(th.ID, folder, entry.Held == heldWaiting), msg, in); err != nil {
+	if err := writeMailFolder(t, mailFolderPath(th, folder, entry.Held == heldWaiting), msg, in); err != nil {
 		return act, err
 	}
 	run := spec != nil
@@ -920,16 +945,16 @@ func (c *Coordinator) place(t *Tree, workerID string, mb *Mailbox, s *MailSettin
 }
 
 // mailFolderPath is where an email's folder is in the worker's tree, ending
-// in "/". Mail that may run is in the worker root, threads/<thread>/<folder>,
-// where its turn reads it. Held mail is in the coordinator's record instead,
-// sealed with the rest of the tree but given to no job, so a stranger's email
-// can't steer another turn on the worker; runHeldMail moves it into the root
-// (moveHeldFolder).
-func mailFolderPath(threadID, folder string, held bool) string {
+// in "/". Mail that may run is in the worker root, threads/<thread
+// folder>/<folder>, where its turn reads it. Held mail is in the
+// coordinator's record instead, by thread ID, sealed with the rest of the
+// tree but given to no job, so a stranger's email can't steer another turn on
+// the worker; runHeldMail moves it into the root (moveHeldFolder).
+func mailFolderPath(th *threadRecord, folder string, held bool) string {
 	if held {
-		return heldMailDir + threadID + "/" + folder + "/"
+		return heldMailDir + th.ID + "/" + folder + "/"
 	}
-	return prefixRoot + "threads/" + threadID + "/" + folder + "/"
+	return prefixRoot + th.rootThreadDir() + folder + "/"
 }
 
 // writeMailFolder puts the email's folder at dir: what intake wrote, or the
@@ -955,8 +980,8 @@ func writeMailFolder(t *Tree, dir string, msg *mail.Message, in intook) error {
 
 // moveHeldFolder moves a held email's folder from the record into the worker
 // root, as running it makes it a turn's input.
-func moveHeldFolder(t *Tree, threadID, folder string) error {
-	from, to := mailFolderPath(threadID, folder, true), mailFolderPath(threadID, folder, false)
+func moveHeldFolder(t *Tree, th *threadRecord, folder string) error {
+	from, to := mailFolderPath(th, folder, true), mailFolderPath(th, folder, false)
 	for _, p := range t.List(from) {
 		rel := strings.TrimPrefix(p, from)
 		if !t.Has(to + rel) {

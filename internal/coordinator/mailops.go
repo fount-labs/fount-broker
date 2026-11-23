@@ -119,11 +119,11 @@ func (c *Coordinator) runHeldMail(t *Tree, th *threadRecord, a heldMailArgs, rev
 	if instruction == "" {
 		instruction = cmp.Or(m.Instruction, "Handle the email in this thread as your instructions say.")
 	}
-	spec, err := IntakeSpec{Instruction: instruction}.JobSpec(th.ID, th.SessionID, m.Folder, c.cfg.JobConfig)
+	spec, err := IntakeSpec{Instruction: instruction}.JobSpec(th, m.Folder, c.cfg.JobConfig)
 	if err != nil {
 		return effects{}, err
 	}
-	if err := moveHeldFolder(t, th.ID, m.Folder); err != nil {
+	if err := moveHeldFolder(t, th, m.Folder); err != nil {
 		return effects{}, err
 	}
 	m.Held, m.Intake, m.JobID, e.Rev = heldRun, intakePending, mailJobID(m.EdgeID), rev

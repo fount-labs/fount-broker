@@ -286,15 +286,26 @@ the file is still the version the job was given, else `FILES_CHANGED`; a second
 decision is `PROPOSAL_DECIDED`. The other operations Fount has answer 501 until
 Cloud has questions, drafts and mail.
 
-When a job ends the coordinator keeps the workspace's `.fount` folder, new files
-in the thread's `outputs/<job id>/`, and each change to the worker's files
-outside `threads/`, `instructions.md` and `memory.md` as a proposal at
-`jobs/<job id>/proposed/<path>`. `scratch/` is thrown away, and a change to an
-input is dropped and counted, and `jobs/<job id>/bases.json` keeps the hash of
-the version each proposal started from. A thread's turn lists the job's
-outputs, then the files it proposed: a pending one with its `proposal` path,
-which `GET /workers/{id}/files/jobs/<job id>/proposed/<path>` reads, and a
-decided one noted Accepted or Discarded.
+A job's workspace is the worker root with readable names (Fount's
+m4-cloud-runners.md §5.5): `threads/<n> <subject>/<nn> <date> <who>/` for each
+email and sent reply, `threads/index.md` and each thread's `thread.md` written
+from the thread records into the job's copy only, the worker's Files under
+`files/`, and an empty `outbox/` and `scratch/`. The coordinator keeps its IDs
+in its records, never in a path a job sees.
+
+When a job ends the coordinator keeps the workspace's `.fount` folder, the
+files in `outbox/` at `jobs/<job id>/outbox/` (a draft reply's files; an
+outbox file equal to a file the job was given names it in
+`jobs/<job id>/outbox.json`), and each change or new file under `files/` as a
+proposal at `jobs/<job id>/proposed/<path>`. `scratch/` is thrown away, and
+any other change, an input's, is dropped and counted, and
+`jobs/<job id>/bases.json` keeps the hash of the version each proposal started
+from. A thread's turn lists the job's outbox, then the files it proposed: a
+pending one with its `proposal` path, which
+`GET /workers/{id}/files/jobs/<job id>/proposed/<path>` reads, and a decided
+one noted Accepted or Discarded. A sent reply becomes the thread's next
+message folder, `<nn> <date> Reply/`, with `message.md` as sent and its files
+under `attachments/`.
 
 Its parse surfaces are the JobSpec, the API's small JSON bodies (operations
 are strict JSON of at most 512 KiB), its own thread records and, over the

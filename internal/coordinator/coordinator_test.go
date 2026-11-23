@@ -43,12 +43,10 @@ func fakeRunner(mode string, args []string) int {
 	job, _ := os.ReadFile(flags["job"])
 	var spec runnerJob
 	json.Unmarshal(job, &spec)
-	outputs, _ := filepath.Glob(filepath.Join(ws, "threads", "*", "outputs", "*"))
 	instructions, _ := os.ReadFile(filepath.Join(ws, "instructions.md"))
-	for _, out := range outputs {
-		os.WriteFile(filepath.Join(out, "reply.md"), []byte("reply to: "+spec.Prompt+"\ninstructions: "+string(instructions)), 0o644)
-		os.Symlink("/etc/hosts", filepath.Join(out, "hosts"))
-	}
+	out := filepath.Join(ws, "outbox")
+	os.WriteFile(filepath.Join(out, "reply.md"), []byte("reply to: "+spec.Prompt+"\ninstructions: "+string(instructions)), 0o644)
+	os.Symlink("/etc/hosts", filepath.Join(out, "hosts"))
 	os.WriteFile(filepath.Join(ws, "instructions.md"), []byte("rewritten by the runner"), 0o644)
 	os.MkdirAll(filepath.Join(ws, ".fount", "conversations"), 0o755)
 	os.WriteFile(filepath.Join(ws, ".fount", "conversations", spec.SessionID+".json"), []byte(`{"turns":1}`), 0o644)
@@ -147,7 +145,7 @@ func TestAJobRunsAndKeepsOnlyItsResults(t *testing.T) {
 		t.Errorf("steps %+v", done.Steps)
 	}
 
-	reply, err := c.ReadFile(w.ID, "root/threads/t1/outputs/"+job.ID+"/reply.md")
+	reply, err := c.ReadFile(w.ID, "jobs/"+job.ID+"/outbox/reply.md")
 	if err != nil || string(reply) != "reply to: Answer Ann\ninstructions: be brief" {
 		t.Fatalf("reply: %q %v", reply, err)
 	}
@@ -174,7 +172,7 @@ func TestAJobRunsAndKeepsOnlyItsResults(t *testing.T) {
 	if got, _ := c.ReadFile(w.ID, "jobs/"+job.ID+"/events.jsonl"); !strings.Contains(string(got), "job-finished") {
 		t.Fatalf("events: %q", got)
 	}
-	if _, err := c.ReadFile(w.ID, "root/threads/t1/outputs/"+job.ID+"/hosts"); !errors.Is(err, ErrNotFound) {
+	if _, err := c.ReadFile(w.ID, "jobs/"+job.ID+"/outbox/hosts"); !errors.Is(err, ErrNotFound) {
 		t.Fatal("a link the runner left was followed")
 	}
 	if done.Dropped != 2 {
@@ -186,8 +184,9 @@ func TestAJobRunsAndKeepsOnlyItsResults(t *testing.T) {
 	if j := waitJob(t, c, second.ID); j.State != JobFinished {
 		t.Fatalf("second job: %s %s", j.State, j.Error)
 	}
-	// The first job added a reply, so the index was built again.
-	if got, _ := c.ReadFile(w.ID, "jobs/"+second.ID+"/index-events.jsonl"); !strings.Contains(string(got), "index-built") {
+	// The first job's reply is in its outbox, not the worker's files, so the
+	// index wasn't built again.
+	if got, err := c.ReadFile(w.ID, "jobs/"+second.ID+"/index-events.jsonl"); err == nil {
 		t.Fatalf("second index events: %q", got)
 	}
 	worker, _ := c.Worker(w.ID)
@@ -348,7 +347,7 @@ func TestAPI(t *testing.T) {
 		t.Fatalf("enqueue: %d %v", code, j)
 	}
 	waitJob(t, c, j["id"].(string))
-	code, list := do("GET", "/v0/workers/"+id+"/files?prefix=root/threads/", "")
+	code, list := do("GET", "/v0/workers/"+id+"/files?prefix=jobs/"+j["id"].(string)+"/outbox/", "")
 	if code != 200 || len(list["paths"].([]any)) != 1 {
 		t.Fatalf("list: %d %v", code, list)
 	}

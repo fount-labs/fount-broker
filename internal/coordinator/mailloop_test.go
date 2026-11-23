@@ -274,6 +274,8 @@ type mailRunner struct {
 	events []byte
 	// resumes is each agent job's resume, nil for a fresh turn.
 	resumes []*ResumeSpec
+	// act, if set, is what each agent job does in its workspace.
+	act func(workspace string)
 }
 
 func (r *mailRunner) Run(_ context.Context, _, _ string, job JobDirs) (RunResult, error) {
@@ -299,8 +301,11 @@ func (r *mailRunner) Run(_ context.Context, _, _ string, job JobDirs) (RunResult
 		return nil
 	})
 	r.seen = append(r.seen, seen)
-	events := r.events
+	events, act := r.events, r.act
 	r.mu.Unlock()
+	if act != nil {
+		act(job.Workspace)
+	}
 	return RunResult{Events: events}, nil
 }
 
@@ -645,26 +650,26 @@ func TestARequestersEmailBecomesATurn(t *testing.T) {
 		t.Fatalf("job: %+v", j)
 	}
 	th = r.waitStatus(w.ID, th.ID, StatusIdle)
-	folder := time.Now().UTC().Format("2006-01-02") + "-" + id
+	folder := "01 " + time.Now().UTC().Format("2006-01-02") + " Dana"
 	if m := mailEntries(th)[0]; m.Folder != folder || m.Instruction != intakeInstruction {
 		t.Fatalf("%+v", m)
 	}
 	if p := r.runner.prompts[0]; p != intakeInstruction || strings.Contains(p, "Please file") {
 		t.Fatalf("the job's instruction is intake's, and doesn't quote the email: %q", p)
 	}
-	if msg := r.runner.messages[0]; msg != "threads/"+th.ID+"/"+folder {
+	if msg := r.runner.messages[0]; msg != "threads/"+th.Folder+"/"+folder {
 		t.Fatalf("the job's message folder: %q", msg)
 	}
-	raw, err := r.c.ReadFile(w.ID, prefixRoot+"threads/"+th.ID+"/"+folder+"/message.eml")
+	raw, err := r.c.ReadFile(w.ID, prefixRoot+"threads/"+th.Folder+"/"+folder+"/message.eml")
 	if err != nil || !strings.Contains(string(raw), "Please file Q3.") {
 		t.Fatalf("the email in the thread's folder: %q %v", raw, err)
 	}
 	for _, name := range []string{"message.md", "intake.json", intakeAttachment} {
-		if _, err := r.c.ReadFile(w.ID, prefixRoot+"threads/"+th.ID+"/"+folder+"/"+name); err != nil {
+		if _, err := r.c.ReadFile(w.ID, prefixRoot+"threads/"+th.Folder+"/"+folder+"/"+name); err != nil {
 			t.Fatalf("intake's %s in the thread's folder: %v", name, err)
 		}
 	}
-	if _, err := r.c.ReadFile(w.ID, prefixRoot+"threads/"+th.ID+"/"+folder+"/jobspec.json"); err == nil {
+	if _, err := r.c.ReadFile(w.ID, prefixRoot+"threads/"+th.Folder+"/"+folder+"/jobspec.json"); err == nil {
 		t.Fatal("intake's jobspec.json was kept in the thread")
 	}
 	if s := r.c.MailStats(); s.Pickups != 1 || s.Max > time.Minute {
@@ -696,7 +701,7 @@ func TestAStrangersEmailIsHeldUntilRunOnce(t *testing.T) {
 	if len(th.Jobs) != 0 {
 		t.Fatalf("a held email started a job: %+v", th.Jobs)
 	}
-	held := mailFolderPath(th.ID, m[0].Folder, true)
+	held := mailFolderPath(th, m[0].Folder, true)
 	if mi := th.view().Entries[0].(mailInView); !mi.Held || mi.Verdict.Kind != "held" || mi.Files != held {
 		t.Fatalf("display: %+v", mi)
 	}
@@ -705,7 +710,7 @@ func TestAStrangersEmailIsHeldUntilRunOnce(t *testing.T) {
 	if md, err := r.c.ReadFile(w.ID, held+"message.md"); err != nil || len(md) == 0 {
 		t.Fatalf("the held email's message.md: %q %v", md, err)
 	}
-	if root, _ := r.c.ListFiles(w.ID, prefixRoot+"threads/"+th.ID+"/"); len(root) != 0 {
+	if root, _ := r.c.ListFiles(w.ID, prefixRoot+"threads/"); len(root) != 0 {
 		t.Fatalf("held mail in the worker root: %v", root)
 	}
 	mailID := th.Entries[0].ID
@@ -734,13 +739,13 @@ func TestAStrangersEmailIsHeldUntilRunOnce(t *testing.T) {
 	if left, _ := r.c.ListFiles(w.ID, held); len(left) != 0 {
 		t.Fatalf("the run email is still held: %v", left)
 	}
-	if mi := th.view().Entries[0].(mailInView); mi.Files != "root/threads/"+th.ID+"/"+m[0].Folder+"/" {
+	if mi := th.view().Entries[0].(mailInView); mi.Files != "root/threads/"+th.Folder+"/"+m[0].Folder+"/" {
 		t.Fatalf("display after running: %+v", mi)
 	}
-	if !slices.Contains(r.runner.seen[0], "threads/"+th.ID+"/"+m[0].Folder+"/message.md") {
+	if !slices.Contains(r.runner.seen[0], "threads/"+th.Folder+"/"+m[0].Folder+"/message.md") {
 		t.Fatalf("the run job didn't get the email: %v", r.runner.seen[0])
 	}
-	if msg := r.runner.messages[0]; msg != "threads/"+th.ID+"/"+mailEntries(th)[0].Folder {
+	if msg := r.runner.messages[0]; msg != "threads/"+th.Folder+"/"+mailEntries(th)[0].Folder {
 		t.Fatalf("the job's message folder: %q", msg)
 	}
 	if th.hasParticipant("eve@else.example") {
@@ -1014,7 +1019,7 @@ func TestIntakeFailures(t *testing.T) {
 	if !m.Unread || m.Instruction != "" {
 		t.Fatalf("%+v", m)
 	}
-	if _, err := r.c.ReadFile(w.ID, mailFolderPath(th.ID, m.Folder, true)+"message.eml"); err != nil {
+	if _, err := r.c.ReadFile(w.ID, mailFolderPath(th, m.Folder, true)+"message.eml"); err != nil {
 		t.Fatalf("the unread email is kept, held: %v", err)
 	}
 	// Run once, it runs with a fixed instruction, and its folder moves into
@@ -1022,7 +1027,7 @@ func TestIntakeFailures(t *testing.T) {
 	if res := r.threadOp(w.ID, th.ID, "op_r", "runHeldMail", heldMailArgs{MailID: th.Entries[0].ID}); !res.OK {
 		t.Fatalf("%+v", res)
 	}
-	if _, err := r.c.ReadFile(w.ID, prefixRoot+"threads/"+th.ID+"/"+m.Folder+"/message.eml"); err != nil {
+	if _, err := r.c.ReadFile(w.ID, prefixRoot+"threads/"+th.Folder+"/"+m.Folder+"/message.eml"); err != nil {
 		t.Fatalf("the run email in its folder: %v", err)
 	}
 	r.pass()
@@ -1210,7 +1215,7 @@ func TestAJobCantSeeAHeldStrangersEmail(t *testing.T) {
 		if strings.Contains(p, held.ID) || strings.Contains(p, "eve") {
 			t.Errorf("the requester's job saw the held email: %s", p)
 		}
-		sawOwn = sawOwn || strings.HasSuffix(p, id+"/message.md")
+		sawOwn = sawOwn || strings.HasPrefix(p, "threads/2 Q3/01 ") && strings.HasSuffix(p, "/message.md")
 	}
 	if !sawOwn {
 		t.Fatalf("the requester's job didn't get its own email: %v", r.runner.seen[0])

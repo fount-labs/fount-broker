@@ -394,7 +394,7 @@ func TestAReviewerApprovesAndANonMemberCant(t *testing.T) {
 	var threadID string
 	err := f.c.change(f.w1.ID, anyDevice, func(t *Tree) error {
 		now := time.Now().UTC()
-		th, err := newMailThread(f.w1.ID, "Q3", now)
+		th, err := newMailThread(t, f.w1.ID, "Q3", now)
 		if err != nil {
 			return err
 		}

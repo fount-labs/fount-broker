@@ -55,12 +55,20 @@ type draftEntry struct {
 	// approver's edit if they made one.
 	AgentText string `json:"agentText"`
 	Text      string `json:"text"`
-	// Files are the files the email carries, by path in the worker root,
-	// and FileHashes each one's SHA-256, hex, which a signed approval names.
-	Files      []string          `json:"files,omitempty"`
-	FileHashes map[string]string `json:"fileHashes,omitempty"`
-	InReplyTo  string            `json:"inReplyTo,omitempty"`
-	References []string          `json:"references,omitempty"`
+	// Files are the files the email carries, by path in the worker's tree:
+	// its job's outbox (jobs/<job id>/outbox/) and members' saves of them
+	// (draftfiles.go). FileHashes are each one's SHA-256, hex, which a signed
+	// approval names. Sources are the files the job was given that an outbox
+	// file's bytes equal, by its path: the version it sends.
+	Files      []string                `json:"files,omitempty"`
+	FileHashes map[string]string       `json:"fileHashes,omitempty"`
+	Sources    map[string]outboxSource `json:"sources,omitempty"`
+	// Folder is the reply's message folder in the thread once it's sent
+	// (threadfiles.go), and SentFiles its files there, by tree path.
+	Folder     string   `json:"folder,omitempty"`
+	SentFiles  []string `json:"sentFiles,omitempty"`
+	InReplyTo  string   `json:"inReplyTo,omitempty"`
+	References []string `json:"references,omitempty"`
 	// SendID is the journal record of the current bytes; MessageID and Hash
 	// are its. Binding is the hash an email approval is bound to: the
 	// recipients, the files and the bytes.
@@ -288,8 +296,20 @@ func (c *Coordinator) makeDraft(t *Tree, th *threadRecord, mb *Mailbox, rs *repl
 		d.Subject = replySubject(cmp.Or(m.Subject, th.Subject))
 		d.InReplyTo, d.References = m.MessageID, m.references()
 	}
-	for _, p := range turn.Outputs {
-		d.Files = append(d.Files, p)
+	d.Files = slices.Clone(turn.Outputs)
+	if len(d.Files) > 0 {
+		sources := map[string]outboxSource{}
+		if _, err := readJSON(t, outboxSourcesPath(turn.JobID), &sources); err != nil {
+			return false, err
+		}
+		for _, p := range d.Files {
+			if src, ok := sources[p]; ok {
+				if d.Sources == nil {
+					d.Sources = map[string]outboxSource{}
+				}
+				d.Sources[p] = src
+			}
+		}
 	}
 	id, err := th.push(rev, now, threadEntry{Kind: entryDraft, JobID: turn.JobID, Draft: d})
 	if err != nil {
@@ -297,8 +317,8 @@ func (c *Coordinator) makeDraft(t *Tree, th *threadRecord, mb *Mailbox, rs *repl
 	}
 	err = c.buildDraft(t, th, mb, rs, id, d, 1, now)
 	if isRefusal(err) && len(d.Files) > 0 {
-		// Files that can't go with it stay in the thread, unattached.
-		d.Files = nil
+		// Files that can't go with it stay in the job's outbox, unattached.
+		d.Files, d.Sources = nil, nil
 		err = c.buildDraft(t, th, mb, rs, id, d, 1, now)
 	}
 	if isRefusal(err) || errors.Is(err, ErrInvalid) {
@@ -322,7 +342,7 @@ func (c *Coordinator) buildDraft(t *Tree, th *threadRecord, mb *Mailbox, rs *rep
 	var files []outFile
 	var names []string
 	for _, p := range d.Files {
-		data, err := t.Read(prefixRoot + p)
+		data, err := t.Read(p)
 		if errors.Is(err, ErrNotFound) {
 			return refusal{code: CodeAttachmentMissing, detail: map[string]string{"path": p}}
 		}
@@ -520,9 +540,11 @@ type mailOutView struct {
 	Files  []attachmentView `json:"files,omitempty"`
 	SentID string           `json:"sentId,omitempty"`
 	Send   *sendView        `json:"send,omitempty"`
+	// Folder is the reply's message folder by tree path, ending in "/".
+	Folder string `json:"folder,omitempty"`
 }
 
-func draftViews(head entryHead, e threadEntry) []DisplayEntry {
+func draftViews(head entryHead, th *threadRecord, e threadEntry) []DisplayEntry {
 	d := e.Draft
 	head.Kind = "draft"
 	v := draftView{
@@ -532,9 +554,22 @@ func draftViews(head entryHead, e threadEntry) []DisplayEntry {
 	}
 	var files []attachmentView
 	for _, p := range d.Files {
-		files = append(files, attachmentView{Name: path.Base(p), Path: p})
+		a := attachmentView{Name: path.Base(p), Path: p}
+		if src, ok := d.Sources[p]; ok {
+			a.Source = src.Path
+		}
+		files = append(files, a)
 	}
 	v.Files = files
+	sent := ""
+	if d.Folder != "" {
+		// The email as sent: its message folder, and its files there.
+		sent = prefixRoot + th.rootThreadDir() + d.Folder + "/"
+		files = nil
+		for _, p := range d.SentFiles {
+			files = append(files, attachmentView{Name: path.Base(p), Path: p})
+		}
+	}
 	for _, ed := range d.Edits {
 		v.Edits = append(v.Edits, editView{Path: ed.Path, Name: path.Base(ed.Path), DraftRev: ed.DraftRev, By: ed.By, Member: ed.Member, At: ed.At.UTC().Format(time.RFC3339)})
 	}
@@ -546,7 +581,7 @@ func draftViews(head entryHead, e threadEntry) []DisplayEntry {
 		out = append(out, approvalView{entryHead: a, By: d.Approval.By, Via: d.Approval.Via, DraftID: e.ID, Outcome: "sent", Member: d.Approval.Member})
 		m := head
 		m.ID, m.Kind = e.ID+"-sent", "mail-out"
-		out = append(out, mailOutView{entryHead: m, To: d.To, Text: d.Text, Files: files, SentID: d.SendID, Send: d.Send})
+		out = append(out, mailOutView{entryHead: m, To: d.To, Text: d.Text, Files: files, SentID: d.SendID, Send: d.Send, Folder: sent})
 	case d.Discarded != nil:
 		a := head
 		a.ID, a.Kind = e.ID+"-approval", "approval"

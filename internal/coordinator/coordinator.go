@@ -625,15 +625,13 @@ func (c *Coordinator) runJob(ctx context.Context, job Job, w Worker, spec JobSpe
 	}
 	var given map[string]string
 	if err := c.view(w.ID, anyDevice, func(t *Tree) (err error) {
-		given, err = materialize(t, dirs)
-		return err
+		if given, err = materialize(t, dirs); err != nil {
+			return err
+		}
+		return writeListings(t, dirs.Workspace, given)
 	}); err != nil {
 		// The detail names the worker's files, which the volume mustn't hold.
 		return 0, 0, errors.New("couldn't prepare the job's folder")
-	}
-	// The empty folder is how the job learns where its outputs go.
-	if err := os.MkdirAll(filepath.Join(dirs.Workspace, "threads", job.ThreadID, "outputs", job.ID), dirMode); err != nil {
-		return 0, 0, err
 	}
 	runnerJob, err := spec.runnerJob()
 	if err != nil {
@@ -648,7 +646,7 @@ func (c *Coordinator) runJob(ctx context.Context, job Job, w Worker, spec JobSpe
 
 	result, runErr := c.cfg.Runner.Run(ctx, job.Runner, w.Account, dirs)
 	c.recordStep(job.ID, jobwire.ModeAgent, result)
-	results, collectErr := collect(dirs, given, job.ThreadID, job.ID)
+	results, collectErr := collect(dirs, given, job.ID)
 	if collectErr != nil {
 		results = &Results{Writes: map[string][]byte{
 			prefixJobs + job.ID + "/collect-error.txt": []byte(collectErr.Error()),

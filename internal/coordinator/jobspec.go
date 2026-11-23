@@ -26,7 +26,7 @@ type JobSpec struct {
 	// release-scripted runners accept. Passed to the runner unread.
 	Script json.RawMessage `json:"script,omitempty"`
 	// Message makes the job a mail turn: the email's folder in the worker
-	// root, threads/<thread id>/<folder>, as intake wrote it (intake.go). The
+	// root, threads/<thread folder>/<folder>, as intake wrote it (intake.go). The
 	// runner tells the turn where the email is and that it's data, and starts
 	// it once each attachment has been indexed or has failed to.
 	Message string `json:"message,omitempty"`
@@ -87,9 +87,9 @@ func (s JobSpec) check() error {
 		return fmt.Errorf("%w: script must be an array of at most %d bytes", ErrInvalid, maxScriptBytes)
 	}
 	if s.Message != "" {
-		folder, ok := strings.CutPrefix(s.Message, "threads/"+s.ThreadID+"/")
-		if !ok || strings.Contains(folder, "/") || checkPath(s.Message) != nil {
-			return fmt.Errorf("%w: message must be a folder of the thread, threads/<thread id>/<folder>", ErrInvalid)
+		parts := strings.Split(s.Message, "/")
+		if len(parts) != 3 || parts[0] != "threads" || checkPath(s.Message) != nil {
+			return fmt.Errorf("%w: message must be a folder of a thread, threads/<thread folder>/<folder>", ErrInvalid)
 		}
 	}
 	return nil

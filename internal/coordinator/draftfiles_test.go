@@ -41,15 +41,15 @@ func newDraftFileRig(t *testing.T, mode string) *draftFileRig {
 	r := &draftFileRig{f: f, reviewer: f.api(t, f.reviewer, "maria"), admin: f.api(t, f.admin, "dev"), reviewerID: f.reviewer.id(), adminID: f.admin.id()}
 	err := f.c.change(f.w1.ID, anyDevice, func(t *Tree) error {
 		now := time.Now().UTC()
-		th, err := newMailThread(f.w1.ID, "Q3", now)
+		th, err := newMailThread(t, f.w1.ID, "Q3", now)
 		if err != nil {
 			return err
 		}
 		r.threadID = th.ID
-		r.report = "threads/" + th.ID + "/outputs/j_done/report.md"
-		r.data = "threads/" + th.ID + "/outputs/j_done/tables/data.csv"
+		r.report = "jobs/j_done/outbox/report.md"
+		r.data = "jobs/j_done/outbox/tables/data.csv"
 		for p, body := range map[string]string{r.report: "Q3 report", r.data: "a,b\n1,2\n"} {
-			if err := t.Write(prefixRoot+p, []byte(body)); err != nil {
+			if err := t.Write(p, []byte(body)); err != nil {
 				return err
 			}
 		}
@@ -160,7 +160,7 @@ func TestASaveMakesTheNextDraftRev(t *testing.T) {
 		t.Fatalf("claim: %v", out)
 	}
 	out := r.save(t, r.reviewer, r.report, 1, "Q3 report, edited")
-	next := "threads/" + r.threadID + "/drafts/" + r.draftID + "/2/report.md"
+	next := "jobs/j_done/drafts/" + r.draftID + "/2/report.md"
 	detail, _ := out["detail"].(map[string]any)
 	if out["ok"] != true || detail["draftRev"] != "2" || detail["path"] != next {
 		t.Fatalf("the save: %v", out)
@@ -176,11 +176,11 @@ func TestASaveMakesTheNextDraftRev(t *testing.T) {
 		t.Fatalf("the save didn't clear the editing mark: %+v", d.Claim)
 	}
 	for p, want := range map[string]string{r.report: "Q3 report", next: "Q3 report, edited"} {
-		if data, err := r.f.c.ReadFile(r.f.w1.ID, prefixRoot+p); err != nil || string(data) != want {
+		if data, err := r.f.c.ReadFile(r.f.w1.ID, p); err != nil || string(data) != want {
 			t.Fatalf("%s: %q %v", p, data, err)
 		}
 	}
-	if code, _ := do(t, r.reviewer, "GET", "/v1/workers/"+r.f.w1.ID+"/files/root/"+next, ""); code != 200 {
+	if code, _ := do(t, r.reviewer, "GET", "/v1/workers/"+r.f.w1.ID+"/files/"+next, ""); code != 200 {
 		t.Fatalf("the new version doesn't open: %d", code)
 	}
 	// A retry of the same save answers as the first did.
@@ -226,7 +226,7 @@ func TestARefusedSaveChangesNothing(t *testing.T) {
 	if rec, err := r.f.c.ReadFile(r.f.w1.ID, sendPath(d.SendID)); err != nil || !strings.Contains(string(rec), `"state":"draft"`) {
 		t.Fatalf("the draft's bytes were dropped: %s %v", rec, err)
 	}
-	if paths, _ := r.f.c.ListFiles(r.f.w1.ID, prefixRoot+"threads/"+r.threadID+"/drafts/"); len(paths) != 0 {
+	if paths, _ := r.f.c.ListFiles(r.f.w1.ID, "jobs/j_done/drafts/"); len(paths) != 0 {
 		t.Fatalf("the refused save left files: %v", paths)
 	}
 }
@@ -377,7 +377,7 @@ func TestAnEditedApprovalSendsOnlyTheSignedFiles(t *testing.T) {
 	r := newDraftFileRig(t, "")
 	signed := r.draft(t).FileHashes
 	if err := r.f.c.change(r.f.w1.ID, anyDevice, func(tr *Tree) error {
-		return tr.Write(prefixRoot+r.report, []byte("SWAPPED"))
+		return tr.Write(r.report, []byte("SWAPPED"))
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +412,7 @@ func TestAnEditedApprovalSendsOnlyTheSignedFiles(t *testing.T) {
 	}
 	// Without a swap, the same edit goes.
 	if err := r.f.c.change(r.f.w1.ID, anyDevice, func(tr *Tree) error {
-		return tr.Write(prefixRoot+r.report, []byte("Q3 report"))
+		return tr.Write(r.report, []byte("Q3 report"))
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -427,9 +427,9 @@ func TestAnEditedApprovalSendsOnlyTheSignedFiles(t *testing.T) {
 func TestSendingAgainSendsOnlyTheApprovedFiles(t *testing.T) {
 	r := newSendRig(t, modeFull)
 	th, e := r.drafted()
-	file := "threads/" + th.ID + "/outputs/extra/r.txt"
+	file := "jobs/j_extra/outbox/r.txt"
 	err := r.c.change(r.w.ID, anyDevice, func(tr *Tree) error {
-		if err := tr.Write(prefixRoot+file, []byte("A")); err != nil {
+		if err := tr.Write(file, []byte("A")); err != nil {
 			return err
 		}
 		cur, err := loadThread(tr, th.ID)
@@ -483,7 +483,7 @@ func TestSendingAgainSendsOnlyTheApprovedFiles(t *testing.T) {
 		return res
 	}
 	write := func(body string) {
-		if err := r.c.change(r.w.ID, anyDevice, func(tr *Tree) error { return tr.Write(prefixRoot+file, []byte(body)) }); err != nil {
+		if err := r.c.change(r.w.ID, anyDevice, func(tr *Tree) error { return tr.Write(file, []byte(body)) }); err != nil {
 			t.Fatal(err)
 		}
 	}

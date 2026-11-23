@@ -29,9 +29,9 @@ type mailEntry struct {
 	// Held is "held" while it waits for someone, then "run" or "added".
 	// Empty for mail that ran by itself or needs nothing.
 	Held string `json:"held,omitempty"`
-	// Folder is the email's folder in the thread, a MessageFolder. While the
-	// email is held it is kept in the record, not the worker root
-	// (mailFolderPath).
+	// Folder is the email's folder in the thread, "<nn> <date> <who>"
+	// (names.go), named once when it is placed. While the email is held it
+	// is kept in the record, not the worker root (mailFolderPath).
 	Folder string `json:"folder"`
 	// Instruction is the turn's instruction intake made, kept for running
 	// held mail later. Unread says intake couldn't read the email, and the
@@ -115,8 +115,9 @@ func (th *threadRecord) mailOn(edgeID string) *threadEntry {
 }
 
 // newMailThread is a thread an email starts. Its subject is the one the
-// edge's check read from the signed headers.
-func newMailThread(workerID, subject string, now time.Time) (*threadRecord, error) {
+// edge's check read from the signed headers, and its folder the worker's next
+// thread number with it.
+func newMailThread(t *Tree, workerID, subject string, now time.Time) (*threadRecord, error) {
 	id, err := newID("thr")
 	if err != nil {
 		return nil, err
@@ -129,9 +130,13 @@ func newMailThread(workerID, subject string, now time.Time) (*threadRecord, erro
 	if subject == "" {
 		subject = "(no subject)"
 	}
+	folder, err := newThreadFolder(t, subject)
+	if err != nil {
+		return nil, err
+	}
 	return &threadRecord{
 		Schema: threadSchema, ID: id, WorkerID: workerID, Origin: "mail", SessionID: session,
-		Subject: cut(subject, maxSubjectChars), CreatedAt: now, Status: StatusIdle, Entries: []threadEntry{}, Jobs: []threadJob{},
+		Subject: cut(subject, maxSubjectChars), Folder: folder, CreatedAt: now, Status: StatusIdle, Entries: []threadEntry{}, Jobs: []threadJob{},
 	}, nil
 }
 
@@ -204,13 +209,13 @@ type mailInView struct {
 	Files string `json:"files"`
 }
 
-func mailIn(head entryHead, threadID string, e threadEntry) mailInView {
+func mailIn(head entryHead, th *threadRecord, e threadEntry) mailInView {
 	head.Kind = "mail-in"
 	m := e.Mail
 	v := mailInView{
 		entryHead: head, From: namedAddress{Name: m.SenderName, Address: m.Sender},
 		Held: m.Held == heldWaiting, HeldState: m.Held,
-		Files: mailFolderPath(threadID, m.Folder, m.Held == heldWaiting || m.Held == heldAdded),
+		Files: mailFolderPath(th, m.Folder, m.Held == heldWaiting || m.Held == heldAdded),
 	}
 	switch {
 	case m.CheckError:

@@ -114,10 +114,7 @@ func (r summaryRunner) Run(_ context.Context, _, _ string, job JobDirs) (RunResu
 	if job.Mode == jobwire.ModeIndex {
 		return RunResult{}, os.MkdirAll(job.Index, dirMode)
 	}
-	outputs, _ := filepath.Glob(filepath.Join(job.Workspace, "threads", "*", "outputs", "*"))
-	for _, out := range outputs {
-		os.WriteFile(filepath.Join(out, "recon.xlsx"), []byte("cells"), fileMode)
-	}
+	os.WriteFile(filepath.Join(job.Workspace, "outbox", "recon.xlsx"), []byte("cells"), fileMode)
 	return RunResult{Events: r.events, Enclave: r.enclave}, nil
 }
 

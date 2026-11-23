@@ -209,19 +209,20 @@ func TestTheCoordinatorRunsIntakeAndMakesTheJob(t *testing.T) {
 	if !strings.Contains(string(r.Events), "intake-finished") {
 		t.Errorf("events %s", r.Events)
 	}
-	folder := MessageFolder(m)
-	if folder != "2026-11-18-"+testEdgeID {
+	th := &threadRecord{ID: "t_1", SessionID: "s_1", Folder: "3 Q3 statements"}
+	folder := th.nextMessageFolder(time.UnixMilli(m.ReceivedAt), "Dana Lee", "dana@example.com")
+	if folder != "01 2026-11-18 Dana Lee" {
 		t.Errorf("folder %s", folder)
 	}
-	spec, err := r.Spec.JobSpec("t_1", "s_1", folder, json.RawMessage(`{"model":"m"}`))
+	spec, err := r.Spec.JobSpec(th, folder, json.RawMessage(`{"model":"m"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.Message != "threads/t_1/"+folder || spec.Instruction != "Reconcile vendor statements." {
+	if spec.Message != "threads/3 Q3 statements/"+folder || spec.Instruction != "Reconcile vendor statements." {
 		t.Fatalf("job spec %+v", spec)
 	}
 	job, _ := spec.runnerJob()
-	if !strings.Contains(string(job), `"message":"threads/t_1/`+folder+`"`) {
+	if !strings.Contains(string(job), `"message":"threads/3 Q3 statements/`+folder+`"`) {
 		t.Errorf("runner job %s", job)
 	}
 	if entries, _ := os.ReadDir(c.cfg.WorkDir); len(entries) != 0 {
@@ -249,14 +250,14 @@ func TestAFailedIntakeIsRefused(t *testing.T) {
 }
 
 func TestAMailJobNamesAFolderOfItsThread(t *testing.T) {
-	for _, message := range []string{"threads/t_1/a", "threads/t_1/2026-11-18-e1"} {
+	for _, message := range []string{"threads/t_1/a", "threads/12 Patel K-1 missing/01 2026-11-18 Dana Lee"} {
 		s := spec("t_1")
 		s.Message = message
 		if err := s.check(); err != nil {
 			t.Errorf("%s: %v", message, err)
 		}
 	}
-	for _, message := range []string{"threads/t_2/a", "threads/t_1", "threads/t_1/", "threads/t_1/a/b", "threads/t_1/..", "instructions.md", "threads/t_1/a\x00"} {
+	for _, message := range []string{"files/t_1/a", "threads/t_1", "threads/t_1/", "threads/t_1/a/b", "threads/t_1/..", "instructions.md", "threads/t_1/a\x00"} {
 		s := spec("t_1")
 		s.Message = message
 		if err := s.check(); err == nil {

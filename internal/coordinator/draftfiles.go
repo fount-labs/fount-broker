@@ -19,12 +19,12 @@ import (
 //	PUT /v1/workers/{id}/threads/{tid}/drafts/{draft}/files/{path...}?rev=N
 //	body: the file's new bytes
 //
-// path is the file's path in the worker root as the draft names it (a draft
-// view's files[].path). The save is applied under the tree's lock only if the
+// path is the file's path in the worker's tree as the draft names it (a
+// draft view's files[].path). The save is applied under the tree's lock only if the
 // draft is still pending at draft_rev N, else DRAFT_CHANGED with the current
 // draftRev; nothing is overwritten and nobody merges. It writes the bytes to
-// a new path, threads/<tid>/drafts/<draft>/<N+1>/<name>, so every version
-// stays; moves the draft to draft_rev N+1 with new message bytes, so an
+// a new path, jobs/<job id>/drafts/<draft>/<N+1>/<name>, beside the job's
+// outbox and out of every job's sight, so every version stays; moves the draft to draft_rev N+1 with new message bytes, so an
 // approval of N, by app or email, is refused; and records who saved it. The
 // answer is an OpResult whose detail names the new draftRev and path.
 //
@@ -72,9 +72,9 @@ type editView struct {
 	At       string `json:"at"`
 }
 
-// draftFilePath is where a save's bytes go in the worker root.
-func draftFilePath(threadID, draftID string, rev int, name string) string {
-	return "threads/" + threadID + "/drafts/" + draftID + "/" + strconv.Itoa(rev) + "/" + name
+// draftFilePath is where a save's bytes go in the worker's tree.
+func draftFilePath(jobID, draftID string, rev int, name string) string {
+	return prefixJobs + jobID + "/drafts/" + draftID + "/" + strconv.Itoa(rev) + "/" + name
 }
 
 // errAbort undoes a save refused after the tree was written to: the change
@@ -178,8 +178,11 @@ func (c *Coordinator) saveDraftFile(t *Tree, th *threadRecord, e *threadEntry, d
 	if err != nil {
 		return err
 	}
-	next := draftFilePath(th.ID, e.ID, d.DraftRev+1, path.Base(file))
-	if err := t.Write(prefixRoot+next, data); err != nil {
+	if checkID("job", e.JobID) != nil {
+		return refusal{code: CodeAttachmentMissing, detail: map[string]string{"path": file}}
+	}
+	next := draftFilePath(e.JobID, e.ID, d.DraftRev+1, path.Base(file))
+	if err := t.Write(next, data); err != nil {
 		return err
 	}
 	if err := c.dropDraftBytes(t, d.SendID, now); err != nil {

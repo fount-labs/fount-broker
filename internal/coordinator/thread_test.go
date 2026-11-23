@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -17,8 +18,8 @@ import (
 )
 
 // threadRunner holds each agent job until the test releases it or the job is
-// cancelled, and keeps each job's prompt. A job leaves out.md in its outputs
-// and report.md, naming its prompt, at the top of the worker's files.
+// cancelled, and keeps each job's prompt. A job leaves out.md in its outbox
+// and files/report.md, naming its prompt, in the worker's files.
 type threadRunner struct {
 	mu      sync.Mutex
 	prompts []string
@@ -39,11 +40,8 @@ func (r *threadRunner) Run(ctx context.Context, _, _ string, job JobDirs) (RunRe
 	r.mu.Lock()
 	r.prompts = append(r.prompts, rj.Prompt)
 	r.mu.Unlock()
-	outputs, _ := filepath.Glob(filepath.Join(job.Workspace, "threads", "*", "outputs", "*"))
-	for _, out := range outputs {
-		os.WriteFile(filepath.Join(out, "out.md"), []byte("done"), fileMode)
-	}
-	os.WriteFile(filepath.Join(job.Workspace, "report.md"), []byte("report: "+rj.Prompt), fileMode)
+	os.WriteFile(filepath.Join(job.Workspace, "outbox", "out.md"), []byte("done"), fileMode)
+	os.WriteFile(filepath.Join(job.Workspace, "files", "report.md"), []byte("report: "+rj.Prompt), fileMode)
 	select {
 	case <-r.release:
 		return RunResult{}, nil
@@ -318,10 +316,10 @@ func TestStartThreadRunsTheNoteAndRetriesByOpID(t *testing.T) {
 	if kinds(th) != "note turn:done" || th.Status != StatusIdle || th.StatusAt != 3 {
 		t.Fatalf("finished: %s, %s at %d", kinds(th), th.Status, th.StatusAt)
 	}
-	if out := th.Entries[1].Outputs; len(out) != 1 || out[0] != "threads/"+tid+"/outputs/"+th.Jobs[0].ID+"/out.md" {
+	if out := th.Entries[1].Outputs; len(out) != 1 || out[0] != "jobs/"+th.Jobs[0].ID+"/outbox/out.md" {
 		t.Errorf("outputs %v", out)
 	}
-	if proposed := th.Entries[1].Proposed; len(proposed) != 1 || proposed[0] != "report.md" {
+	if proposed := th.Entries[1].Proposed; len(proposed) != 1 || proposed[0] != "files/report.md" {
 		t.Errorf("proposed %v", proposed)
 	}
 	turn, ok := th.display(0)[1].(turnView)
@@ -372,7 +370,8 @@ func TestANoteReplacesARunningJob(t *testing.T) {
 		t.Fatalf("entries: %s", kinds(th))
 	}
 	// The cancelled job's outputs were dropped; the note's job's were kept.
-	paths, _ := c.ListFiles(w.ID, prefixRoot+"threads/"+tid+"/outputs/")
+	paths, _ := c.ListFiles(w.ID, "jobs/")
+	paths = slices.DeleteFunc(paths, func(p string) bool { return !strings.Contains(p, "/outbox/") })
 	if len(paths) != 1 || !strings.Contains(paths[0], th.Jobs[1].ID) {
 		t.Errorf("outputs %v", paths)
 	}
@@ -438,13 +437,13 @@ func TestAcceptAndDiscardAProposal(t *testing.T) {
 	r.release <- struct{}{}
 	th := waitThread(t, c, w, tid, "the job ends", func(th *threadRecord) bool { return th.Revision == 3 })
 	first := th.Jobs[0].ID
-	report := proposalArgs{JobID: first, Path: "report.md"}
+	report := proposalArgs{JobID: first, Path: "files/report.md"}
 
 	res := threadOp(t, c, w, tid, "op_2", 3, "acceptProposal", report)
 	if !res.OK || res.Revision != 4 {
 		t.Fatalf("accept: %+v", res)
 	}
-	if data, _ := c.ReadFile(w.ID, prefixRoot+"report.md"); string(data) != "report: Write the report" {
+	if data, _ := c.ReadFile(w.ID, prefixRoot+"files/report.md"); string(data) != "report: Write the report" {
 		t.Fatalf("the accepted file reads %q", data)
 	}
 	if left, _ := c.ListFiles(w.ID, prefixJobs+first+"/proposed/"); len(left) != 0 {
@@ -468,26 +467,26 @@ func TestAcceptAndDiscardAProposal(t *testing.T) {
 	r.release <- struct{}{}
 	th = waitThread(t, c, w, tid, "the second job ends", func(th *threadRecord) bool { return th.Status == StatusIdle })
 	second := th.Jobs[1].ID
-	if th.Entries[len(th.Entries)-1].Proposed[0] != "report.md" {
+	if th.Entries[len(th.Entries)-1].Proposed[0] != "files/report.md" {
 		t.Fatalf("the second job proposed %v", th.Entries[len(th.Entries)-1].Proposed)
 	}
 	pending := th.display(0)[len(th.Entries)-1].(turnView).Files[1]
-	if pending.Note != "Proposed" || pending.Proposal != "report.md" {
+	if pending.Note != "Proposed" || pending.Proposal != "files/report.md" {
 		t.Errorf("a pending proposal shows %+v", pending)
 	}
-	if err := c.putFile(anyDevice, w.ID, "report.md", []byte("mine")); err != nil {
+	if err := c.putFile(anyDevice, w.ID, "files/report.md", []byte("mine")); err != nil {
 		t.Fatal(err)
 	}
 	rev := th.Revision
-	moved := threadOp(t, c, w, tid, "op_5", rev, "acceptProposal", proposalArgs{JobID: second, Path: "report.md"})
-	if moved.OK || moved.Code != CodeFilesChanged || moved.Detail["path"] != "report.md" || moved.Revision != rev {
+	moved := threadOp(t, c, w, tid, "op_5", rev, "acceptProposal", proposalArgs{JobID: second, Path: "files/report.md"})
+	if moved.OK || moved.Code != CodeFilesChanged || moved.Detail["path"] != "files/report.md" || moved.Revision != rev {
 		t.Fatalf("accepting over a changed file: %+v", moved)
 	}
-	res = threadOp(t, c, w, tid, "op_6", rev, "discardProposal", proposalArgs{JobID: second, Path: "report.md"})
+	res = threadOp(t, c, w, tid, "op_6", rev, "discardProposal", proposalArgs{JobID: second, Path: "files/report.md"})
 	if !res.OK || res.Revision != rev+1 {
 		t.Fatalf("discard: %+v", res)
 	}
-	if data, _ := c.ReadFile(w.ID, prefixRoot+"report.md"); string(data) != "mine" {
+	if data, _ := c.ReadFile(w.ID, prefixRoot+"files/report.md"); string(data) != "mine" {
 		t.Errorf("discarding changed the file: %q", data)
 	}
 	th = readThread(t, c, w, tid)
