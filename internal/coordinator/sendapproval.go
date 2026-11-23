@@ -291,5 +291,5 @@ func (c *Coordinator) approve(t *Tree, th *threadRecord, e *threadEntry, a appro
 		return err
 	}
 	d.State, d.Approval, d.Send, e.Rev = draftSent, &a, r.view(), rev
-	return nil
+	return writeReplyFolder(t, th, d, now)
 }

@@ -249,7 +249,7 @@ func TestAWorkerRunsOnlyOnceItsDEKIsGranted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if data, err := tree.Read(prefixRoot + "threads/t1/outputs/" + j.ID + "/reply.md"); err != nil || !strings.Contains(string(data), "be brief") {
+	if data, err := tree.Read("jobs/" + j.ID + "/outbox/reply.md"); err != nil || !strings.Contains(string(data), "be brief") {
 		t.Errorf("the reply under the granted DEK: %q %v", data, err)
 	}
 	// The coordinator sealed my wrap, which opens to that DEK.

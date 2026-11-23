@@ -52,7 +52,7 @@ type IntakeResult struct {
 	Spec IntakeSpec
 	// Files are the email's folder, by path in it: message.eml, message.md,
 	// intake.json and attachments/…. They are written once under
-	// threads/<thread id>/<MessageFolder>/.
+	// threads/<thread folder>/<message folder>/ (names.go).
 	Files map[string][]byte
 	// Events and Stderr are the runner's, for the job's logs.
 	Events, Stderr []byte
@@ -290,8 +290,8 @@ func ReadIntake(out, edgeID string) (IntakeSpec, map[string][]byte, error) {
 // worker's account as a job's is: errRunnersBusy when there is none, and the
 // email waits. The worker's standing instructions come from its
 // instructions.md. Nothing is written to the
-// worker's tree: the mail loop puts Files in the thread it picks, with
-// MessageFolder, and queues r.Spec.JobSpec.
+// worker's tree: the mail loop puts Files in the thread it picks, in the
+// thread's next message folder, and queues r.Spec.JobSpec.
 func (c *Coordinator) Intake(ctx context.Context, workerID string, m *Mail, req IntakeRequest) (IntakeResult, error) {
 	if c.cfg.Intake == nil {
 		return IntakeResult{}, fmt.Errorf("%w: no intake runner", ErrIntake)
@@ -348,19 +348,12 @@ func (c *Coordinator) Intake(ctx context.Context, workerID string, m *Mail, req 
 	return r, nil
 }
 
-// MessageFolder is an email's folder name in its thread: the day it arrived
-// (UTC) and its edge ID (m4-cloud-runners.md §5.5).
-func MessageFolder(m *Mail) string {
-	return time.UnixMilli(m.ReceivedAt).UTC().Format("2006-01-02") + "-" + m.EdgeID
-}
-
-// JobSpec is the job for the email on threadID, its folder there folder (a
-// MessageFolder), with the model settings config. The result is checked as
-// every JobSpec is.
-func (s IntakeSpec) JobSpec(threadID, sessionID, folder string, config json.RawMessage) (JobSpec, error) {
+// JobSpec is the job for the email on th, its folder there folder, with the
+// model settings config. The result is checked as every JobSpec is.
+func (s IntakeSpec) JobSpec(th *threadRecord, folder string, config json.RawMessage) (JobSpec, error) {
 	spec := JobSpec{
-		ThreadID: threadID, SessionID: sessionID, Instruction: s.Instruction, Config: config,
-		Message: "threads/" + threadID + "/" + folder,
+		ThreadID: th.ID, SessionID: th.SessionID, Instruction: s.Instruction, Config: config,
+		Message: th.rootThreadDir() + folder,
 	}
 	return spec, spec.check()
 }

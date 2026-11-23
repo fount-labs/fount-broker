@@ -108,12 +108,12 @@ func TestMailOpsCheckTheRole(t *testing.T) {
 
 	// Held mail: the reviewer may run it, not add its sender.
 	f.c.cfg.JobConfig = json.RawMessage(`{"model":"m"}`)
-	th, err := newMailThread(f.w1.ID, "hello", time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	entry := &mailEntry{EdgeID: "e_9", Sender: "eve@else.example", Verdict: "unknown", Held: heldWaiting, Folder: "2026-11-19-e_9"}
-	if err := f.c.change(f.w1.ID, anyDevice, func(tr *Tree) error {
+	var th *threadRecord
+	entry := &mailEntry{EdgeID: "e_9", Sender: "eve@else.example", Verdict: "unknown", Held: heldWaiting, Folder: "01 2026-11-19 eve@else.example"}
+	if err := f.c.change(f.w1.ID, anyDevice, func(tr *Tree) (err error) {
+		if th, err = newMailThread(tr, f.w1.ID, "hello", time.Now()); err != nil {
+			return err
+		}
 		if _, err := threadHandle(tr, th); err != nil {
 			return err
 		}

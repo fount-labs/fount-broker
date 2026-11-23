@@ -164,11 +164,11 @@ func (c *Coordinator) memberOf(workerID, device string) *Member {
 	return nil
 }
 
-// fileHashes are each attachment's SHA-256, hex, from the worker root.
+// fileHashes are each attachment's SHA-256, hex, by its tree path.
 func fileHashes(t *Tree, paths []string) (map[string]string, error) {
 	out := map[string]string{}
 	for _, p := range paths {
-		data, err := t.Read(prefixRoot + p)
+		data, err := t.Read(p)
 		if err != nil {
 			return nil, err
 		}

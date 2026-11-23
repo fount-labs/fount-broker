@@ -575,7 +575,7 @@ func (c *Coordinator) applyWorkerOp(device, workerID string, env workerOpEnvelop
 			result = r
 			return nil
 		}
-		th, ids, e, err := c.startThread(workerID, device, args)
+		th, ids, e, err := c.startThread(t, workerID, device, args)
 		var r refusal
 		if errors.As(err, &r) {
 			result = refused(0, r.code)
@@ -598,7 +598,7 @@ func (c *Coordinator) applyWorkerOp(device, workerID string, env workerOpEnvelop
 	return result, err
 }
 
-func (c *Coordinator) startThread(workerID, device string, a noteArgs) (*threadRecord, []string, effects, error) {
+func (c *Coordinator) startThread(t *Tree, workerID, device string, a noteArgs) (*threadRecord, []string, effects, error) {
 	text, err := noteText(a.Text)
 	if err != nil {
 		return nil, nil, effects{}, err
@@ -618,6 +618,10 @@ func (c *Coordinator) startThread(workerID, device string, a noteArgs) (*threadR
 	}
 	jobID, spec, err := c.noteJob(th, text, false)
 	if err != nil {
+		return nil, nil, effects{}, err
+	}
+	// Numbered once nothing can refuse it, so a refusal takes no number.
+	if th.Folder, err = newThreadFolder(t, th.Subject); err != nil {
 		return nil, nil, effects{}, err
 	}
 	const rev = 1

@@ -68,8 +68,13 @@ type threadRecord struct {
 	Participants []string `json:"participants,omitempty"`
 	// SessionID is the runner's session for every job on the thread, so
 	// each turn continues the last.
-	SessionID string       `json:"sessionId"`
-	Subject   string       `json:"subject"`
+	SessionID string `json:"sessionId"`
+	Subject   string `json:"subject"`
+	// Folder is the thread's folder under threads/ in the worker root,
+	// "<n> <subject>" (names.go), fixed when the thread is made. Messages
+	// counts its message folders, mail in and replies out.
+	Folder    string       `json:"folder"`
+	Messages  int          `json:"messages,omitempty"`
 	Revision  uint64       `json:"revision"`
 	Status    ThreadStatus `json:"status"`
 	StatusAt  uint64       `json:"statusAt"`
@@ -116,9 +121,10 @@ type threadEntry struct {
 	// A note's author and text, and the job it started.
 	Device string `json:"device,omitempty"`
 	Text   string `json:"text,omitempty"`
-	// A turn's job, its state and, once it ends, the files it left in the
-	// thread's outputs/<job id>/, by path in the worker root, and the files
-	// it proposed (jobs/<job id>/proposed/), by the path each would have.
+	// A turn's job, its state and, once it ends, the files it put in
+	// outbox/, by tree path (jobs/<job id>/outbox/…), and the files it
+	// proposed (jobs/<job id>/proposed/), by the path each would have in the
+	// worker root.
 	// Decided is what became of each proposal accepted or discarded, by
 	// path; the rest are pending. A note names its job here too.
 	JobID    string            `json:"jobId,omitempty"`
@@ -294,8 +300,8 @@ type jobView struct {
 // opens, live, when its job runs, and ends done when the job finishes or
 // failed when it fails. A job the thread already saw end is never changed
 // again: a cancel the thread recorded stands even if the job finished first.
-// outputs lists a finished job's outputs. It reports whether anything changed.
-// jobFiles are what a finished job left: its outputs and its proposals, and
+// left lists what a finished job left. It reports whether anything changed.
+// jobFiles are what a finished job left: its outbox and its proposals, and
 // its turn summary, nil when its events have none that holds.
 type jobFiles struct {
 	outputs, proposed []string
@@ -430,9 +436,7 @@ func (c *Coordinator) follow(t *Tree, th *threadRecord) (bool, error) {
 	// here when its turn ends.
 	left := func(jobID string) jobFiles {
 		var f jobFiles
-		for _, p := range t.List(prefixRoot + "threads/" + th.ID + "/outputs/" + jobID + "/") {
-			f.outputs = append(f.outputs, strings.TrimPrefix(p, prefixRoot))
-		}
+		f.outputs = t.List(jobOutbox(jobID))
 		proposed := prefixJobs + jobID + "/proposed/"
 		for _, p := range t.List(proposed) {
 			f.proposed = append(f.proposed, strings.TrimPrefix(p, proposed))
@@ -529,7 +533,7 @@ type noteView struct {
 }
 
 // turnView is an agent turn: its steps and final text from the runner's turn
-// summary, its outputs and the files it proposed, as Desktop's turns are
+// summary, its outbox files and the files it proposed, as Desktop's turns are
 // drawn. A pending proposal names its path, for opening it to Accept or
 // Discard.
 type turnView struct {
@@ -550,10 +554,14 @@ type turnView struct {
 
 type attachmentView struct {
 	Name string `json:"name"`
-	// Path is a job output's or a draft file's path in the worker root,
-	// which the files route reads as root/<path>.
+	// Path is a file's path in the worker's tree, as the files route reads
+	// it: an outbox file's (jobs/<job id>/outbox/…), a draft's save of one
+	// (jobs/<job id>/drafts/…) or a sent reply's (root/threads/…).
 	Path string `json:"path,omitempty"`
-	Note string `json:"note,omitempty"`
+	// Source is the worker-root path of the given file an outbox file's
+	// bytes equal: the version a reply sends.
+	Source string `json:"source,omitempty"`
+	Note   string `json:"note,omitempty"`
 	// Proposal is a pending proposal's path in the worker root.
 	Proposal string `json:"proposal,omitempty"`
 }
@@ -647,9 +655,9 @@ func (th *threadRecord) display(since uint64) []DisplayEntry {
 			head.Kind = "question"
 			out = append(out, questionIn(head, e))
 		case entryMail:
-			out = append(out, mailIn(head, th.ID, e))
+			out = append(out, mailIn(head, th, e))
 		case entryDraft:
-			out = append(out, draftViews(head, e)...)
+			out = append(out, draftViews(head, th, e)...)
 		}
 	}
 	return out

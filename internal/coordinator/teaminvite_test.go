@@ -340,7 +340,7 @@ func TestTheDraftViewCarriesWhatAnApprovalSigns(t *testing.T) {
 	d := &draftEntry{State: draftSent, DraftRev: 2, To: []string{"dana@example.com"}, Subject: "Re: Q3", Text: "Hi",
 		Files: []string{"out/a.pdf"}, FileHashes: map[string]string{"out/a.pdf": "aa"}, Claim: cl,
 		Approval: &approval{By: "maria@firm.com", Via: viaApp, Member: "m_reviewer"}}
-	raw, err := json.Marshal(draftViews(entryHead{ID: "e_1"}, threadEntry{ID: "e_1", Kind: entryDraft, Draft: d}))
+	raw, err := json.Marshal(draftViews(entryHead{ID: "e_1"}, &threadRecord{}, threadEntry{ID: "e_1", Kind: entryDraft, Draft: d}))
 	if err != nil {
 		t.Fatal(err)
 	}
