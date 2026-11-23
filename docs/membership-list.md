@@ -462,8 +462,17 @@ separate and is what clients see. Today `commitSecurity` does step 1 only.
   admin's devices — marks the address signing key of **every** team worker for rotation at the
   edge (lane M), in the same append (`Team.Rotate`). A removed device held those keys' wraps
   whichever of the three it was.
-- **Removal doesn't rotate the DEK** (`cloud-worker-devices.md` decision 6). A removed member's
-  devices are refused at once; what they already read can't be taken back, and the dialog says so.
+- **Losing reach rotates the DEK** (team security review 2026-11-23, finding 2; `dekepoch.go`).
+  Removing a member or a device, unassigning a reviewer or lowering an admin off a worker gives
+  each worker that device reached a new DEK epoch, in the same append: the coordinator makes it,
+  wraps it under its wrapping key and to every device that still reaches the worker, and seals
+  every new object, and at once the manifest, under it. Old epochs are kept, not re-encrypted: the
+  removed device held them and may have copied those objects already. Each manifest entry names
+  its object's epoch; the manifest is under the current one, which the volume records. A device
+  that reaches the worker gets a wrap of every epoch (`workerView.epochs`, each with the
+  commitment its wrap is bound to); epoch 0 is still the list-signed DEK in `wrap` and
+  `dekCommitment`, so the list's commitment never changes. A removed member's devices are refused
+  at once; what they already read can't be taken back, and the dialog says so.
 
 ---
 
@@ -509,7 +518,7 @@ The review in `launch-plan.md` T and `teams.md` §11 should take each of these.
 | 8 | A partitioned old-generation coordinator keeps admitting, removing or serving | It can't move the vault counter, so it can't append; H makes it stop serving. |
 | 9 | A removed member keeps a session open | Authorization is per request against the current state, and rechecked under the tree's lock. |
 | 10 | A demoted admin's admin-only write (a file, a raw job) in flight when the list lands | Its route check passed before the list; the tree path rechecks the device, not the role, so the write can finish. Narrow: they were admin a moment before. A removed member's can't. |
-| 11 | A removed member keeps the DEK they opened | Accepted: no DEK rotation on removal. Address keys rotate when an admin is lost (§5). |
+| 11 | A removed member keeps the DEK they opened | It opens only what the worker stored before the removal: the removal starts a new DEK epoch, and after it the manifest opens only under the current epoch (or, until the reseal is recorded, the one before), so a forged old-epoch manifest is refused too. Address keys rotate when an admin is lost (§5). |
 | 12 | An invite link forwarded or intercepted | Single use, expiring, and only for an account whose verified email is the invite's. Whoever controls that mailbox can accept it, as with every email invite; admins are notified and can remove the device. |
 | 12a | A member's passkey phished or synced to an attacker's device | The attacker also needs a sign-in to the member's account. The assertion's rp, origin and user verification are checked; the device is admitted at once, the owner and member are emailed and the member's other devices show it with Remove; an admin's list removes it, and removing `rec` stops another. A copied authenticator that counts shows as a sign count that doesn't rise. A device a record admits signs no list until a list includes it (H3, `teamsigner.go`), except that a device an admin's passkey added (a passkey join, or the invite record of an admin invited again) signs at once when no admin, that one included, has a device a list included: else an admin whose every device was removed could never sign again. While the owner keeps a listed device, a phished passkey's device reaches the workers but can't drop the owner's devices; the listed device includes it, or Remove drops it. An admin who lost every computer while the log still lists one starts a recovery: their passkey's device signs 7 days later unless a list ends it first, and every admin is emailed at the start (§2.3.1). A phished passkey is then a takeover only if no admin removes the device for 7 days. |
 | 13 | Parser differential between Desktop (serde) and the coordinator (Go) on a signed list | Strict decoding with unknown fields and duplicate keys refused on both sides; the stored bytes are what is hashed; shared test vectors (`testdata/team-vectors.json`, `team-passkey-join-vectors.json` (with the invite's passkey), `team-passkey-vouch-vectors.json`). A passkey's client data is one flat object read by exact key with no escapes, so both read the same fields; the vectors carry a high-S signature, nested, numeric, repeated and case-varied keys. |

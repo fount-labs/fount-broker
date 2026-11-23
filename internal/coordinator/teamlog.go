@@ -586,6 +586,7 @@ func (c *Coordinator) commitEntry(team string, prior *teamState, entry TeamEntry
 	}
 	// Each worker of the team as it will stand, and each it leaves.
 	changed := map[string]*Worker{}
+	var rotated []string
 	for _, id := range slices.Sorted(maps.Keys(next.workers)) {
 		w := c.state.Workers[id]
 		if w == nil {
@@ -596,6 +597,9 @@ func (c *Coordinator) commitEntry(team string, prior *teamState, entry TeamEntry
 			return nil, err
 		}
 		changed[id] = nw
+		if len(nw.DEKEpochs) > len(w.DEKEpochs) {
+			rotated = append(rotated, id)
+		}
 	}
 	var removed []Worker
 	if prior != nil {
@@ -664,6 +668,7 @@ func (c *Coordinator) commitEntry(team string, prior *teamState, entry TeamEntry
 	for _, w := range removed {
 		delete(c.locks, w.ID)
 	}
+	c.resealAll(rotated)
 	if c.mail != nil {
 		// Who hears of the team's workers by email may have changed
 		// (reviewers.go): their next mail pass sends the edge the list.
@@ -677,7 +682,9 @@ func (c *Coordinator) commitEntry(team string, prior *teamState, entry TeamEntry
 // followTeam is w as the team's state next has it: in the team, with a wrap
 // of its DEK for each device that reaches it. A wrap a device already has for
 // the same X25519 key is kept. dek is a worker's new to the team; one already
-// in it is unwrapped from the volume. Called with c.mu held.
+// in it is unwrapped from the volume. When a device that reached it no longer
+// does, the worker gets a new DEK epoch, and every device that reaches it a
+// wrap of each epoch (dekepoch.go). Called with c.mu held.
 func (c *Coordinator) followTeam(team string, w *Worker, next *teamState, dek DEK) (*Worker, error) {
 	nw := *w
 	if w.Team == "" {
@@ -694,8 +701,23 @@ func (c *Coordinator) followTeam(team string, w *Worker, next *teamState, dek DE
 		dek = held
 	}
 	defer clear(dek[:])
+	reachers := next.reachers(w.ID)
+	if w.Team != "" && lostReach(w.Devices, reachers) {
+		if err := c.newEpoch(&nw); err != nil {
+			return nil, err
+		}
+	}
+	ring := SingleKeyring(dek)
+	if len(nw.DEKEpochs) > 0 {
+		ring.Clear()
+		var err error
+		if ring, err = c.cfg.Key.Keyring(&nw); err != nil {
+			return nil, err
+		}
+	}
+	defer func() { ring.Clear() }()
 	nw.Devices = nil
-	for _, d := range next.reachers(w.ID) {
+	for _, d := range reachers {
 		var wrap []byte
 		for _, old := range w.Devices {
 			if old.ID == d.ID && old.Wrap != nil && subtle.ConstantTimeCompare(old.Enc, d.Enc) == 1 {
@@ -708,7 +730,11 @@ func (c *Coordinator) followTeam(team string, w *Worker, next *teamState, dek DE
 				return nil, err
 			}
 		}
-		nw.Devices = append(nw.Devices, Device{ID: d.ID, Key: d.Key, Enc: d.Enc, Wrap: wrap})
+		epochWraps, err := epochWrapsFor(w.Devices, d, nw.Account, w.ID, ring)
+		if err != nil {
+			return nil, err
+		}
+		nw.Devices = append(nw.Devices, Device{ID: d.ID, Key: d.Key, Enc: d.Enc, Wrap: wrap, EpochWraps: epochWraps})
 	}
 	return &nw, nil
 }

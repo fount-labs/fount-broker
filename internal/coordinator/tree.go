@@ -14,8 +14,9 @@ import (
 const manifestObject = "manifest"
 
 // A Tree is one worker's files: every object the coordinator keeps for it, under
-// its DEK. The manifest maps each path to an object and the plaintext's hash, and
-// is itself sealed, so the Store learns nothing but sizes.
+// its DEK. The manifest maps each path to an object, the DEK epoch it is under
+// (dekepoch.go) and the plaintext's hash, and is itself sealed, so the Store
+// learns nothing but sizes.
 //
 // Objects are written once under fresh IDs. Changes are staged, then Commit
 // writes a new manifest with the next version: a crash before that leaves the
@@ -23,7 +24,9 @@ const manifestObject = "manifest"
 type Tree struct {
 	store    Store
 	workerID string
-	dek      DEK
+	keys     *Keyring
+	// manifestEpoch is the epoch the stored manifest is under.
+	manifestEpoch uint32
 	// secret seals what only the coordinator reads (treesecret.go); nil on
 	// a tree opened without it.
 	secret   []byte
@@ -42,16 +45,25 @@ type entry struct {
 	Object string `json:"object"`
 	Size   int64  `json:"size"`
 	SHA256 string `json:"sha256"`
+	// Epoch is the DEK epoch the object is sealed under; 0 for one from
+	// before epochs.
+	Epoch uint32 `json:"epoch,omitempty"`
 }
 
 // ErrRolledBack means the Store returned a manifest older than the volume's
 // record of it (fount-cloud-agents.md §4.2, "Rollback").
 var ErrRolledBack = errors.New("the stored manifest is older than the last one committed")
 
-// LoadTree opens a worker's tree. minVersion is the last version the volume
-// recorded as committed; anything older is refused.
+// LoadTree opens the tree of a worker with one DEK epoch.
 func LoadTree(store Store, workerID string, dek DEK, minVersion uint64) (*Tree, error) {
-	t := &Tree{store: store, workerID: workerID, dek: dek, manifest: manifest{Entries: map[string]entry{}}}
+	return LoadTreeKeys(store, workerID, SingleKeyring(dek), minVersion)
+}
+
+// LoadTreeKeys opens a worker's tree with its DEK epochs, which it copies.
+// minVersion is the last version the volume recorded as committed; anything
+// older is refused.
+func LoadTreeKeys(store Store, workerID string, keys *Keyring, minVersion uint64) (*Tree, error) {
+	t := &Tree{store: store, workerID: workerID, keys: keys.clone(), manifestEpoch: keys.Current(), manifest: manifest{Entries: map[string]entry{}}}
 	sealed, err := store.Get(workerID, manifestObject)
 	switch {
 	case errors.Is(err, ErrNotFound) && minVersion == 0:
@@ -61,10 +73,11 @@ func LoadTree(store Store, workerID string, dek DEK, minVersion uint64) (*Tree, 
 	case err != nil:
 		return nil, err
 	}
-	plain, err := open(dek[:], sealed, aad(purposeManifest, workerID, ""))
+	plain, epoch, err := openManifest(t.keys, workerID, sealed)
 	if err != nil {
-		return nil, fmt.Errorf("worker %s manifest: %w", workerID, err)
+		return nil, err
 	}
+	t.manifestEpoch = epoch
 	if err := json.Unmarshal(plain, &t.manifest); err != nil {
 		return nil, fmt.Errorf("worker %s manifest: %w", workerID, err)
 	}
@@ -75,6 +88,21 @@ func LoadTree(store Store, workerID string, dek DEK, minVersion uint64) (*Tree, 
 		t.manifest.Entries = map[string]entry{}
 	}
 	return t, nil
+}
+
+// openManifest opens a worker's sealed manifest under an epoch it may be
+// under, and says which.
+func openManifest(keys *Keyring, workerID string, sealed []byte) ([]byte, uint32, error) {
+	for _, n := range keys.manifestEpochs() {
+		k, err := keys.key(n)
+		if err != nil {
+			return nil, 0, err
+		}
+		if plain, err := open(k[:], sealed, epochAAD(purposeManifest, workerID, "", n)); err == nil {
+			return plain, n, nil
+		}
+	}
+	return nil, 0, fmt.Errorf("worker %s manifest (DEK epoch %d): %w", workerID, keys.Current(), errOpen)
 }
 
 func (t *Tree) Version() uint64 { return t.manifest.Version }
@@ -112,7 +140,11 @@ func (t *Tree) Read(path string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	plain, err := open(t.dek[:], sealed, aad(purposeBlob, t.workerID, e.Object))
+	k, err := t.keys.key(e.Epoch)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	plain, err := open(k[:], sealed, epochAAD(purposeBlob, t.workerID, e.Object, e.Epoch))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -137,7 +169,12 @@ func (t *Tree) Write(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	sealed, err := seal(t.dek[:], data, aad(purposeBlob, t.workerID, id))
+	epoch := t.keys.Current()
+	k, err := t.keys.key(epoch)
+	if err != nil {
+		return err
+	}
+	sealed, err := seal(k[:], data, epochAAD(purposeBlob, t.workerID, id, epoch))
 	if err != nil {
 		return err
 	}
@@ -147,7 +184,7 @@ func (t *Tree) Write(path string, data []byte) error {
 	if old, ok := t.manifest.Entries[path]; ok {
 		t.garbage = append(t.garbage, old.Object)
 	}
-	t.manifest.Entries[path] = entry{Object: id, Size: int64(len(data)), SHA256: hash}
+	t.manifest.Entries[path] = entry{Object: id, Size: int64(len(data)), SHA256: hash, Epoch: epoch}
 	t.dirty = true
 	return nil
 }
@@ -172,7 +209,12 @@ func (t *Tree) Commit() (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	sealed, err := seal(t.dek[:], plain, aad(purposeManifest, t.workerID, ""))
+	epoch := t.keys.Current()
+	k, err := t.keys.key(epoch)
+	if err != nil {
+		return 0, err
+	}
+	sealed, err := seal(k[:], plain, epochAAD(purposeManifest, t.workerID, "", epoch))
 	if err != nil {
 		return 0, err
 	}
@@ -180,6 +222,7 @@ func (t *Tree) Commit() (uint64, error) {
 		return 0, fmt.Errorf("worker %s manifest: %w", t.workerID, err)
 	}
 	t.manifest = next
+	t.manifestEpoch = epoch
 	t.dirty = false
 	for _, id := range t.garbage {
 		// An object left behind costs storage, not correctness.
@@ -188,6 +231,9 @@ func (t *Tree) Commit() (uint64, error) {
 	t.garbage = nil
 	return next.Version, nil
 }
+
+// ManifestEpoch is the DEK epoch the stored manifest is under.
+func (t *Tree) ManifestEpoch() uint32 { return t.manifestEpoch }
 
 func newObjectID() (string, error) {
 	var b [16]byte

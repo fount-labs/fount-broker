@@ -170,8 +170,8 @@ func checkKey(key WrappingKey, state *State) error {
 		if state.Workers[id].WrappedDEK == nil {
 			continue
 		}
-		dek, err := key.Unwrap(id, state.Workers[id].WrappedDEK)
-		clear(dek[:])
+		ring, err := key.Keyring(state.Workers[id])
+		ring.Clear()
 		if err != nil {
 			return fmt.Errorf("the wrapping key doesn't fit this volume: %w", err)
 		}
@@ -840,8 +840,8 @@ func (c *Coordinator) changeThen(workerID, device string, fn func(*Tree) error, 
 	switch {
 	case !ok:
 		err = ErrNoWorker
-	case held.Version != version:
-		held.Version = version
+	case held.Version != version || held.ManifestEpoch != t.ManifestEpoch():
+		held.Version, held.ManifestEpoch = version, t.ManifestEpoch()
 		err = c.state.Save(c.cfg.StateDir)
 	}
 	c.mu.Unlock()
@@ -877,10 +877,10 @@ func (c *Coordinator) loadTree(w Worker, device string) (*Tree, error) {
 	c.mu.Lock()
 	held, ok := c.state.Workers[w.ID]
 	var version uint64
-	var wrapped []byte
+	var cur Worker
 	if ok {
 		ok = held.mayAct(device)
-		version, wrapped = held.Version, held.WrappedDEK
+		version, cur = held.Version, *held
 	}
 	c.mu.Unlock()
 	switch {
@@ -888,15 +888,15 @@ func (c *Coordinator) loadTree(w Worker, device string) (*Tree, error) {
 		// Revoked, or its device removed, while its caller waited for the
 		// lock.
 		return nil, ErrNoWorker
-	case wrapped == nil:
+	case cur.WrappedDEK == nil:
 		return nil, ErrNotGranted
 	}
-	dek, err := c.cfg.Key.Unwrap(w.ID, wrapped)
+	ring, err := c.cfg.Key.Keyring(&cur)
 	if err != nil {
 		return nil, err
 	}
-	defer clear(dek[:])
-	t, err := LoadTree(c.cfg.Store, w.ID, dek, version)
+	defer ring.Clear()
+	t, err := LoadTreeKeys(c.cfg.Store, w.ID, ring, version)
 	if t != nil {
 		t.secret = c.treeSecret(w.ID)
 	}

@@ -474,14 +474,14 @@ func (c *Coordinator) backupTree(ctx context.Context, w Worker) (backedTree, err
 	if err != nil {
 		return backedTree{}, err
 	}
-	dek, err := c.cfg.Key.Unwrap(w.ID, w.WrappedDEK)
+	ring, err := c.cfg.Key.Keyring(&w)
 	if err != nil {
 		return backedTree{}, err
 	}
-	plain, err := open(dek[:], sealed, aad(purposeManifest, w.ID, ""))
-	clear(dek[:])
+	plain, _, err := openManifest(ring, w.ID, sealed)
+	ring.Clear()
 	if err != nil {
-		return backedTree{}, fmt.Errorf("manifest: %w", err)
+		return backedTree{}, err
 	}
 	var m manifest
 	if err := json.Unmarshal(plain, &m); err != nil {
@@ -748,12 +748,12 @@ func (c *Coordinator) backedUpTree(ctx context.Context, b BackupBucket, root *ba
 	if !ok {
 		return nil, ErrNoWorker
 	}
-	dek, err := c.cfg.Key.Unwrap(w.ID, w.WrappedDEK)
+	ring, err := c.cfg.Key.Keyring(w)
 	if err != nil {
 		return nil, err
 	}
-	defer clear(dek[:])
-	t, err := LoadTree(bucketTree{ctx: ctx, bucket: b, workerID: w.ID, manifest: bt.Manifest}, w.ID, dek, 0)
+	defer ring.Clear()
+	t, err := LoadTreeKeys(bucketTree{ctx: ctx, bucket: b, workerID: w.ID, manifest: bt.Manifest}, w.ID, ring, 0)
 	if t != nil {
 		t.secret = c.treeSecret(w.ID)
 	}

@@ -75,6 +75,8 @@ type Device struct {
 	Key  []byte `json:"key"`
 	Enc  []byte `json:"enc,omitempty"`
 	Wrap []byte `json:"wrap,omitempty"`
+	// EpochWraps are its wraps of the worker's DEK epochs after the first.
+	EpochWraps []EpochWrap `json:"epochWraps,omitempty"`
 }
 
 var (
@@ -201,12 +203,12 @@ func (c *Coordinator) deleteObjects(w Worker) {
 	if w.WrappedDEK == nil {
 		return
 	}
-	dek, err := c.cfg.Key.Unwrap(w.ID, w.WrappedDEK)
+	ring, err := c.cfg.Key.Keyring(&w)
 	if err != nil {
 		return
 	}
-	t, err := LoadTree(c.cfg.Store, w.ID, dek, w.Version)
-	clear(dek[:])
+	t, err := LoadTreeKeys(c.cfg.Store, w.ID, ring, w.Version)
+	ring.Clear()
 	if err != nil {
 		return
 	}
