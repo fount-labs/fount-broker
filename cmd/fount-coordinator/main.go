@@ -12,6 +12,7 @@
 //	   [--cloud-credentials-only]] [--mail [--mail-generation-authority <file>]]
 //	  [--backup-bucket https://<bucket>.s3.<region>.amazonaws.com --backup-region <region>
 //	   [--backup-forwarder <host:port>] [--dev-vault <file>] [--restore latest|roots/<key> [--restore-dry-run]]]
+//	  [--volume <mount>]
 //	fount-coordinator health [http://127.0.0.1:8790/health]
 //
 // The runner command is started once per job with fount-runner's --workspace,
@@ -169,6 +170,8 @@ func run() error {
 	entitlementsAPI := flag.String("mail-entitlements", "", "with --mail: fount-infra's API, https://api.fount.sh/, which issues Cloud mailboxes' entitlements to this coordinator (POST coordinator/mail-entitlement, signed with the job-signing key), so they renew with every laptop closed; without it nothing renews them")
 	mailAuthority := flag.String("mail-generation-authority", "", "with --mail and --wrapping-key dev: a file holding the Ed25519 seed a dev edge has as COORDINATOR_AUTHORITY_KEY, made on first run, or env:NAME for a base64 seed in $NAME; the coordinator signs its own generation certificates with it, standing in for the vault")
 	audience := flag.String("client-audience", os.Getenv("FOUNT_CLIENT_AUDIENCE"), "with --client-listen: the coordinator's origin, https://<host>, which worker grants must name")
+	vol := volumeFlags{}
+	flag.StringVar(&vol.name, "volume", "", "the Tinfoil encrypted volume mount --dir is on, by its name in tinfoil-config.yml's volumes: the coordinator opens it before reading --dir, keyed from the vaults' wrapping key, or with --wrapping-key dev from the --mail-generation-authority seed")
 	backups := backupFlags{getenv: os.Getenv}
 	flag.StringVar(&backups.bucket, "backup-bucket", os.Getenv("FOUNT_BACKUP_BUCKET"), "back the volume up to this S3 bucket, its endpoint https://<bucket>.s3.<region>.amazonaws.com; credentials from the vault with --wrapping-key vault, else from $AWS_ACCESS_KEY_ID and $AWS_SECRET_ACCESS_KEY")
 	flag.StringVar(&backups.region, "backup-region", os.Getenv("FOUNT_BACKUP_REGION"), "with --backup-bucket: the bucket's region")
@@ -263,6 +266,10 @@ func run() error {
 	if err := keys.check(); err != nil {
 		return err
 	}
+	vol.mode, vol.authority = keys.mode, *mailAuthority
+	if err := vol.check(); err != nil {
+		return err
+	}
 	backups.keyMode, backups.dir, backups.authority, backups.mail = keys.mode, *dir, keys.authority, keys.mail
 	if err := backups.check(); err != nil {
 		return err
@@ -284,7 +291,7 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	status := &keyStatus{Mode: keys.mode, State: "waiting", Since: time.Now().UTC()}
+	status := &keyStatus{Mode: keys.mode, State: "waiting", Since: time.Now().UTC(), vol: volumeStatus{State: "none"}}
 	var runners func() any
 	if hub != nil {
 		runners = func() any { return hub.Runners() }
@@ -315,12 +322,28 @@ func run() error {
 		}
 		serveBeyond(ctx, stop, "client channel", clientLn, withControl(clientAPI(statusAPI(status, &jobs, runners), &channelReady, *test, &testReady, linkIn), control))
 	}
+	// The dev wrapping key is a file on the volume, so its volume opens
+	// first; the vaults' key opens the volume.
+	devVolumeKey, err := vol.devKey()
+	if err != nil {
+		return err
+	}
+	if devVolumeKey != nil {
+		if err := openVolume(ctx, vol, devVolumeKey, status); err != nil || ctx.Err() != nil {
+			return err
+		}
+	}
 	key, side, err := wrappingKey(ctx, keys, status)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
 		}
 		return err
+	}
+	if vol.name != "" && keys.mode == keyVault {
+		if err := openVolume(ctx, vol, coordinator.VolumeKey(&key), status); err != nil || ctx.Err() != nil {
+			return err
+		}
 	}
 	// Intake runs where jobs do: a local runner command, or the runner
 	// enclave as an intake job.

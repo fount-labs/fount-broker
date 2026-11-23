@@ -107,6 +107,24 @@ type keyStatus struct {
 	Generation uint64    `json:"generation,omitempty"`
 	Failures   int       `json:"failed_rounds,omitempty"`
 	LastError  string    `json:"last_error,omitempty"`
+	// vol is /status's "volume", under mu too.
+	vol volumeStatus
+}
+
+// volumeStatus is the encrypted volume --dir is on: none without --volume,
+// so a coordinator whose state goes with every boot shows it.
+type volumeStatus struct {
+	State     string `json:"state"` // none; opening; unlocked or initialized; refused
+	LastError string `json:"last_error,omitempty"`
+}
+
+func (s *keyStatus) volume(state string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.vol.State, s.vol.LastError = state, ""
+	if err != nil {
+		s.vol.LastError = fmt.Sprintf("%.400v", err)
+	}
 }
 
 func (s *keyStatus) held(key *coordinator.WrappingKey, commitment, vault string) {
@@ -133,7 +151,7 @@ func statusAPI(s *keyStatus, jobs *atomic.Pointer[coordinator.Coordinator], runn
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok\n") })
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
-		out := map[string]any{"wrapping_key": s}
+		out := map[string]any{"wrapping_key": s, "volume": &s.vol}
 		if c := jobs.Load(); c != nil {
 			out["jobs"] = c.Load()
 			// The phase only: the last error stays behind /control/mail.
