@@ -199,6 +199,19 @@ func (m Mailbox) same(o Mailbox) bool {
 		subtle.ConstantTimeCompare(m.DecryptionKey, o.DecryptionKey) == 1
 }
 
+// openMailSetupAnyEpoch opens a setup sealed under any of the worker's DEK
+// epochs, newest first: Desktop seals it under the epoch-0 DEK its list
+// signed (workerView.wrap) unless it opens a later one.
+func openMailSetupAnyEpoch(ring *Keyring, workerID string, sealed []byte) (*MailSetup, error) {
+	for n := int(ring.Current()); n > 0; n-- {
+		if plain, err := open(ring.keys[n][:], sealed, mailSetupAAD(workerID)); err == nil {
+			clear(plain)
+			return OpenMailSetup(ring.keys[n], workerID, sealed)
+		}
+	}
+	return OpenMailSetup(ring.keys[0], workerID, sealed)
+}
+
 // SetUpMail opens a sealed setup with the worker's DEK and gives the worker
 // everything in it in one commit: its address and keys, its requesters,
 // automatic runs and the acknowledgement, its reply mode, its instructions
@@ -207,23 +220,23 @@ func (m Mailbox) same(o Mailbox) bool {
 func (c *Coordinator) SetUpMail(device, workerID string, sealed []byte) error {
 	c.mu.Lock()
 	w, ok := c.state.Workers[workerID]
-	var wrapped []byte
+	var cur Worker
 	if ok && w.mayAct(device) {
-		wrapped = w.WrappedDEK
+		cur = *w
 	}
 	c.mu.Unlock()
 	if !ok {
 		return ErrNoWorker
 	}
-	if wrapped == nil {
+	if cur.WrappedDEK == nil {
 		return ErrNotGranted
 	}
-	dek, err := c.cfg.Key.Unwrap(workerID, wrapped)
+	ring, err := c.cfg.Key.Keyring(&cur)
 	if err != nil {
 		return err
 	}
-	s, err := OpenMailSetup(dek, workerID, sealed)
-	clear(dek[:])
+	s, err := openMailSetupAnyEpoch(ring, workerID, sealed)
+	ring.Clear()
 	if err != nil {
 		return err
 	}

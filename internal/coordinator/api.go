@@ -186,13 +186,22 @@ type workerView struct {
 	// The account API's alone: whether a list has put the worker in a team
 	// with its DEK, the team, the caller's role on it, the DEK commitment the
 	// list signed, the devices that reach the worker, and the caller's
-	// device's wrap of the DEK.
-	Granted       *bool    `json:"granted,omitempty"`
-	Team          string   `json:"team,omitempty"`
-	Role          Role     `json:"role,omitempty"`
-	DEKCommitment string   `json:"dekCommitment,omitempty"`
-	Devices       []string `json:"devices,omitempty"`
-	Wrap          []byte   `json:"wrap,omitempty"`
+	// device's wrap of the DEK. Epochs are the caller's device's wraps of
+	// the worker's later DEK epochs (dekepoch.go), each with the commitment
+	// its wrap is bound to; new data is under the last.
+	Granted       *bool       `json:"granted,omitempty"`
+	Team          string      `json:"team,omitempty"`
+	Role          Role        `json:"role,omitempty"`
+	DEKCommitment string      `json:"dekCommitment,omitempty"`
+	Devices       []string    `json:"devices,omitempty"`
+	Wrap          []byte      `json:"wrap,omitempty"`
+	Epochs        []epochView `json:"epochs,omitempty"`
+}
+
+type epochView struct {
+	Epoch      uint32 `json:"epoch"`
+	Commitment string `json:"commitment"`
+	Wrap       []byte `json:"wrap"`
 }
 
 func (a *api) viewOf(w Worker, role Role) workerView {
@@ -206,6 +215,11 @@ func (a *api) viewOf(w Worker, role Role) workerView {
 		v.Devices = append(v.Devices, d.ID)
 		if d.ID == a.caller.Device {
 			v.Wrap = d.Wrap
+			for _, e := range d.EpochWraps {
+				if i := int(e.Epoch) - 1; i >= 0 && i < len(w.DEKEpochs) {
+					v.Epochs = append(v.Epochs, epochView{Epoch: e.Epoch, Commitment: w.DEKEpochs[i].Commitment, Wrap: e.Wrap})
+				}
+			}
 		}
 	}
 	return v

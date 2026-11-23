@@ -53,6 +53,11 @@ type Worker struct {
 	Team          string   `json:"team,omitempty"`
 	Devices       []Device `json:"devices,omitempty"`
 	DEKCommitment string   `json:"dekCommitment,omitempty"`
+	// DEKEpochs are the DEKs it was given after WrappedDEK, one each time a
+	// device lost its reach (dekepoch.go), and ManifestEpoch the one its
+	// manifest was last recorded under.
+	DEKEpochs     []DEKEpoch `json:"dekEpochs,omitempty"`
+	ManifestEpoch uint32     `json:"manifestEpoch,omitempty"`
 	// Mailbox is the worker's mailbox id at the edge, once it has an
 	// address, so the mail loop knows to read it (mailbox.go). Its keys are
 	// in the worker's tree.

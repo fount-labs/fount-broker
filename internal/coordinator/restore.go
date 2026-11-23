@@ -242,11 +242,11 @@ func rootState(root *backupRoot) (*State, error) {
 // restoreTree copies w's objects and manifest into the store, opens the tree
 // to check it whole, and returns what its mail still owed.
 func restoreTree(ctx context.Context, o RestoreOptions, w *Worker, bt backedTree) (int, []pendingMail, error) {
-	dek, err := o.Key.Unwrap(w.ID, w.WrappedDEK)
+	ring, err := o.Key.Keyring(w)
 	if err != nil {
 		return 0, nil, err
 	}
-	defer clear(dek[:])
+	defer ring.Clear()
 	for _, obj := range bt.Objects {
 		data, err := o.Bucket.Get(ctx, backupObjectPrefix+w.ID+"/"+obj)
 		if err != nil {
@@ -265,7 +265,7 @@ func restoreTree(ctx context.Context, o RestoreOptions, w *Worker, bt backedTree
 	if err := o.Store.Put(w.ID, manifestObject, bt.Manifest); err != nil {
 		return 0, nil, err
 	}
-	t, err := LoadTree(o.Store, w.ID, dek, w.Version)
+	t, err := LoadTreeKeys(o.Store, w.ID, ring, w.Version)
 	if err != nil {
 		return 0, nil, err
 	}
