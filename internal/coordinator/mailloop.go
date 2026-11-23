@@ -140,6 +140,8 @@ type mailLoop struct {
 	enrolled map[string]bool
 	// stale is set once a newer generation has spoken: the loop stops.
 	stale atomic.Bool
+	// status is what MailStatus reports.
+	status mailStatus
 }
 
 func newMailLoop(cfg MailConfig) *mailLoop {
@@ -210,6 +212,7 @@ func (c *Coordinator) RunMail(ctx context.Context) {
 	if c.mail.cfg.Generations != nil && !c.startGeneration(ctx) {
 		return
 	}
+	c.mail.notePhase(MailRunning)
 	tick := time.NewTicker(c.mail.cfg.PollInterval)
 	defer tick.Stop()
 	for !c.mail.stale.Load() {
@@ -284,6 +287,7 @@ func (c *Coordinator) mailPass(ctx context.Context, now time.Time) {
 		switch {
 		case err != nil:
 			c.fenced(ctx, "", err)
+			m.noteError(fmt.Errorf("the edge's changes feed: %w", err))
 			log.Printf("mail: the edge's changes feed failed: %v", err)
 		case reset:
 			sweep = true
@@ -308,6 +312,7 @@ func (c *Coordinator) mailPass(ctx context.Context, now time.Time) {
 		}
 		if err := c.syncMail(ctx, w, now); err != nil && !errors.Is(err, ErrNoWorker) {
 			c.fenced(ctx, w.Mailbox, err)
+			m.noteError(fmt.Errorf("worker %s: %w", w.ID, err))
 			// The cursor has moved past its change: it's tried again next
 			// pass, and on every sweep.
 			log.Printf("worker %s: mail: %v", w.ID, err)
@@ -322,6 +327,9 @@ func (c *Coordinator) mailPass(ctx context.Context, now time.Time) {
 	}
 	c.rotateDue(ctx)
 	c.releaseDue(ctx)
+	m.mu.Lock()
+	m.status.lastPass = time.Now()
+	m.mu.Unlock()
 }
 
 // readChanges reads the feed's pages after cursor: the mailboxes that changed,

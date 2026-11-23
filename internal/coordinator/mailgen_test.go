@@ -3,6 +3,7 @@ package coordinator
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -150,5 +151,50 @@ func TestTheEdgesChangesFeedPicksTheMailboxes(t *testing.T) {
 	r.c.mailPass(ctx, now.Add(5*time.Second))
 	if r.edge.listCalls(mb2.MailboxID) != l2+1 {
 		t.Fatal("a reset didn't sweep")
+	}
+}
+
+type failingGenerations struct{}
+
+func (failingGenerations) Generation(context.Context) (mail.Generation, error) {
+	return mail.Generation{}, errors.New("the vault is unreachable")
+}
+
+// MailStatus says where the loop is: starting with the error it retries on,
+// running under the edge's generation, and stopped with the reason.
+func TestMailStatusFollowsTheLoop(t *testing.T) {
+	r := newMailRig(t, MailConfig{})
+	r.cfg.Generations = failingGenerations{}
+	r.start()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan bool)
+	go func() { done <- r.c.startGeneration(ctx) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for r.c.MailStatus().LastError == "" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	s := r.c.MailStatus()
+	cancel()
+	if <-done {
+		t.Fatal("a failing generation source started the loop")
+	}
+	if s.Phase != MailStarting || !strings.Contains(s.LastError, "the vault is unreachable") || s.LastErrorAt == nil {
+		t.Fatalf("while retrying: %+v", s)
+	}
+
+	r = genRig(t, MailConfig{})
+	r.worker()
+	r.pass()
+	s = r.c.MailStatus()
+	if s.Phase != MailRunning || s.Generation != 1 || s.Workers != 1 || s.Enrolled != 1 || s.LastPass == nil || s.LastError != "" {
+		t.Fatalf("running: %+v", s)
+	}
+
+	pub, _, _ := ed25519.GenerateKey(nil)
+	r.edge.coord.Advance(7, pub)
+	r.pass()
+	s = r.c.MailStatus()
+	if s.Phase != MailStopped || !strings.Contains(s.Stopped, "stale") {
+		t.Fatalf("stopped: %+v", s)
 	}
 }

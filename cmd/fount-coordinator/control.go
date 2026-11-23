@@ -57,12 +57,18 @@ func controlAPI(token, stage string, hub *coordinator.RunnerHub, jobs *atomic.Po
 		return nil, fmt.Errorf("$%s needs --runners-dial-in and --team-runner-stage", controlTokenEnv)
 	}
 	want := []byte("Bearer " + token)
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /control/runners", func(w http.ResponseWriter, r *http.Request) {
+	authorized := func(w http.ResponseWriter, r *http.Request) bool {
 		got := []byte(strings.TrimSpace(r.Header.Get("Authorization")))
 		if subtle.ConstantTimeCompare(got, want) != 1 {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "the control route needs its bearer token", http.StatusUnauthorized)
+			return false
+		}
+		return true
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /control/runners", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
 			return
 		}
 		c := jobs.Load()
@@ -70,16 +76,43 @@ func controlAPI(token, stage string, hub *coordinator.RunnerHub, jobs *atomic.Po
 			http.Error(w, "the coordinator is waiting for its wrapping key", http.StatusServiceUnavailable)
 			return
 		}
-		body, err := json.Marshal(map[string]any{"runners": c.TeamRunners(stage, hub.TeamLinks(), time.Now())})
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeControl(w, map[string]any{"runners": c.TeamRunners(stage, hub.TeamLinks(), time.Now())})
+	})
+	mux.HandleFunc("GET /control/mail", mailControl(authorized, jobs))
+	return mux, nil
+}
+
+// mailControl is GET /control/mail: the mail loop's phase, its last error,
+// and how many workers' mailboxes are enrolled (coordinator.MailStatus). The
+// error can name a worker, so it is behind the token. Without mail it is 404.
+func mailControl(authorized func(http.ResponseWriter, *http.Request) bool, jobs *atomic.Pointer[coordinator.Coordinator]) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		w.Write(append(body, '\n'))
-	})
-	return mux, nil
+		c := jobs.Load()
+		if c == nil {
+			http.Error(w, "the coordinator is waiting for its wrapping key", http.StatusServiceUnavailable)
+			return
+		}
+		s := c.MailStatus()
+		if s == nil {
+			http.Error(w, "this coordinator has no mail loop", http.StatusNotFound)
+			return
+		}
+		writeControl(w, map[string]any{"mail": s})
+	}
+}
+
+func writeControl(w http.ResponseWriter, v any) {
+	body, err := json.Marshal(v)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Write(append(body, '\n'))
 }
 
 // withControl serves control's routes ahead of h's, when there are any.

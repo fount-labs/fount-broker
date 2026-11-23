@@ -136,6 +136,10 @@ func statusAPI(s *keyStatus, jobs *atomic.Pointer[coordinator.Coordinator], runn
 		out := map[string]any{"wrapping_key": s}
 		if c := jobs.Load(); c != nil {
 			out["jobs"] = c.Load()
+			// The phase only: the last error stays behind /control/mail.
+			if m := c.MailStatus(); m != nil {
+				out["mail"] = map[string]any{"phase": m.Phase, "generation": m.Generation}
+			}
 		}
 		if runners != nil {
 			out["runners"] = runners()

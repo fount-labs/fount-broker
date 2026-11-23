@@ -30,12 +30,14 @@ func (c *Coordinator) startGeneration(ctx context.Context) bool {
 		switch {
 		case err == nil:
 			log.Printf("mail: coordinator generation %d", m.service.Generation())
+			m.notePhase(MailRunning)
 			return true
 		case errors.Is(err, mail.ErrStaleGeneration), errors.Is(err, mail.ErrGenerationConflict), errors.Is(err, mail.ErrBadCertificate):
 			c.stopMail(err)
 			return false
 		}
 		log.Printf("mail: couldn't present the coordinator generation: %v", err)
+		m.noteError(fmt.Errorf("presenting generation %d: %w", m.service.Generation(), err))
 		select {
 		case <-ctx.Done():
 			return false
@@ -61,6 +63,9 @@ func (c *Coordinator) presentGeneration(ctx context.Context) error {
 // stopMail stops the mail loop for good, as a newer coordinator owns the mail.
 func (c *Coordinator) stopMail(err error) {
 	if c.mail.stale.CompareAndSwap(false, true) {
+		c.mail.mu.Lock()
+		c.mail.status.phase, c.mail.status.stopped = MailStopped, err.Error()
+		c.mail.mu.Unlock()
 		log.Printf("mail: STOPPED: %v. Another coordinator generation owns Cloud mail; this one reads and sends none", err)
 	}
 	if errors.Is(err, mail.ErrStaleGeneration) {

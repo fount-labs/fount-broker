@@ -27,18 +27,9 @@ func TestTheControlRoute(t *testing.T) {
 	status := statusAPI(&keyStatus{Mode: keyDev, State: "waiting"}, &jobs, func() any { return hub.Runners() })
 	srv := httptest.NewServer(withControl(clientAPI(status, &channelReady, false, nil, nil), control))
 	defer srv.Close()
-	get := func(auth string) (int, string) {
-		req, _ := http.NewRequest("GET", srv.URL+"/control/runners", nil)
-		if auth != "" {
-			req.Header.Set("Authorization", auth)
-		}
-		res, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer res.Body.Close()
-		b, _ := io.ReadAll(res.Body)
-		return res.StatusCode, string(b)
+	get := func(auth string) (int, string) { return getPath(t, srv.URL+"/control/runners", auth) }
+	if code, _ := getPath(t, srv.URL+"/control/mail", ""); code != http.StatusUnauthorized {
+		t.Errorf("/control/mail with no token: %d", code)
 	}
 	for _, auth := range []string{"", "Bearer wrong", testControlToken, "Bearer " + testControlToken + "x"} {
 		if code, _ := get(auth); code != http.StatusUnauthorized {
@@ -97,6 +88,29 @@ func TestTheControlRoute(t *testing.T) {
 	if len(r) != len(want) {
 		t.Errorf("fields %s", body)
 	}
+
+	// A coordinator with no mail loop has no mail status, here or in /status.
+	if code, _ := getPath(t, srv.URL+"/control/mail", "Bearer "+testControlToken); code != http.StatusNotFound {
+		t.Errorf("/control/mail without mail: %d", code)
+	}
+	if _, body := getPath(t, srv.URL+"/status", ""); strings.Contains(body, `"mail"`) {
+		t.Errorf("/status without mail: %s", body)
+	}
+}
+
+func getPath(t *testing.T, url, auth string) (int, string) {
+	t.Helper()
+	req, _ := http.NewRequest("GET", url, nil)
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(res.Body)
+	return res.StatusCode, string(b)
 }
 
 func TestTheControlRouteIsOffWithoutItsToken(t *testing.T) {
