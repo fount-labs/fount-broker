@@ -186,7 +186,7 @@ func TestTheControlListShowsLinksIntakeAndRetiredTeams(t *testing.T) {
 	if r := got[linkedTeam]; !r.Connected || r.Running != 1 || r.LastActivityAt != now.Add(-time.Minute).UTC().Format(time.RFC3339) || r.Retired {
 		t.Fatalf("linked %+v", r)
 	}
-	if r := got[gone]; !r.Retired || r.Name != TeamRunnerName("dev", gone) {
+	if r := got[gone]; !r.Retired || r.RetiredAt != "" || r.Name != TeamRunnerName("dev", gone) {
 		t.Fatalf("deleted %+v", r)
 	}
 	if r := got[waiting]; r.Queued != 1 {

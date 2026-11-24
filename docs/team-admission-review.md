@@ -104,7 +104,8 @@ lets in, so it needs a review before it is merged or deployed.
   `retired` until the coordinator's next billing answer. That is daily, at the period end, or
   when Desktop calls `billing-refresh` after checkout. Step 7's `team-runners` backstop cancels
   a retired team's live subscription, so it must re-check the subscription itself before
-  cancelling.
+  cancelling. `/control/runners` gives a billing-retired team `retiredAt`, the billing answer
+  that ended it; the backstop leaves alone a subscription started after it.
 - **The device lane needs no plan here.** Step 6 still has to keep the proxy device lane
   refusing `fount-cloud`.
 

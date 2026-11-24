@@ -269,12 +269,21 @@ func TestAnEndedTeamIsRetired(t *testing.T) {
 	}
 	c.mu.Unlock()
 	retired := map[string]bool{}
+	retiredAt := map[string]string{}
 	for _, r := range c.TeamRunners("dev", nil, now) {
 		retired[r.Account] = r.Retired
+		if r.RetiredAt != "" {
+			retiredAt[r.Account] = r.RetiredAt
+		}
 	}
 	want := map[string]bool{"tm_aaaaaaaaaaaaaaaaaaaaaaaa": true, "tm_bbbbbbbbbbbbbbbbbbbbbbbb": true}
 	if !reflect.DeepEqual(retired, want) {
 		t.Fatalf("retired %v, want %v", retired, want)
+	}
+	at := now.UTC().Format(time.RFC3339)
+	wantAt := map[string]string{"tm_aaaaaaaaaaaaaaaaaaaaaaaa": at, "tm_bbbbbbbbbbbbbbbbbbbbbbbb": at}
+	if !reflect.DeepEqual(retiredAt, wantAt) {
+		t.Fatalf("retiredAt %v, want %v", retiredAt, wantAt)
 	}
 }
 

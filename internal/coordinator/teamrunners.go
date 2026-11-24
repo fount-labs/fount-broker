@@ -18,6 +18,12 @@ type ControlRunner struct {
 	// LastActivityAt is RFC 3339, omitted only if the team never had any.
 	LastActivityAt string `json:"lastActivityAt,omitempty"`
 	Retired        bool   `json:"retired,omitempty"`
+	// RetiredAt is RFC 3339, set for a team retired by its billing: when
+	// fount-infra last said its subscription was over. A subscription started
+	// after it is one the coordinator hasn't heard of yet (a re-subscribe),
+	// which the control plane's backstop cancel leaves alone. Absent for a
+	// deleted team, which can't buy again.
+	RetiredAt string `json:"retiredAt,omitempty"`
 }
 
 // recentActivity is how long after its last activity a team with nothing
@@ -66,7 +72,7 @@ func (c *Coordinator) noteIntakeWait(workerID, account string, waiting bool) {
 // team whose subscription ended for good (TeamBilling.ended: canceled, or
 // over for teamRetireAfter). A team that doesn't pay (admission.go) counts
 // nothing queued, so the control plane starts no runner for it: its jobs and
-// intake wait until it pays.
+// intake wait until it pays. retiredAt is the billing answer that ended it.
 func (c *Coordinator) TeamRunners(stage string, links map[string]TeamLink, now time.Time) []ControlRunner {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -125,8 +131,13 @@ func (c *Coordinator) TeamRunners(stage string, links map[string]TeamLink, now t
 		if !IsTeamID(id) {
 			continue
 		}
-		if st, err := c.teamState(id); err == nil && st.deleted || c.state.Teams[id].Billing.ended(now) {
+		b := c.state.Teams[id].Billing
+		if st, err := c.teamState(id); err == nil && st.deleted {
 			get(id).Retired = true
+		} else if b.ended(now) {
+			r := get(id)
+			r.Retired = true
+			r.RetiredAt = b.CheckedAt.UTC().Format(time.RFC3339)
 		}
 	}
 	out := make([]ControlRunner, 0, len(by))
