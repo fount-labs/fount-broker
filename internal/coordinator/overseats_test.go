@@ -108,13 +108,20 @@ func TestSeatsCutToOneAdmitOnlyTheAdminAfterAPeriod(t *testing.T) {
 		t.Fatalf("an unseated member with its own plan: %d", status)
 	}
 
-	// Seats bought back take everyone in again.
+	// Seats bought back take everyone in again at once; the grace is
+	// spent until they have been kept for a period.
+	back := f.now
 	f.pay(t, seats(5), nil)
 	for acct, d := range members {
 		f.seated(t, w.ID, acct, d)
 	}
-	if b := f.billing(t); !b.OverSeatsSince.IsZero() {
-		t.Fatalf("back within the seats, over since %s", b.OverSeatsSince)
+	if b, v := f.billing(t), f.view(t); !b.OverSeatsSince.Equal(cut) || !b.WithinSeatsSince.Equal(back) || !v.SeatsCutAt.IsZero() || len(v.Unseated) != 0 {
+		t.Fatalf("back within the seats: %+v", v)
+	}
+	f.advance(overSeatsGrace)
+	f.pay(t, seats(5), nil)
+	if b := f.billing(t); !b.OverSeatsSince.IsZero() || !b.WithinSeatsSince.IsZero() {
+		t.Fatalf("a period within the seats, over since %s", b.OverSeatsSince)
 	}
 }
 
@@ -176,15 +183,80 @@ func TestOverByOneCutsTheLastToJoinAfterTheGraceAdminsFirst(t *testing.T) {
 		t.Fatalf("an unseated admin's admin statement: %v", err)
 	}
 
-	// Back within the seats once the others are removed.
+	// Back within the seats once the others are removed, and the grace is
+	// the team's again a period later.
 	for _, id := range []string{"m_bob", "m_maria", "m_cat"} {
 		f.tt.drop(id)
 	}
 	if err := f.push(t); err != nil {
 		t.Fatal(err)
 	}
+	f.seated(t, w.ID, "acme", f.admin)
+	if v := f.view(t); !v.SeatsCutAt.IsZero() || len(v.Unseated) != 0 {
+		t.Fatalf("within the seats: %+v", v)
+	}
+	f.advance(overSeatsGrace)
+	f.pay(t, seats(1), nil)
 	if b := f.billing(t); !b.OverSeatsSince.IsZero() {
-		t.Fatalf("within the seats, over since %s", b.OverSeatsSince)
+		t.Fatalf("a period within the seats, over since %s", b.OverSeatsSince)
+	}
+}
+
+// Seats raised just before the period's end and cut at it buy no new
+// grace: the team over its seats since long ago is cut at once. Seats kept
+// for a period end the grace, and a later cut starts a new one.
+func TestASeatRaiseJustBeforeThePeriodEndBuysNoNewGrace(t *testing.T) {
+	f := newBillingFixture(t)
+	f.pay(t, seats(5), nil)
+	members := map[string]testDevice{"maria": f.reviewer}
+	for _, acct := range []string{"bob", "cat", "dan"} {
+		d := newTestDevice(t)
+		members[acct] = d
+		f.tt.set("m_"+acct, acct, RoleReviewer, d)
+	}
+	if err := f.push(t); err != nil {
+		t.Fatal(err)
+	}
+	w, err := f.tt.addWorker(f.admin, "acme", DEK{3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cut := f.now
+	f.pay(t, seats(1), nil)
+	f.advance(overSeatsGrace)
+	f.unseated(t, w.ID, "maria", f.reviewer)
+
+	// Five seats an hour before the period ends, a list, one seat again.
+	f.pay(t, seats(5), nil)
+	f.seated(t, w.ID, "maria", f.reviewer)
+	f.tt.update("m_maria", func(m *ListMember) { m.Email = "maria@example.com" })
+	if err := f.push(t); err != nil {
+		t.Fatal(err)
+	}
+	f.advance(time.Hour)
+	f.pay(t, seats(1), nil)
+	if b := f.billing(t); !b.OverSeatsSince.Equal(cut) || !b.WithinSeatsSince.IsZero() {
+		t.Fatalf("over since %s, want %s", b.OverSeatsSince, cut)
+	}
+	for acct, d := range members {
+		f.unseated(t, w.ID, acct, d)
+	}
+	f.seated(t, w.ID, "acme", f.admin)
+
+	// Seats bought and kept for a period: the next cut has its grace.
+	f.pay(t, seats(5), nil)
+	f.advance(overSeatsGrace)
+	f.pay(t, seats(5), nil)
+	if b := f.billing(t); !b.OverSeatsSince.IsZero() {
+		t.Fatalf("seats kept a period, over since %s", b.OverSeatsSince)
+	}
+	again := f.now
+	f.pay(t, seats(1), nil)
+	if b := f.billing(t); !b.OverSeatsSince.Equal(again) {
+		t.Fatalf("a later cut, over since %s, want %s", b.OverSeatsSince, again)
+	}
+	for acct, d := range members {
+		f.seated(t, w.ID, acct, d)
 	}
 }
 

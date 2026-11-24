@@ -48,7 +48,8 @@ import (
 // with an account, admins first and then by when they joined, are admitted
 // without a plan of their own and get seat statements. The rest stay on the
 // list and are refused with ErrOverSeats until an admin adds seats or
-// removes someone.
+// removes someone. The grace is the team's once until it has been within
+// its seats for a period (trackSeats).
 //
 // With no TeamBiller (Config.TeamBilling nil) none of this applies: there is
 // no team billing, and AccountHandler refuses every route to a caller
@@ -208,16 +209,28 @@ func (c *Coordinator) admitTeam(caller Caller, team string) error {
 const overSeatsGrace = 31 * 24 * time.Hour
 
 // trackSeats keeps OverSeatsSince for a team of members at now: set when the
-// team goes over its seats, cleared when it is back within them. While the
-// team isn't entitled its seats aren't known, and it stays as it was, so a
-// lapse doesn't start the grace over.
+// team goes over its seats, and cleared only once it has been back within
+// them for overSeatsGrace, WithinSeatsSince on. Seats bought are paid from
+// now and seats cut go at the period's end, so seats raised just before it
+// and cut at it cost an hour of each: were the grace to end the moment the
+// team is within, that would buy a new one each period. Within the seats
+// every member holds one all the same (unseated). While the team isn't
+// entitled its seats aren't known, and both stay as they were, so a lapse
+// doesn't start the grace over.
 func (b *TeamBilling) trackSeats(members int, now time.Time) {
 	switch {
 	case !b.Entitled(now):
-	case members <= max(b.Seats, 1):
-		b.OverSeatsSince = time.Time{}
+	case members > max(b.Seats, 1):
+		b.WithinSeatsSince = time.Time{}
+		if b.OverSeatsSince.IsZero() {
+			b.OverSeatsSince = now
+		}
 	case b.OverSeatsSince.IsZero():
-		b.OverSeatsSince = now
+		b.WithinSeatsSince = time.Time{}
+	case b.WithinSeatsSince.IsZero():
+		b.WithinSeatsSince = now
+	case !now.Before(b.WithinSeatsSince.Add(overSeatsGrace)):
+		b.OverSeatsSince, b.WithinSeatsSince = time.Time{}, time.Time{}
 	}
 }
 

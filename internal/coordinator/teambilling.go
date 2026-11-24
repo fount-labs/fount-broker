@@ -131,8 +131,10 @@ type TeamBilling struct {
 	// over (TeamRunners' retired).
 	Since time.Time `json:"since,omitzero"`
 	// OverSeatsSince is when the team, while entitled, first had more
-	// members than seats, zero while it has no more (admission.go).
-	OverSeatsSince time.Time `json:"overSeatsSince,omitzero"`
+	// members than seats, zero once it has had no more for a period, from
+	// WithinSeatsSince (admission.go).
+	OverSeatsSince   time.Time `json:"overSeatsSince,omitzero"`
+	WithinSeatsSince time.Time `json:"withinSeatsSince,omitzero"`
 	// Subscription is the subscription the last answer was about.
 	Subscription string `json:"subscription,omitempty"`
 	// RetiredAt is the answer that ended the team for good (ended), and
@@ -230,8 +232,8 @@ func (b *TeamBilling) retiredBy() (time.Time, string) {
 
 // TeamBillingView is a team's billing as its members see it (GET /v1/teams,
 // the refresh route). SeatsCutAt is when a team over its seats admits only
-// the members holding them; Unseated are the members, by id, it refuses
-// since. Subscription ids are the control plane's, not shown.
+// the members holding them, unset while it is within them; Unseated are the
+// members, by id, it refuses since. Subscription ids are the control plane's, not shown.
 type TeamBillingView struct {
 	TeamBilling
 	Entitled   bool      `json:"entitled"`
@@ -248,7 +250,7 @@ func (c *Coordinator) billingView(team string, b *TeamBilling, now time.Time) *T
 		return &TeamBillingView{}
 	}
 	v := &TeamBillingView{TeamBilling: *b, Entitled: b.Entitled(now)}
-	if !b.OverSeatsSince.IsZero() {
+	if !b.OverSeatsSince.IsZero() && b.WithinSeatsSince.IsZero() {
 		v.SeatsCutAt = b.OverSeatsSince.Add(overSeatsGrace)
 	}
 	if st, err := c.teamState(team); err == nil {
@@ -455,7 +457,7 @@ func (c *Coordinator) refreshTeamBilling(ctx context.Context, team string) (Team
 		next = *t.Billing
 	}
 	var refused *TeamNotEntitled
-	over := next.OverSeatsSince
+	over, within := next.OverSeatsSince, next.WithinSeatsSince
 	switch {
 	case err == nil:
 		next = TeamBilling{Status: ent.Status, Tier: ent.Tier, PeriodEnd: ent.PeriodEnd.UTC(), Seats: ent.Seats, CheckedAt: now, TriedAt: now, Subscription: ent.Subscription}
@@ -475,7 +477,7 @@ func (c *Coordinator) refreshTeamBilling(ctx context.Context, team string) (Team
 	if err == nil && next.Status == BillingRenewing {
 		next.GraceEnds = next.PeriodEnd.Add(teamRenewGrace)
 	}
-	next.OverSeatsSince = over
+	next.OverSeatsSince, next.WithinSeatsSince = over, within
 	if st, serr := c.teamState(team); serr == nil {
 		next.trackSeats(len(st.members), now)
 	}
