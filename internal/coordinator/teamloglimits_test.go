@@ -302,8 +302,8 @@ func TestAnAccountMakesAtMostItsFirmTeams(t *testing.T) {
 	}
 }
 
-// The rates are checked before the list's signatures: a list past the rate
-// is 429 whatever else is wrong with it.
+// The rates are checked before the list's signatures: an admin's list past
+// the rate is 429 whatever else is wrong with it.
 func TestAListPastTheRateIsRefusedBeforeItIsChecked(t *testing.T) {
 	f := newBillingFixture(t)
 	f.c.mu.Lock()
@@ -312,15 +312,62 @@ func TestAListPastTheRateIsRefusedBeforeItIsChecked(t *testing.T) {
 	}
 	f.c.mu.Unlock()
 	l := f.tt.list()
-	l.Seq++
+	l.Workers = append(l.Workers, ListWorker{ID: "w_000000000000000000000000", DEK: DEKCommitment("w_000000000000000000000000", DEK{9})})
 	err := f.tt.pushList(f.admin.caller("acme"), f.admin.sign(t, l), l, nil)
 	if errorCode(err) != codeTeamLogRate {
-		t.Fatalf("a stale list past the rate: %v", err)
+		t.Fatalf("a bad list past the rate: %v", err)
 	}
 	f.advance(2 * accountLogEvery)
-	if err := f.tt.pushList(f.admin.caller("acme"), f.admin.sign(t, l), l, nil); !errors.Is(err, ErrTeamStale) {
-		t.Fatalf("the stale list once the rate allows: %v", err)
+	if err := f.tt.pushList(f.admin.caller("acme"), f.admin.sign(t, l), l, nil); !errors.Is(err, ErrListRefused) {
+		t.Fatalf("the bad list once the rate allows: %v", err)
 	}
+}
+
+// A paying stranger posting to a team that is rate-limited, or whose
+// owner's logs are full, hears only that it isn't theirs to change, as it
+// would of any team: the log's bounds are told to its admins alone. So is a
+// record for another account.
+func TestAStrangerHearsNothingOfATeamsLogBounds(t *testing.T) {
+	f := newBillingFixture(t)
+	stranger := f.stranger.caller("eve")
+	try := func(name string) {
+		t.Helper()
+		l := f.tt.list()
+		l.Members = append(l.Members, ListMember{ID: "m_zz", Account: "eve", Role: RoleAdmin, Devices: []string{f.stranger.include(t, f.team, "eve", l.Seq)}})
+		err := f.tt.pushList(stranger, f.stranger.sign(t, l), l, nil)
+		var limit *TeamLogLimitError
+		if !errors.Is(err, ErrNotAdmin) || errors.As(err, &limit) || statusOf(err) != http.StatusForbidden || errorCode(err) != "" {
+			t.Fatalf("%s: a stranger's list: %v", name, err)
+		}
+		rec := TeamRecord{Kind: RecordPasskeyVouch, Member: "m_maria", Account: "maria"}
+		if _, err := f.c.appendRecord(stranger, f.team, rec, func(*teamState, *Member) error { return nil }); !errors.Is(err, ErrListRefused) || errors.As(err, &limit) {
+			t.Fatalf("%s: a stranger's record: %v", name, err)
+		}
+	}
+	try("open")
+
+	f.c.mu.Lock()
+	for i := range teamLogBurst {
+		f.c.tookTeamLog(Caller{Account: fmt.Sprintf("acct_%d", i)}, f.team, f.now)
+	}
+	f.c.mu.Unlock()
+	f.tt.update("m_maria", func(m *ListMember) { m.Email = "maria@example.com" })
+	if err := f.push(t); errorCode(err) != codeTeamLogRate {
+		t.Fatalf("the admin past the team's rate: %v", err)
+	}
+	try("rate-limited")
+
+	f.c.mu.Lock()
+	f.c.logRate = teamLogRate{}
+	for i := range accountLogMaxBytes / teamLogMaxBytes {
+		id := fmt.Sprintf("tm_%024x", 0xf000+i)
+		f.c.state.Teams[id] = &Team{ID: id, Owner: "acme", Log: []TeamEntry{{List: strings.Repeat("x", teamLogMaxBytes-100)}}}
+	}
+	f.c.mu.Unlock()
+	if err := f.push(t); errorCode(err) != codeAccountLogFull {
+		t.Fatalf("the admin past the owner's budget: %v", err)
+	}
+	try("full")
 }
 
 // BenchmarkTeamLogAtItsCap is a team whose log is at teamLogMaxBytes of the

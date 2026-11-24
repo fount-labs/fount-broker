@@ -394,8 +394,13 @@ func (c *Coordinator) AppendTeamList(caller Caller, team, token string, deks map
 			return TeamLogView{}, err
 		}
 	}
-	// The log's bounds and rates first: they are cheap, and checkList
-	// checks a signature for each device the list names.
+	// Who signs it, then the log's bounds and rates: they are cheap, and
+	// checkList checks a signature for each device the list names. A
+	// stranger hears only that it isn't theirs to change.
+	if err := c.checkListSigner(prior, l, caller, now); err != nil {
+		c.mu.Unlock()
+		return TeamLogView{}, err
+	}
 	entry := TeamEntry{Seq: l.Seq, List: token, Hash: entryHash(TeamListContext, payload)}
 	if err := c.teamLogRoom(caller, team, len(entry.List)+len(entry.Hash), l.Deleted, now); err != nil {
 		c.mu.Unlock()
@@ -421,12 +426,12 @@ func (c *Coordinator) AppendTeamList(caller Caller, team, token string, deks map
 	return view, nil
 }
 
-// checkList is every check on a list against its team's state before it
-// (§2.2): the order, the signer, the devices, the accounts, the workers and,
-// for a firm team, its seats (admission.go). The log's own bounds come after
-// (teamloglimits.go).
-// prior is nil for a team's first list. Called with c.mu held.
-func (c *Coordinator) checkList(prior *teamState, l TeamList, caller Caller, deks map[string]DEK, now time.Time) error {
+// checkListSigner is the part of checkList that checks no signature: the
+// order and the signer, by the state before the list or, for a team's
+// first, by whose team it is. AppendTeamList runs it before the log's
+// bounds (teamloglimits.go), so they are told to no one else. prior is nil
+// for a team's first list. Called with c.mu held.
+func (c *Coordinator) checkListSigner(prior *teamState, l TeamList, caller Caller, now time.Time) error {
 	seq, head := uint64(0), ""
 	if prior != nil {
 		seq, head = prior.seq, prior.head
@@ -448,11 +453,23 @@ func (c *Coordinator) checkList(prior *teamState, l TeamList, caller Caller, dek
 		if l.Team != caller.Account && c.state.TeamMints[l.Team] != caller.Account {
 			return fmt.Errorf("%w: a team's first list is for the signer's own account or an id the coordinator made for it", ErrNotAdmin)
 		}
+		return nil
+	}
+	return prior.maySignLists(caller, l.Iat, now)
+}
+
+// checkList is every check on a list against its team's state before it
+// (§2.2): the order, the signer (checkListSigner), the devices, the
+// accounts, the workers and, for a firm team, its seats (admission.go).
+// prior is nil for a team's first list. Called with c.mu held.
+func (c *Coordinator) checkList(prior *teamState, l TeamList, caller Caller, deks map[string]DEK, now time.Time) error {
+	if err := c.checkListSigner(prior, l, caller, now); err != nil {
+		return err
+	}
+	if prior == nil {
 		if lm := listMemberOf(l, caller.Device, c.cfg.Audience); lm == nil || lm.Role != RoleAdmin || lm.Account != caller.Account {
 			return fmt.Errorf("%w: a team's first list names its signer as an admin", ErrNotAdmin)
 		}
-	} else if err := prior.maySignLists(caller, l.Iat, now); err != nil {
-		return err
 	}
 	refuse := func(format string, args ...any) error {
 		return fmt.Errorf("%w: %s", ErrListRefused, fmt.Sprintf(format, args...))
