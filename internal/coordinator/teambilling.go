@@ -148,8 +148,8 @@ type TeamBilling struct {
 
 // Entitled says whether the team's subscription covers now: active, or
 // past_due before its period ends, or renewing inside its grace. An active
-// answer whose period ended before fount-infra was asked again is renewing
-// too.
+// answer whose period ended is renewing too, whenever it came: fount-infra's
+// clock may be behind, and answer active a little past the end.
 func (b *TeamBilling) Entitled(now time.Time) bool {
 	if b == nil {
 		return false
@@ -159,7 +159,7 @@ func (b *TeamBilling) Entitled(now time.Time) bool {
 		if b.PeriodEnd.IsZero() || now.Before(b.PeriodEnd) {
 			return true
 		}
-		return !b.CheckedAt.IsZero() && b.CheckedAt.Before(b.PeriodEnd) && b.inRenewal(now)
+		return !b.CheckedAt.IsZero() && b.inRenewal(now)
 	case "past_due", BillingRenewing:
 		return now.Before(b.entitledUntil())
 	}
@@ -424,7 +424,7 @@ func billingDue(b *TeamBilling, now time.Time) bool {
 	if b.CheckedAt.IsZero() || now.Sub(b.CheckedAt) >= teamBillingEvery {
 		return true
 	}
-	if b.Status == BillingRenewing && now.Sub(b.CheckedAt) >= teamRenewingEvery {
+	if (b.Status == BillingRenewing || b.inRenewal(now)) && now.Sub(b.CheckedAt) >= teamRenewingEvery {
 		return true
 	}
 	// An answer that entitled the team until a time now passed is asked

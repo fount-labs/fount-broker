@@ -323,6 +323,7 @@ func TestEntitledWhileRenewing(t *testing.T) {
 		want bool
 	}{
 		{"active past its period, not asked since", &TeamBilling{Status: "active", PeriodEnd: end, CheckedAt: end.Add(-time.Hour)}, true},
+		{"active, answered just past its period", &TeamBilling{Status: "active", PeriodEnd: end, CheckedAt: end.Add(time.Second)}, true},
 		{"active past its period and the grace", &TeamBilling{Status: "active", PeriodEnd: now.Add(-teamRenewGrace), CheckedAt: end.Add(-teamRenewGrace)}, false},
 		{"active past its period, never answered", &TeamBilling{Status: "active", PeriodEnd: end}, false},
 		{"renewing in its grace", &TeamBilling{Status: BillingRenewing, PeriodEnd: end, GraceEnds: end.Add(teamRenewGrace), CheckedAt: now}, true},
@@ -332,5 +333,38 @@ func TestEntitledWhileRenewing(t *testing.T) {
 		if got := tc.b.Entitled(now); got != tc.want {
 			t.Errorf("%s: %v", tc.name, got)
 		}
+	}
+}
+
+// fount-infra's clock a little behind the coordinator's: active, with the
+// period that just ended, after it ended. The team stays paid, renewing, and
+// is asked again every teamRenewingEvery, not a day later.
+func TestAnActiveAnswerJustPastThePeriodEndIsRenewing(t *testing.T) {
+	f, w, end := renewalFixture(t)
+	maria := f.reviewer.unpaid("maria")
+	f.at(end.Add(30 * time.Second))
+	late := paid
+	late.PeriodEnd = end
+	f.pay(t, late, nil)
+	if b := f.billing(t); b.Status != "active" || !b.Since.IsZero() {
+		t.Fatalf("billing: %+v", b)
+	}
+	if p, n := f.payment(), f.seats(); p != teamPaid || n != 5 {
+		t.Fatalf("pay %v, seats %d", p, n)
+	}
+	if status, _ := call(t, f.c, maria, "GET", "/v1/workers/"+w.ID); status != http.StatusOK {
+		t.Fatalf("the unpaid reviewer got %d", status)
+	}
+	f.advance(teamRenewingEvery - time.Second)
+	if billingDue(f.billing(t), f.c.now()) {
+		t.Fatal("due within teamRenewingEvery")
+	}
+	f.advance(time.Second)
+	if !billingDue(f.billing(t), f.c.now()) {
+		t.Fatal("not due after teamRenewingEvery")
+	}
+	f.at(end.Add(teamRenewGrace))
+	if p := f.payment(); p != teamUnpaid {
+		t.Fatalf("past the grace: %v", p)
 	}
 }
