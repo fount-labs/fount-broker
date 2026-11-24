@@ -32,10 +32,11 @@ import (
 // last answer doesn't entitle the team, every worker of the team lapses on
 // its next mail sweep without waiting for its own renewal, and when the team
 // pays again each worker its billing lapsed resumes (teamLapseDue). A team
-// fount-infra hasn't answered for, or whose answer ran out while it wasn't
-// answering, neither lapses nor resumes: its jobs wait (admission.go). The
-// notices are the account's as above, the team's account being the team, so
-// they reach every admin (sendowner.go).
+// renewing at its period end is entitled, so nothing lapses until its grace
+// ends (teambilling.go). A team fount-infra hasn't answered for, or whose
+// answer ran out while it wasn't answering, neither lapses nor resumes: its
+// jobs wait (admission.go). The notices are the account's as above, the
+// team's account being the team, so they reach every admin (sendowner.go).
 //
 // Not built: the export-only channel. A lapsed account's client channel
 // closes at the end of its paid period (cloud-worker-devices.md §3.2), so

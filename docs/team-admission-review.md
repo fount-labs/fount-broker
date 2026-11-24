@@ -57,6 +57,10 @@ lets in, so it needs a review before it is merged or deployed.
      asking its renewal, marked `Lapse.Team`.
    - Paid again: each `Lapse.Team` worker gets `resumed()`.
    - Unknown (no answer yet, or the last answer ran out while fount-infra fails): neither.
+   - Renewing (`teambilling.go`): an answer of `period_ended` on a team whose last answer was
+     active, or fount-infra's own `renewing`, is entitled until 24 h past the period end and
+     asked again every 10-15 min. fount-infra moves the period only when the renewal invoice is
+     paid, about an hour late. Any other refusal is a real end at once.
 7. **Retired** (`TeamRunners`): a firm team whose `Billing` is `no_access` and either `canceled`,
    or not entitled for 30 days (`TeamBilling.Since`). A team that never had a subscription
    (`no_subscription`) is never retired for billing.

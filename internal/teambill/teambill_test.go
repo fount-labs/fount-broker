@@ -199,6 +199,21 @@ func TestStatus(t *testing.T) {
 	}
 }
 
+func TestStatusRenewing(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"status":"renewing","tier":"team","periodEnd":1800100000,"graceEnds":null,"seats":3}`))
+	}))
+	defer srv.Close()
+	ent, err := client(t, srv).Status(context.Background(), team)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := coordinator.TeamEntitlement{Status: coordinator.BillingRenewing, Tier: "team", PeriodEnd: time.Unix(1_800_100_000, 0).UTC(), Seats: 3}
+	if ent != want {
+		t.Fatalf("entitlement %+v", ent)
+	}
+}
+
 func TestStatusRefusals(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string

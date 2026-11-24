@@ -30,6 +30,15 @@ import (
 // state.json: daily, after a worker of the team takes a lapse step, and when
 // a member asks (POST /v1/teams/{team}/billing-refresh, after checkout).
 //
+// A team renews at its period end, but fount-infra moves the period only
+// when the renewal's invoice is paid, about an hour later; until then it
+// answers period_ended. So a team whose answer was active is renewing from
+// its period end for teamRenewGrace: entitled, with its seats, and asked
+// again every teamRenewingEvery. It lapses only when the grace ends or
+// fount-infra gives a real end (canceled, past_due, no_subscription). A
+// newer fount-infra says renewing itself, while Stripe has already moved
+// the subscription's period.
+//
 // Who Billing admits, and its seats, are admission.go's; a team's lapse is
 // lapse.go's (teamLapseDue), and its runner's start teamrunners.go's.
 
@@ -59,33 +68,50 @@ type TeamStatement struct {
 
 // TeamEntitlement is fount-infra's answer for an entitled team.
 type TeamEntitlement struct {
+	// Status is active, past_due or BillingRenewing.
 	Status    string
 	Tier      string
 	PeriodEnd time.Time
 	// GraceEnds is set while the team is past_due: it is entitled until then.
+	// A renewing team's grace is the coordinator's (teamRenewGrace).
 	GraceEnds time.Time
 	Seats     int
 }
 
 // TeamNotEntitled is fount-infra's 403 no_access for a team, with its reason
-// (no_subscription, canceled, period_ended, no_cloud_plan).
+// (no_subscription, canceled, period_ended, past_due, no_cloud_plan).
 type TeamNotEntitled struct{ Reason string }
 
 func (e *TeamNotEntitled) Error() string {
 	return "fount-infra: the team isn't entitled (" + e.Reason + ")"
 }
 
-// BillingNoAccess is TeamBilling.Status for a team fount-infra refused.
-const BillingNoAccess = "no_access"
+const (
+	// BillingNoAccess is TeamBilling.Status for a team fount-infra refused.
+	BillingNoAccess = "no_access"
+	// BillingRenewing is TeamBilling.Status for a team whose period ended on
+	// an active answer, until fount-infra sees the renewal or the grace ends.
+	BillingRenewing = "renewing"
+	// reasonPeriodEnded is the refusal a renewal not yet paid gets too.
+	reasonPeriodEnded = "period_ended"
+)
+
+// teamRenewGrace is how long past its period end a team that was active
+// stays entitled while renewing: Stripe's renewal invoice is paid about an
+// hour after the period ends, or fails and the team is past_due.
+const teamRenewGrace = 24 * time.Hour
 
 // TeamBilling is a firm team's billing as fount-infra last answered.
 type TeamBilling struct {
-	// Status is fount-infra's status (active, past_due), or BillingNoAccess
-	// with Reason; empty until it first answers.
+	// Status is fount-infra's status (active, past_due), BillingRenewing,
+	// or BillingNoAccess with Reason; empty until it first answers. A
+	// renewing team fount-infra refused keeps the Reason, and the tier,
+	// period end and seats of the answer before.
 	Status    string    `json:"status,omitempty"`
 	Reason    string    `json:"reason,omitempty"`
 	Tier      string    `json:"tier,omitempty"`
 	PeriodEnd time.Time `json:"periodEnd,omitzero"`
+	// GraceEnds is when a past_due or renewing team stops being entitled.
 	GraceEnds time.Time `json:"graceEnds,omitzero"`
 	Seats     int       `json:"seats,omitempty"`
 	// CheckedAt is fount-infra's last answer; Error is the last failure to
@@ -100,15 +126,20 @@ type TeamBilling struct {
 }
 
 // Entitled says whether the team's subscription covers now: active, or
-// past_due before its period ends.
+// past_due before its period ends, or renewing inside its grace. An active
+// answer whose period ended before fount-infra was asked again is renewing
+// too.
 func (b *TeamBilling) Entitled(now time.Time) bool {
 	if b == nil {
 		return false
 	}
 	switch b.Status {
 	case "active":
-		return b.PeriodEnd.IsZero() || now.Before(b.PeriodEnd)
-	case "past_due":
+		if b.PeriodEnd.IsZero() || now.Before(b.PeriodEnd) {
+			return true
+		}
+		return !b.CheckedAt.IsZero() && b.CheckedAt.Before(b.PeriodEnd) && b.inRenewal(now)
+	case "past_due", BillingRenewing:
 		return now.Before(b.entitledUntil())
 	}
 	return false
@@ -122,8 +153,19 @@ func (b *TeamBilling) entitledUntil() time.Time {
 		return b.PeriodEnd
 	case "past_due":
 		return cmp.Or(b.GraceEnds, b.PeriodEnd)
+	case BillingRenewing:
+		return b.GraceEnds
 	}
 	return time.Time{}
+}
+
+// inRenewal says whether the team's period ended, on an answer that was
+// active or renewing, less than teamRenewGrace ago.
+func (b *TeamBilling) inRenewal(now time.Time) bool {
+	if b == nil || b.Status != "active" && b.Status != BillingRenewing || b.PeriodEnd.IsZero() {
+		return false
+	}
+	return !now.Before(b.PeriodEnd) && now.Before(b.PeriodEnd.Add(teamRenewGrace))
 }
 
 // teamRetireAfter is how long a firm team's subscription stays over before
@@ -159,8 +201,12 @@ const (
 	teamBillingEvery = 24 * time.Hour
 	// teamBillingRetry spaces out tries after a failure to get an answer.
 	teamBillingRetry = time.Hour
-	// teamBillingTick is how often the loop looks for teams due.
-	teamBillingTick = 10 * time.Minute
+	// teamRenewingEvery is how often a renewing team is asked, answered or
+	// not: a renewal lands, or a cancel or refund shows, within it.
+	teamRenewingEvery = 10 * time.Minute
+	// teamBillingTick is how often the loop looks for teams due; with
+	// teamRenewingEvery, a renewing team is asked every 10-15 minutes.
+	teamBillingTick = 5 * time.Minute
 	// TeamBillingRefreshGap is the least time between two refreshes of one
 	// team that a member or a lapse step asks for.
 	TeamBillingRefreshGap = time.Minute
@@ -307,9 +353,15 @@ func billingDue(b *TeamBilling, now time.Time) bool {
 		return true
 	}
 	if b.Error != "" {
+		if b.inRenewal(now) {
+			return now.Sub(b.TriedAt) >= teamRenewingEvery
+		}
 		return now.Sub(b.TriedAt) >= teamBillingRetry
 	}
 	if b.CheckedAt.IsZero() || now.Sub(b.CheckedAt) >= teamBillingEvery {
+		return true
+	}
+	if b.Status == BillingRenewing && now.Sub(b.CheckedAt) >= teamRenewingEvery {
 		return true
 	}
 	// An answer that entitled the team until a time now passed is asked
@@ -319,8 +371,9 @@ func billingDue(b *TeamBilling, now time.Time) bool {
 }
 
 // refreshTeamBilling asks fount-infra for team's billing and keeps the
-// answer. A refusal is an answer: Billing says no_access. A failure to get
-// one keeps the last answer and says why; it is also returned.
+// answer. A refusal is an answer: Billing says no_access, or renewing for a
+// period_ended inside the grace of an active answer. A failure to get one
+// keeps the last answer and says why; it is also returned.
 func (c *Coordinator) refreshTeamBilling(ctx context.Context, team string) (TeamBilling, error) {
 	if c.cfg.TeamBilling == nil {
 		return TeamBilling{}, ErrBillingOff
@@ -347,11 +400,18 @@ func (c *Coordinator) refreshTeamBilling(ctx context.Context, team string) (Team
 		if !ent.GraceEnds.IsZero() {
 			next.GraceEnds = ent.GraceEnds.UTC()
 		}
+	case errors.As(err, &refused) && refused.Reason == reasonPeriodEnded && t.Billing.inRenewal(now):
+		prev := t.Billing
+		next = TeamBilling{Status: BillingRenewing, Reason: refused.Reason, Tier: prev.Tier, PeriodEnd: prev.PeriodEnd, Seats: prev.Seats, CheckedAt: now, TriedAt: now}
+		err = nil
 	case errors.As(err, &refused):
 		next = TeamBilling{Status: BillingNoAccess, Reason: refused.Reason, CheckedAt: now, TriedAt: now}
 		err = nil
 	default:
 		next.TriedAt, next.Error = now, err.Error()
+	}
+	if err == nil && next.Status == BillingRenewing {
+		next.GraceEnds = next.PeriodEnd.Add(teamRenewGrace)
 	}
 	if err == nil && !next.Entitled(now) {
 		next.Since = now
