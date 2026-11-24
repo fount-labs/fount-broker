@@ -70,7 +70,7 @@ func (c *Coordinator) AccountHandler(caller Caller) http.Handler {
 	a := &api{c: c, account: caller.Account, caller: &caller}
 	mux := http.NewServeMux()
 	a.accountRoutes(mux)
-	return c.serving(mux)
+	return c.serving(c.planWithoutBilling(caller, mux))
 }
 
 // router is what registers a route: an http.ServeMux, or a test's list.
@@ -521,7 +521,7 @@ func statusOf(err error) int {
 		return http.StatusForbidden
 	case errors.Is(err, ErrRetired):
 		return http.StatusGone
-	case errors.Is(err, ErrTooManyUngranted):
+	case errors.Is(err, ErrTooManyUngranted), errors.As(err, new(*TeamLogLimitError)):
 		return http.StatusTooManyRequests
 	case errors.Is(err, ErrInvalid), errors.Is(err, ErrReserved):
 		return http.StatusBadRequest
@@ -539,9 +539,13 @@ func reply(rw http.ResponseWriter, status int, v any) {
 }
 
 // fail answers {"error"}, with a "code" for a refusal Desktop words itself
-// (errorCode).
+// (errorCode) and Retry-After for a team log's rate (teamloglimits.go).
 func fail(rw http.ResponseWriter, status int, err error) {
 	body := map[string]string{"error": err.Error()}
+	var limit *TeamLogLimitError
+	if errors.As(err, &limit) {
+		limit.retryAfter(rw)
+	}
 	if code := errorCode(err); code != "" {
 		body["code"] = code
 	}

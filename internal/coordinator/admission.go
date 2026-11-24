@@ -19,17 +19,21 @@ import (
 //     gives it, as any member;
 //   - make an empty worker while it is an admin of such a team, which only a
 //     list of a team can take in;
-//   - read its teams and their logs, open and take an invite, sign the
-//     team's lists (seats below), add its own computers with its passkey,
-//     recover, and ask for the team's billing and statements: none of it
-//     runs a job or reads a worker.
+//   - read its teams and their logs, and ask for the team's billing and
+//     statements;
+//   - on a firm team, whatever its billing says, take an invite, sign the
+//     team's lists (seats below), add its own computers with its passkey and
+//     recover, so a lapsed team's admins can still remove members and pay:
+//     none of it runs a job or reads a worker, and the log's own bounds
+//     hold (teamloglimits.go).
 //
 // Everything else needs the caller's own plan, as before: minting a team, a
 // worker before a list takes it in (save the admin case above), and every
-// worker of a solo account's team (pricing.md 5a: each reviewer has their
-// own plan). A caller with its own plan reaches every worker its role
-// allows, a lapsed firm team's included, so its admins and reviewers can
-// still read and export; the team's jobs wait all the same (teamRunsJobs).
+// worker of a solo account's team and every entry of its log (pricing.md
+// 5a: each reviewer has their own plan). A caller with its own plan reaches
+// every worker its role allows, a lapsed firm team's included, so its
+// admins and reviewers can still read and export; the team's jobs wait all
+// the same (teamRunsJobs).
 //
 // Seats: a firm team's list counts its admins, reviewers and pending
 // invites, each a member. A list that grows the count past the seats paid
@@ -38,7 +42,8 @@ import (
 // seat, enough for the admin who sets it up and pays.
 //
 // With no TeamBiller (Config.TeamBilling nil) none of this applies: there is
-// no team billing, and every route needs the caller's own plan.
+// no team billing, and AccountHandler refuses every route to a caller
+// without its own plan (planWithoutBilling).
 
 var (
 	// ErrNoPlan is a caller without a plan of its own on a route that needs
@@ -60,7 +65,10 @@ const (
 
 // errorCode is the code fail sends with err, or empty.
 func errorCode(err error) string {
+	var limit *TeamLogLimitError
 	switch {
+	case errors.As(err, &limit):
+		return limit.code()
 	case errors.Is(err, ErrSeats):
 		return codeSeats
 	case errors.Is(err, ErrTeamUnpaid):

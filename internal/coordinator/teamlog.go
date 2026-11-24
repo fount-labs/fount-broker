@@ -346,9 +346,14 @@ func (c *Coordinator) AppendTeamList(caller Caller, team, token string, deks map
 		return TeamLogView{}, err
 	}
 	entry := TeamEntry{Seq: l.Seq, List: token, Hash: entryHash(TeamListContext, payload)}
+	if err := c.teamLogRoom(caller, team, len(entry.List)+len(entry.Hash), l.Deleted, now); err != nil {
+		c.mu.Unlock()
+		return TeamLogView{}, err
+	}
 	removed, err := c.commitEntry(team, prior, entry, deks)
 	var view TeamLogView
 	if err == nil {
+		c.tookTeamLog(caller, team, now)
 		view = c.teamLogView(team, l.Seq-1)
 	}
 	c.mu.Unlock()
@@ -363,7 +368,8 @@ func (c *Coordinator) AppendTeamList(caller Caller, team, token string, deks map
 
 // checkList is every check on a list against its team's state before it
 // (§2.2): the order, the signer, the devices, the accounts, the workers and,
-// for a firm team, its seats (admission.go).
+// for a firm team, its seats (admission.go). The log's own bounds come after
+// (teamloglimits.go).
 // prior is nil for a team's first list. Called with c.mu held.
 func (c *Coordinator) checkList(prior *teamState, l TeamList, caller Caller, deks map[string]DEK, now time.Time) error {
 	seq, head := uint64(0), ""
@@ -571,9 +577,15 @@ func (c *Coordinator) appendRecordLocked(caller Caller, team string, prior *team
 	if err != nil {
 		return 0, err
 	}
-	if _, err := c.commitEntry(team, prior, TeamEntry{Seq: rec.Seq, Record: payload, Hash: entryHash(TeamRecordContext, payload)}, nil); err != nil {
+	entry := TeamEntry{Seq: rec.Seq, Record: payload, Hash: entryHash(TeamRecordContext, payload)}
+	now := c.now()
+	if err := c.teamLogRoom(caller, team, len(entry.Record)+len(entry.Hash), false, now); err != nil {
 		return 0, err
 	}
+	if _, err := c.commitEntry(team, prior, entry, nil); err != nil {
+		return 0, err
+	}
+	c.tookTeamLog(caller, team, now)
 	return rec.Seq, nil
 }
 

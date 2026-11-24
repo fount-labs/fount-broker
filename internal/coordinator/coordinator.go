@@ -114,6 +114,8 @@ type Coordinator struct {
 	clock atomic.Pointer[func() time.Time]
 	// billing is the team billing loop's (teambilling.go).
 	billing teamBillingLoop
+	// logRate is the team logs' append rates (teamloglimits.go).
+	logRate teamLogRate
 }
 
 // now is the team log's time: lists' age, records' at and recoveries' wait.
