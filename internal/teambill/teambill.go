@@ -22,7 +22,10 @@
 //	POST <base>/coordinator/team-entitlement
 //
 // with no body, and the answer is { status, tier, periodEnd, graceEnds,
-// seats }, or 403 { error: "no_access", reason }.
+// seats }, or 403 { error: "no_access", reason }. status is active,
+// past_due, or renewing: the period ended but Stripe has renewed it, and
+// fount-infra hasn't seen the invoice paid yet (the coordinator's grace).
+// An older fount-infra answers that 403 period_ended.
 package teambill
 
 import (
@@ -191,7 +194,7 @@ func (c *Client) Status(ctx context.Context, team string) (coordinator.TeamEntit
 	}
 	var a answer
 	if err := json.NewDecoder(bytes.NewReader(data)).Decode(&a); err != nil ||
-		(a.Status != "active" && a.Status != "past_due") || a.Tier == "" || a.PeriodEnd <= 0 || a.Seats < 1 {
+		(a.Status != "active" && a.Status != "past_due" && a.Status != coordinator.BillingRenewing) || a.Tier == "" || a.PeriodEnd <= 0 || a.Seats < 1 {
 		return coordinator.TeamEntitlement{}, errors.New("fount-infra answered with no team status")
 	}
 	ent := coordinator.TeamEntitlement{Status: a.Status, Tier: a.Tier, PeriodEnd: time.Unix(a.PeriodEnd, 0).UTC(), Seats: a.Seats}

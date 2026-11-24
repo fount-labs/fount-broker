@@ -15,8 +15,8 @@ import (
 // What such a caller may do:
 //
 //   - a worker of a firm team whose subscription is entitled (TeamBilling
-//     active, or past_due inside its period), with the role the team's log
-//     gives it, as any member;
+//     active, past_due inside its period, or renewing inside its grace),
+//     with the role the team's log gives it, as any member;
 //   - make an empty worker while it is an admin of such a team, which only a
 //     list of a team can take in;
 //   - read its teams and their logs, open and take an invite, sign the
