@@ -50,11 +50,11 @@ const (
 )
 
 // ErrMailboxSet is a worker that already has another address.
-var ErrMailboxSet = errors.New("the worker already has an address")
+var ErrMailboxSet = errors.New("the email agent already has an address")
 
 // ErrMailboxTaken is a mailbox another worker already has. A mailbox id is
 // one worker's (security review 2026-11-19, C1).
-var ErrMailboxTaken = errors.New("another worker has that address")
+var ErrMailboxTaken = errors.New("another email agent has that address")
 
 // MailSetup is what a worker starts its Cloud life with.
 type MailSetup struct {
@@ -132,7 +132,7 @@ func (s *MailSetup) check() error {
 	}
 	s.Mailbox.Address, _ = mailAddress(s.Mailbox.Address)
 	if len(s.Requesters) > maxRequesters {
-		return fmt.Errorf("%w: a worker has at most %d requesters", ErrInvalid, maxRequesters)
+		return fmt.Errorf("%w: an email agent has at most %d requesters", ErrInvalid, maxRequesters)
 	}
 	seen := map[string]bool{}
 	for i := range s.Requesters {
@@ -141,7 +141,7 @@ func (s *MailSetup) check() error {
 			return err
 		}
 		if strings.HasSuffix(a, "@"+domainOf(s.Mailbox.Address)) {
-			return fmt.Errorf("%w: %s is a worker's address, which can't send work", ErrInvalid, a)
+			return fmt.Errorf("%w: %s is an email agent's address, which can't send work", ErrInvalid, a)
 		}
 		if seen[a] {
 			return fmt.Errorf("%w: %s is listed twice", ErrInvalid, a)

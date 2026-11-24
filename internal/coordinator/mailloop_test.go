@@ -857,8 +857,8 @@ func TestAPausedWorkerHoldsRequests(t *testing.T) {
 		paused *bool
 		reason string
 	}{
-		{&paused, "the worker is paused"},
-		{nil, "Fount couldn't tell whether the worker is paused"},
+		{&paused, "the email agent is paused"},
+		{nil, "Fount couldn't tell whether the email agent is paused"},
 	} {
 		// A rig each: the worker keeps a pause the edge said.
 		r := newMailRig(t, MailConfig{})

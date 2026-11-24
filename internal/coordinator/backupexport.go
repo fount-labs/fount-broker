@@ -102,12 +102,12 @@ func (c *Coordinator) ExportWorker(device, workerID string) ([]byte, error) {
 		return add(name, data)
 	}
 	idx := ExportIndex{Format: exportFormat, Worker: w.ID, ExportedAt: now, Version: t.Version(), Folders: map[string]string{
-		"files":    "the worker's files",
+		"files":    "the email agent's files",
 		"threads":  "each thread, as the app shows it",
-		"mail":     "the worker's address, mail held for a person, and every reply sent",
+		"mail":     "the email agent's address, mail held for a person, and every reply sent",
 		"sessions": "the workspace's sessions and transcripts",
 		"jobs":     "each job's events and proposed file versions",
-		"record":   "the rest of the worker's records",
+		"record":   "the rest of the email agent's records",
 	}}
 	if mb, err := loadMailbox(t); err == nil {
 		idx.Address = mb.Address

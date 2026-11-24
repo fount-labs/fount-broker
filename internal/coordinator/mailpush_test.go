@@ -107,7 +107,7 @@ func TestSetPausedHoldsMailAndTellsTheEdge(t *testing.T) {
 	if s := r.settings(w.ID); !s.Paused || s.PauseUnsent {
 		t.Fatalf("settings after the send %+v", s)
 	}
-	if a := r.ledger(w.ID).Acted[id]; a.Outcome != outcomeHeld || a.Reason != "the worker is paused" {
+	if a := r.ledger(w.ID).Acted[id]; a.Outcome != outcomeHeld || a.Reason != "the email agent is paused" {
 		t.Fatalf("%+v", a)
 	}
 
@@ -133,7 +133,7 @@ func TestAnUnsentPauseHoldsMail(t *testing.T) {
 	r.workerOp(w.ID, "op_pause", "setPaused", switchArgs{On: true})
 	id := r.edge.deliver(mb, email{from: "dana@example.com", to: testWorkerAddr})
 	r.pass()
-	if a := r.ledger(w.ID).Acted[id]; a.Outcome != outcomeHeld || a.Reason != "the worker is paused" {
+	if a := r.ledger(w.ID).Acted[id]; a.Outcome != outcomeHeld || a.Reason != "the email agent is paused" {
 		t.Fatalf("%+v", a)
 	}
 	if s := r.settings(w.ID); !s.PauseUnsent {

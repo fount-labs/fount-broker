@@ -43,7 +43,7 @@ const (
 )
 
 // ErrNoMailbox is a worker with no address yet.
-var ErrNoMailbox = errors.New("the worker has no mailbox")
+var ErrNoMailbox = errors.New("the email agent has no address")
 
 // Mailbox is an address and the keys the coordinator reads and signs its mail
 // with. An admin device hands them over sealed when it makes the worker
@@ -358,7 +358,7 @@ func (c *Coordinator) mailboxReady(workerID string, mb Mailbox, keys *mail.Keys)
 	c.mu.Lock()
 	if holder := c.mailboxHolder(workerID, mb.MailboxID); holder != "" {
 		c.mu.Unlock()
-		return fmt.Errorf("%w: worker %s has %s", ErrMailboxTaken, holder, mb.Address)
+		return fmt.Errorf("%w: email agent %s has %s", ErrMailboxTaken, holder, mb.Address)
 	}
 	if w := c.state.Workers[workerID]; w != nil && w.Mailbox != mb.MailboxID {
 		w.Mailbox = mb.MailboxID
@@ -382,7 +382,7 @@ func (c *Coordinator) mailboxFree(workerID, mailboxID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if holder := c.mailboxHolder(workerID, mailboxID); holder != "" {
-		return fmt.Errorf("%w: worker %s has it", ErrMailboxTaken, holder)
+		return fmt.Errorf("%w: email agent %s has it", ErrMailboxTaken, holder)
 	}
 	return nil
 }

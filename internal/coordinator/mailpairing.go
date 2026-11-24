@@ -108,7 +108,7 @@ func examinePairing(p *Pairing, workerAddress string, msg *mail.Message, check *
 	case !msg.BootAttested:
 		reason = "The mail edge that received the reply wasn't attested."
 	case !check.RecipientSigned || !inTo:
-		reason = "The worker's address wasn't in the reply's signed To."
+		reason = "The email agent's address wasn't in the reply's signed To."
 	}
 	return pairingFound{
 		paired:    &PairedOwner{Address: address, DKIMDomain: aligned, AutoRun: reason == "", Reason: reason, Message: msg.ID},
