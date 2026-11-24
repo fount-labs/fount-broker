@@ -491,13 +491,13 @@ func TestApprovalByEmail(t *testing.T) {
 	r.intake.set(func(f *fakeIntake) { f.instruction, f.source, f.reply = "Yes.", "owner", true })
 	th, e := r.drafted()
 	r.pass()
-	asks := r.send.sentTo("dana@example.com", "Approve: Re: Q3 close")
+	asks := r.send.approvalsTo("dana@example.com")
 	if len(asks) != 1 || !strings.Contains(string(r.send.raw[asks[0]]), "reconciled") {
 		t.Fatalf("the approval email: %v", asks)
 	}
 	ask := asks[0]
 	reply := func(e email) {
-		e.from, e.to, e.subject = cmpOrStr(e.from, "dana@example.com"), testWorkerAddr, "Re: Approve: Re: Q3 close"
+		e.from, e.to, e.subject = cmpOrStr(e.from, "dana@example.com"), testWorkerAddr, "Re: Q3 close"
 		r.edge.deliver(r.mb, e)
 		r.pass()
 	}
