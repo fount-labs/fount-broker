@@ -9,7 +9,7 @@
 //	base64url(claims JSON) "." base64url(Ed25519 signature)
 //
 //	{ "v": 1, "typ": "fount-team-admin", "team", "acct", "kid", "iat", "exp" }  ≤ 5 minutes
-//	{ "v": 1, "typ": "fount-team-seat",  "team", "acct", "kid", "iat", "exp" }  ≤ 7 days
+//	{ "v": 1, "typ": "fount-team-seat",  "team", "acct", "kid", "iat", "exp" }  ≤ 24 hours
 //	{ "v": 1, "typ": "fount-team-status", "team", "kid", "iat", "exp" }        ≤ 5 minutes
 //
 // fount-infra trusts the key once one of the coordinators it is deployed with
@@ -48,9 +48,11 @@ const (
 	TypeSeat   = "fount-team-seat"
 	TypeStatus = "fount-team-status"
 	// AdminLifetime and StatusLifetime are at most fount-infra's five
-	// minutes; SeatLifetime is a device credential's week.
+	// minutes. SeatLifetime bounds how long a member taken off the team
+	// keeps charging its pool for Desktop's AI: fount-infra can't revoke a
+	// seat, and Desktop fetches a fresh statement before each renewal.
 	AdminLifetime  = 5 * time.Minute
-	SeatLifetime   = 7 * 24 * time.Hour
+	SeatLifetime   = 24 * time.Hour
 	StatusLifetime = 5 * time.Minute
 	// Path is the status route under the base URL.
 	Path      = "coordinator/team-entitlement"

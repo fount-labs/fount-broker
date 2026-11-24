@@ -44,11 +44,22 @@ lets in, so it needs a review before it is merged or deployed.
 
    The admission check runs after the membership check, so a stranger still gets `ErrNoWorker` or
    `ErrNoTeam` (404), never a billing answer. Refusals are `402` with `code` set to `no_plan`,
-   `team_unpaid` or `seats`.
+   `team_unpaid`, `seats` or `over_seats`.
 4. **Seats** (`checkSeats`, called last in `checkList`), for firm teams with billing on and a list
    that doesn't delete the team. `count = len(list.Members)`: admins, reviewers and pending invites.
    The list is refused with `ErrSeats` when `count > seats && count > prior count`. `seats` is
    `max(Billing.Seats, 1)` while entitled, and `1` otherwise.
+
+   Over the seats (cut below the members, D7 as changed 2026-11-24): nobody is removed.
+   `Billing.OverSeatsSince` keeps when an entitled team first had `count > seats` (set on a billing
+   answer or a list, cleared when back within, kept as it was while the team isn't entitled).
+   Once it is `overSeatsGrace` (31 days) old, only the first `seats` members with an account,
+   admins first and then by `Member.Joined` (the entry from which each held its account), are
+   admitted without a plan of their own (`requireSeat` in `admitTeam`, `admitWorker`,
+   `admitCreate`) and get seat statements; the rest get `402 over_seats` (`ErrOverSeats`). Admin
+   statements need no seat, so an admin can still buy seats. `GET /v1/teams` billing carries
+   `seatsCutAt` and `unseated` (member ids). Seat statements last 24 h (`teambill.SeatLifetime`),
+   so a removed member stops charging the team at their next device renewal.
 5. **Jobs** (`coordinator.go` `next`). A queued job of a firm team that isn't `teamPaid` doesn't
    start. `TeamRunners` counts neither its queued jobs nor its intake waits, so no runner is
    started for it.
