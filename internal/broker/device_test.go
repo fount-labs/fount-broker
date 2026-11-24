@@ -127,7 +127,7 @@ func TestTeamBillingForwardsTheSignedRequestAsSent(t *testing.T) {
 	}
 }
 
-func TestDeviceRenewSendsTheHeadersAndNoBody(t *testing.T) {
+func TestDeviceRenewSendsTheHeadersAndNoOtherBody(t *testing.T) {
 	for dest, path := range map[string]string{
 		"fount.device_renew":            "device/renew",
 		"fount.device_cloud_credential": "device/cloud-credential",
@@ -145,9 +145,10 @@ func TestDeviceRenewSendsTheHeadersAndNoBody(t *testing.T) {
 			t.Fatalf("%s: route got %+v", dest, r)
 		}
 
-		s.send(`{"kind":"fetch","id":2,"dest":"`+dest+`","headers":`+signedHeaders+`}`, "{}")
+		// device_renew may carry a seat statement (fount.device_renew's body); nothing else.
+		s.send(`{"kind":"fetch","id":2,"dest":"`+dest+`","headers":`+signedHeaders+`}`, `{"other":"x"}`)
 		if r, _ := s.recv(); r.Kind != protocol.KindError || r.Code != protocol.CodePolicy {
-			t.Fatalf("%s with a body: got %+v, want a policy error", dest, r)
+			t.Fatalf("%s with another body: got %+v, want a policy error", dest, r)
 		}
 	}
 }
