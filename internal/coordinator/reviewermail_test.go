@@ -237,12 +237,16 @@ func TestAReviewersEmailApprovalNeedsThemStillOnTheTeam(t *testing.T) {
 			r.intake.set(func(f *fakeIntake) { f.instruction, f.source, f.reply = "Yes.", "owner", true })
 			th, e := r.drafted()
 			r.pass()
-			asks := r.send.sentTo("maria@example.com", "Approve: Re: Q3 close")
+			asks := r.send.approvalsTo("maria@example.com")
 			if len(asks) != 1 {
 				t.Fatalf("maria's approval email: %v", asks)
 			}
 			if raw := r.sentRaw(asks[0]); !strings.Contains(raw, "waits in Fount until someone runs it") {
 				t.Fatalf("a member who isn't a requester is told their reply is a note:\n%s", raw)
+			}
+			// Maria never wrote on the thread: hers starts its own conversation.
+			if m, _ := r.send.message(t, asks[0]); m.Header.Get("Subject") != "Draft reply: Q3 close" || m.Header.Get("In-Reply-To") != "" {
+				t.Fatalf("maria's approval email: subject %q, in-reply-to %q", m.Header.Get("Subject"), m.Header.Get("In-Reply-To"))
 			}
 			if leave {
 				r.tt.drop("m_reviewer")
@@ -250,7 +254,7 @@ func TestAReviewersEmailApprovalNeedsThemStillOnTheTeam(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			r.edge.deliver(r.mb, email{from: "maria@example.com", to: testWorkerAddr, subject: "Re: Approve: Re: Q3 close", inReplyTo: asks[0]})
+			r.edge.deliver(r.mb, email{from: "maria@example.com", to: testWorkerAddr, subject: "Re: Draft reply: Q3 close", inReplyTo: asks[0]})
 			r.pass()
 			d := r.draft(th.ID, e.ID)
 			if leave {

@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"path"
@@ -61,6 +62,13 @@ func (c *Coordinator) approvalToken(workerID, threadID, draftID string, a *appro
 // token: the owner's is the draft's Ask, every other reviewer's one of its
 // Asks. requester says to's other replies start work; a member who isn't
 // one is told theirs wait.
+//
+// It reads as a person's reply would: text/plain, in the reviewer's own
+// conversation when they wrote on the thread (In-Reply-To and References to
+// their newest email, its subject), the draft quoted as it will be sent, and
+// no link: a fount:// link in a message body is what a spam filter sees as a
+// lure, and there is no https form of a thread's link yet. The token is only
+// in the Message-ID, as before.
 func (c *Coordinator) askApproval(t *Tree, th *threadRecord, mb *Mailbox, rs *replySettings, id, draftID string, d *draftEntry, to string, requester bool, now time.Time) error {
 	keys, err := c.mailKeys(mb)
 	if err != nil {
@@ -79,29 +87,16 @@ func (c *Coordinator) askApproval(t *Tree, th *threadRecord, mb *Mailbox, rs *re
 	for _, p := range d.Files {
 		names = append(names, path.Base(p))
 	}
-	firm := rs.firm(mb)
-	var b strings.Builder
-	fmt.Fprintf(&b, "A draft reply is ready in %s.\n\n", firm)
-	b.WriteString("To: " + strings.Join(d.To, ", ") + "\n")
-	b.WriteString("Subject: " + d.Subject + "\n")
-	if len(names) > 0 {
-		b.WriteString("Attached: " + strings.Join(names, ", ") + "\n")
+	text := approvalText(d, names, rs.firm(mb), ask.To, requester, ask.ExpiresAt)
+	subject, inReplyTo, refs := approvalSubject(d.Subject), "", []string(nil)
+	if m := th.newestMailFrom(ask.To); m != nil {
+		subject, inReplyTo, refs = replySubject(cmp.Or(m.Subject, th.Subject)), m.MessageID, m.references()
 	}
-	b.WriteString("\n----- The reply, as it will be sent -----\n\n")
-	b.WriteString(renderBody(d.Text, names, footer(firm, true)))
-	b.WriteString("\n----- End of the reply -----\n\n")
-	fmt.Fprintf(&b, "To send it exactly as it is, reply to this email with \"yes\". That works once, until %s.\n", ask.ExpiresAt.Format("2 Jan 2006 15:04 MST"))
-	if requester {
-		b.WriteString("Anything else you write back goes to the email agent as a note.\n\n")
-	} else {
-		b.WriteString("Anything else you write back waits in Fount until someone runs it.\n\n")
-	}
-	b.WriteString("Open it in Fount: " + fountLink(th.WorkerID, th.ID) + "\n\n" + footer(firm, false) + "\n")
 	r := &sendRecord{
 		ID: id, Kind: sendKindNotice, ThreadID: th.ID, Attempt: 1, State: sendSending, To: []string{ask.To},
 		MessageID: messageID(c.approvalToken(th.WorkerID, th.ID, draftID, ask), token, domainOf(mb.Address)),
 	}
-	raw, err := c.buildOut(t, th, mb, r, nil, "Approve: "+d.Subject, "", nil, b.String(), nil, now)
+	raw, err := c.buildOut(t, th, mb, r, nil, subject, inReplyTo, refs, text, nil, now)
 	if err != nil {
 		return err
 	}
@@ -112,6 +107,57 @@ func (c *Coordinator) askApproval(t *Tree, th *threadRecord, mb *Mailbox, rs *re
 		d.Ask = ask
 	} else {
 		d.Asks = append(d.Asks, *ask)
+	}
+	return nil
+}
+
+// approvalText is the approval email's body: who the reply is for, the reply
+// quoted exactly as it will be sent, how to send it, and the footer. The
+// reviewer is "you" among the recipients.
+func approvalText(d *draftEntry, names []string, firm, reviewer string, requester bool, expires time.Time) string {
+	var to []string
+	for _, a := range d.To {
+		if strings.EqualFold(a, reviewer) {
+			a = "you"
+		}
+		to = append(to, a)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "The email agent drafted a reply to %s, with the subject \"%s\".", strings.Join(to, ", "), d.Subject)
+	if len(names) > 0 {
+		fmt.Fprintf(&b, "\nIt attaches %s.", strings.Join(names, ", "))
+	}
+	b.WriteString("\nHere it is, exactly as it will be sent:\n\n")
+	for line := range strings.SplitSeq(strings.TrimRight(renderBody(d.Text, names, footer(firm, true)), "\n"), "\n") {
+		b.WriteString(strings.TrimRight("> "+line, " ") + "\n")
+	}
+	fmt.Fprintf(&b, "\nReply \"yes\" to send it as it is.\nThat works once, until %s.\n", expires.Format("2 Jan 2006 15:04 MST"))
+	if requester {
+		b.WriteString("Anything else you write back goes to the email agent as a note.\n")
+	} else {
+		b.WriteString("Anything else you write back waits in Fount until someone runs it.\n")
+	}
+	b.WriteString("To change it first, open Fount.\n\n" + footer(firm, false) + "\n")
+	return b.String()
+}
+
+// approvalSubject is the subject of an approval email that starts its own
+// conversation, for a reviewer who hasn't written on the thread.
+func approvalSubject(draftSubject string) string {
+	subject := strings.Join(strings.Fields(draftSubject), " ")
+	if len(subject) >= 3 && strings.EqualFold(subject[:3], "re:") {
+		subject = strings.TrimSpace(subject[3:])
+	}
+	return "Draft reply: " + subject
+}
+
+// newestMailFrom is the newest email on th from address, which an approval
+// email to address answers, or nil.
+func (th *threadRecord) newestMailFrom(address string) *mailEntry {
+	for _, e := range slices.Backward(th.Entries) {
+		if e.Kind == entryMail && e.Mail != nil && e.Mail.MessageID != "" && strings.EqualFold(strings.TrimSpace(e.Mail.Sender), address) {
+			return e.Mail
+		}
 	}
 	return nil
 }

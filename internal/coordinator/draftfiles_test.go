@@ -337,7 +337,7 @@ func TestAnEmailApprovalIsRefusedWhileSomeoneEdits(t *testing.T) {
 	r.intake.set(func(f *fakeIntake) { f.instruction, f.source, f.reply = "Yes.", "owner", true })
 	th, e := r.drafted()
 	r.pass()
-	asks := r.send.sentTo("dana@example.com", "Approve: Re: Q3 close")
+	asks := r.send.approvalsTo("dana@example.com")
 	if len(asks) != 1 {
 		t.Fatalf("the approval email: %v", asks)
 	}
@@ -353,7 +353,7 @@ func TestAnEmailApprovalIsRefusedWhileSomeoneEdits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Approve: Re: Q3 close", inReplyTo: asks[0]})
+	r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close", inReplyTo: asks[0]})
 	r.pass()
 	if d := r.draft(th.ID, e.ID); d.State != draftPending {
 		t.Fatalf("approved while someone edits: %s", d.State)
