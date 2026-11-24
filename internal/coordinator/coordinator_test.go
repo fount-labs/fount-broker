@@ -63,7 +63,7 @@ func fakeRunner(mode string, args []string) int {
 	return 0
 }
 
-func newTestCoordinator(t *testing.T, mode string, timeout time.Duration) (*Coordinator, context.CancelFunc) {
+func newTestCoordinator(t testing.TB, mode string, timeout time.Duration) (*Coordinator, context.CancelFunc) {
 	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
@@ -83,6 +83,7 @@ func newTestCoordinator(t *testing.T, mode string, timeout time.Duration) (*Coor
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { checkTeamStates(t, c) })
 	ctx, cancel := context.WithCancel(context.Background())
 	go c.Run(ctx)
 	t.Cleanup(cancel)

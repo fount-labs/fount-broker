@@ -24,7 +24,7 @@ type testDevice struct {
 	enc *ecdh.PrivateKey
 }
 
-func newTestDevice(t *testing.T) testDevice {
+func newTestDevice(t testing.TB) testDevice {
 	t.Helper()
 	_, key, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -57,7 +57,7 @@ func (d testDevice) unpaid(account string) Caller {
 
 // include is d's inclusion in a team, under account, admitted from entry
 // since.
-func (d testDevice) include(t *testing.T, team, account string, since uint64) string {
+func (d testDevice) include(t testing.TB, team, account string, since uint64) string {
 	t.Helper()
 	token, err := SignTeamInclusion(d.key, d.enc.PublicKey().Bytes(), TeamInclusion{Aud: testAudience, Team: team, Acct: account, Seq: since})
 	if err != nil {
@@ -76,7 +76,7 @@ func (d testDevice) wrap(t *testing.T, account, workerID string, dek DEK) []byte
 }
 
 // sign signs l as d, now.
-func (d testDevice) sign(t *testing.T, l TeamList) string {
+func (d testDevice) sign(t testing.TB, l TeamList) string {
 	t.Helper()
 	if l.Iat == 0 {
 		l.Iat = time.Now().Unix()
@@ -91,7 +91,7 @@ func (d testDevice) sign(t *testing.T, l TeamList) string {
 // testTeam is a team as Desktop keeps it: its members, their devices and
 // its workers, from which it signs the list after the coordinator's head.
 type testTeam struct {
-	t       *testing.T
+	t       testing.TB
 	c       *Coordinator
 	id      string
 	members map[string]ListMember
@@ -102,7 +102,7 @@ type testTeam struct {
 	since map[string]uint64
 }
 
-func newTestTeam(t *testing.T, c *Coordinator, id string) *testTeam {
+func newTestTeam(t testing.TB, c *Coordinator, id string) *testTeam {
 	return &testTeam{t: t, c: c, id: id, members: map[string]ListMember{}, devices: map[string][]testDevice{}, workers: map[string]string{}, since: map[string]uint64{}}
 }
 

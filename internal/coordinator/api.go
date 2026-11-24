@@ -521,7 +521,7 @@ func statusOf(err error) int {
 		return http.StatusForbidden
 	case errors.Is(err, ErrRetired):
 		return http.StatusGone
-	case errors.Is(err, ErrTooManyUngranted), errors.As(err, new(*TeamLogLimitError)):
+	case errors.Is(err, ErrTooManyUngranted), errors.Is(err, ErrTeamLimit), errors.As(err, new(*TeamLogLimitError)):
 		return http.StatusTooManyRequests
 	case errors.Is(err, ErrInvalid), errors.Is(err, ErrReserved):
 		return http.StatusBadRequest

@@ -62,6 +62,11 @@ type Team struct {
 	// Billing is a firm team's subscription as fount-infra last answered
 	// (teambilling.go).
 	Billing *TeamBilling `json:"billing,omitempty"`
+	// Owner is the account that made the team, whose budget its log counts
+	// against (teamloglimits.go): a solo account's own, or the account a
+	// firm team's id was minted for. teamOwner fills it in for a team made
+	// before it was kept.
+	Owner string `json:"owner,omitempty"`
 
 	state *teamState
 }
@@ -110,58 +115,95 @@ func (c *Coordinator) teamState(id string) (*teamState, error) {
 // last list and the records after it. The log holds only entries that were
 // checked when they were appended, so a failure here is a damaged volume.
 func reduceTeam(team, aud string, log []TeamEntry) (*teamState, error) {
-	st := &teamState{usedInvites: map[string]bool{}, passkeyCounts: map[string]uint32{}, passkeyAdmitted: map[string]bool{}, recoveries: map[string]recovery{}, vouched: map[string]bool{}, byID: map[string]*Member{}, byDevice: map[string]*Member{}, workers: map[string]string{}}
-	head := ""
+	st := newTeamState()
 	for i, e := range log {
 		if e.Seq != uint64(i+1) {
 			return nil, fmt.Errorf("entry %d is numbered %d", i+1, e.Seq)
 		}
-		if st.deleted {
-			return nil, fmt.Errorf("entry %d follows the team's deletion", e.Seq)
+		if err := st.apply(team, aud, e); err != nil {
+			return nil, err
 		}
-		var hash string
-		switch {
-		case e.List != "" && e.Record == nil:
-			payload, _, err := splitToken(e.List)
-			if err != nil {
-				return nil, fmt.Errorf("entry %d: %v", e.Seq, err)
-			}
-			l, err := decodeTeamList(payload)
-			if err != nil {
-				return nil, fmt.Errorf("entry %d: %v", e.Seq, err)
-			}
-			if l.Seq != e.Seq || l.Prev != head || l.Team != team {
-				return nil, fmt.Errorf("entry %d doesn't follow the one before", e.Seq)
-			}
-			if err := st.applyList(l, aud); err != nil {
-				return nil, fmt.Errorf("entry %d: %v", e.Seq, err)
-			}
-			hash = entryHash(TeamListContext, payload)
-		case e.Record != nil && e.List == "":
-			var r TeamRecord
-			if err := decodeStrictJSON(e.Record, &r); err != nil {
-				return nil, fmt.Errorf("entry %d: %v", e.Seq, err)
-			}
-			if r.Seq != e.Seq || r.Prev != head {
-				return nil, fmt.Errorf("entry %d doesn't follow the one before", e.Seq)
-			}
-			if err := st.applyRecord(r, team, aud); err != nil {
-				return nil, fmt.Errorf("entry %d: %v", e.Seq, err)
-			}
-			hash = entryHash(TeamRecordContext, e.Record)
-		default:
-			return nil, fmt.Errorf("entry %d is neither a list nor a record", e.Seq)
-		}
-		if hash != e.Hash {
-			return nil, fmt.Errorf("entry %d's hash is wrong", e.Seq)
-		}
-		if e.Seq == 1 {
-			st.start = hash
-		}
-		head = hash
 	}
-	st.seq, st.head = uint64(len(log)), head
 	return st, nil
+}
+
+func newTeamState() *teamState {
+	return &teamState{usedInvites: map[string]bool{}, passkeyCounts: map[string]uint32{}, passkeyAdmitted: map[string]bool{}, recoveries: map[string]recovery{}, vouched: map[string]bool{}, byID: map[string]*Member{}, byDevice: map[string]*Member{}, workers: map[string]string{}}
+}
+
+// apply is reduceTeam's step: the state after entry, the next of s. reduceTeam
+// is a fold of it, so the state after an append is its prior state's clone
+// with the entry applied. A failure leaves s part-applied: apply to a clone.
+func (s *teamState) apply(team, aud string, e TeamEntry) error {
+	if e.Seq != s.seq+1 {
+		return fmt.Errorf("entry %d is numbered %d", s.seq+1, e.Seq)
+	}
+	if s.deleted {
+		return fmt.Errorf("entry %d follows the team's deletion", e.Seq)
+	}
+	var hash string
+	switch {
+	case e.List != "" && e.Record == nil:
+		payload, _, err := splitToken(e.List)
+		if err != nil {
+			return fmt.Errorf("entry %d: %v", e.Seq, err)
+		}
+		l, err := decodeTeamList(payload)
+		if err != nil {
+			return fmt.Errorf("entry %d: %v", e.Seq, err)
+		}
+		if l.Seq != e.Seq || l.Prev != s.head || l.Team != team {
+			return fmt.Errorf("entry %d doesn't follow the one before", e.Seq)
+		}
+		if err := s.applyList(l, aud); err != nil {
+			return fmt.Errorf("entry %d: %v", e.Seq, err)
+		}
+		hash = entryHash(TeamListContext, payload)
+	case e.Record != nil && e.List == "":
+		var r TeamRecord
+		if err := decodeStrictJSON(e.Record, &r); err != nil {
+			return fmt.Errorf("entry %d: %v", e.Seq, err)
+		}
+		if r.Seq != e.Seq || r.Prev != s.head {
+			return fmt.Errorf("entry %d doesn't follow the one before", e.Seq)
+		}
+		if err := s.applyRecord(r, team, aud); err != nil {
+			return fmt.Errorf("entry %d: %v", e.Seq, err)
+		}
+		hash = entryHash(TeamRecordContext, e.Record)
+	default:
+		return fmt.Errorf("entry %d is neither a list nor a record", e.Seq)
+	}
+	if hash != e.Hash {
+		return fmt.Errorf("entry %d's hash is wrong", e.Seq)
+	}
+	if e.Seq == 1 {
+		s.start = hash
+	}
+	s.seq, s.head = e.Seq, hash
+	return nil
+}
+
+// clone is a copy of s that apply may change without touching s: its own
+// members, devices and maps. A member's invite, passkey and workers are
+// replaced, never changed in place, so they are shared.
+func (s *teamState) clone() *teamState {
+	n := *s
+	n.members = make([]*Member, len(s.members))
+	n.byID = make(map[string]*Member, len(s.byID))
+	copied := make(map[*Member]*Member, len(s.members))
+	for i, m := range s.members {
+		cm := *m
+		cm.Devices = slices.Clone(m.Devices)
+		n.members[i], n.byID[cm.ID], copied[m] = &cm, &cm, &cm
+	}
+	n.byDevice = make(map[string]*Member, len(s.byDevice))
+	for id, m := range s.byDevice {
+		n.byDevice[id] = copied[m]
+	}
+	n.workers, n.usedInvites, n.passkeyCounts = maps.Clone(s.workers), maps.Clone(s.usedInvites), maps.Clone(s.passkeyCounts)
+	n.passkeyAdmitted, n.recoveries, n.vouched, n.former = maps.Clone(s.passkeyAdmitted), maps.Clone(s.recoveries), maps.Clone(s.vouched), maps.Clone(s.former)
+	return &n
 }
 
 // applyList makes a list the state; what it leaves out is gone.
@@ -352,12 +394,14 @@ func (c *Coordinator) AppendTeamList(caller Caller, team, token string, deks map
 			return TeamLogView{}, err
 		}
 	}
-	if err := c.checkList(prior, l, caller, deks, now); err != nil {
+	// The log's bounds and rates first: they are cheap, and checkList
+	// checks a signature for each device the list names.
+	entry := TeamEntry{Seq: l.Seq, List: token, Hash: entryHash(TeamListContext, payload)}
+	if err := c.teamLogRoom(caller, team, len(entry.List)+len(entry.Hash), l.Deleted, now); err != nil {
 		c.mu.Unlock()
 		return TeamLogView{}, err
 	}
-	entry := TeamEntry{Seq: l.Seq, List: token, Hash: entryHash(TeamListContext, payload)}
-	if err := c.teamLogRoom(caller, team, len(entry.List)+len(entry.Hash), l.Deleted, now); err != nil {
+	if err := c.checkList(prior, l, caller, deks, now); err != nil {
 		c.mu.Unlock()
 		return TeamLogView{}, err
 	}
@@ -581,9 +625,6 @@ func (c *Coordinator) appendRecordLocked(caller Caller, team string, prior *team
 	if proof == nil {
 		return 0, refuse("a record needs its proof checked")
 	}
-	if err := proof(prior, m); err != nil {
-		return 0, err
-	}
 	payload, err := json.Marshal(rec)
 	if err != nil {
 		return 0, err
@@ -591,6 +632,9 @@ func (c *Coordinator) appendRecordLocked(caller Caller, team string, prior *team
 	entry := TeamEntry{Seq: rec.Seq, Record: payload, Hash: entryHash(TeamRecordContext, payload)}
 	now := c.now()
 	if err := c.teamLogRoom(caller, team, len(entry.Record)+len(entry.Hash), false, now); err != nil {
+		return 0, err
+	}
+	if err := proof(prior, m); err != nil {
 		return 0, err
 	}
 	if _, err := c.commitEntry(team, prior, entry, nil); err != nil {
@@ -612,8 +656,13 @@ func (c *Coordinator) commitEntry(team string, prior *teamState, entry TeamEntry
 		log = slices.Clone(t.Log)
 	}
 	log = append(log, entry)
-	next, err := reduceTeam(team, c.cfg.Audience, log)
-	if err != nil {
+	// Only the new entry is checked again: prior is the log's state as
+	// reduceTeam made it, or as this made it from its own prior.
+	next := newTeamState()
+	if prior != nil {
+		next = prior.clone()
+	}
+	if err := next.apply(team, c.cfg.Audience, entry); err != nil {
 		return nil, err
 	}
 	// Each worker of the team as it will stand, and each it leaves.
@@ -649,6 +698,7 @@ func (c *Coordinator) commitEntry(team string, prior *teamState, entry TeamEntry
 	}
 	rotate := []string(nil)
 	var billing *TeamBilling
+	owner := c.teamOwner(team)
 	if existed {
 		rotate, billing = slices.Clone(t.Rotate), t.Billing
 	}
@@ -686,7 +736,7 @@ func (c *Coordinator) commitEntry(team string, prior *teamState, entry TeamEntry
 		}
 	}
 	restoreReleases := c.releaseLocked(removed)
-	c.state.Teams[team] = &Team{ID: team, Log: log, Rotate: rotate, Billing: billing, state: next}
+	c.state.Teams[team] = &Team{ID: team, Log: log, Rotate: rotate, Billing: billing, Owner: owner, state: next}
 	mintedFor, minted := c.state.TeamMints[team]
 	delete(c.state.TeamMints, team)
 	if err := c.commitSecurity(); err != nil {
@@ -788,7 +838,8 @@ const teamIDPrefix = "tm"
 // list for (§2.2): random, so no one can claim another's team, and never an
 // identity provider's organisation id. fount-infra maps an organisation to
 // it for billing alone. Until a first list is appended for it, asking again
-// returns the same id, so an account holds one at a time.
+// returns the same id, so an account holds one at a time, and an account
+// makes at most maxTeamsPerAccount firm teams.
 func (c *Coordinator) MintTeam(caller Caller) (string, error) {
 	if err := checkID("account", caller.Account); err != nil {
 		return "", err
@@ -802,6 +853,9 @@ func (c *Coordinator) MintTeam(caller Caller) (string, error) {
 		if c.state.TeamMints[id] == caller.Account {
 			return id, nil
 		}
+	}
+	if n := c.firmTeamsOf(caller.Account); n >= maxTeamsPerAccount {
+		return "", fmt.Errorf("%w: the account has made %d", ErrTeamLimit, n)
 	}
 	for {
 		id, err := newID(teamIDPrefix)

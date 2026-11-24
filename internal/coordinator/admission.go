@@ -83,6 +83,8 @@ func errorCode(err error) string {
 	switch {
 	case errors.As(err, &limit):
 		return limit.code()
+	case errors.Is(err, ErrTeamLimit):
+		return codeTeamLimit
 	case errors.Is(err, ErrSeats):
 		return codeSeats
 	case errors.Is(err, ErrOverSeats):

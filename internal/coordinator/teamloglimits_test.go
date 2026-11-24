@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -209,4 +210,198 @@ func TestTeamLogRatesForgetRefilledKeys(t *testing.T) {
 	if rateWait(keys, "late", now.Add(time.Hour), time.Second, 2) != 0 || rateWait(keys, "late", now.Add(time.Hour), time.Second, 1) != time.Second {
 		t.Fatal("the kept key's wait")
 	}
+}
+
+// The logs of the teams an account made share accountLogMaxBytes: past it,
+// none of them takes an entry but its deletion, 429 account_log_full with no
+// Retry-After, while another account's teams go on.
+func TestTheTeamsAnAccountMadeShareOneBudget(t *testing.T) {
+	f := newBillingFixture(t)
+	f.c.mu.Lock()
+	for i := range accountLogMaxBytes / teamLogMaxBytes {
+		id := fmt.Sprintf("tm_%024x", 0xf000+i)
+		f.c.state.Teams[id] = &Team{ID: id, Owner: "acme", Log: []TeamEntry{{List: strings.Repeat("x", teamLogMaxBytes-100)}}}
+	}
+	f.c.mu.Unlock()
+	f.tt.drop("m_maria")
+	err := f.tt.push(f.admin, "acme", nil)
+	var limit *TeamLogLimitError
+	if !errors.As(err, &limit) || !limit.Account || limit.RetryAfter != 0 || statusOf(err) != http.StatusTooManyRequests || errorCode(err) != codeAccountLogFull {
+		t.Fatalf("an entry past the account's budget: %v", err)
+	}
+	rw := httptest.NewRecorder()
+	fail(rw, statusOf(err), err)
+	if rw.Header().Get("Retry-After") != "" || !strings.Contains(rw.Body.String(), codeAccountLogFull) {
+		t.Fatalf("the answer: %q %s", rw.Header().Get("Retry-After"), rw.Body)
+	}
+	// Another account's own team goes on.
+	soloTeam(t, f.c, "solo", f.stranger)
+	// The deletion still goes in.
+	end := deleteList(f.tt)
+	if err := f.tt.pushList(f.admin.caller("acme"), f.admin.sign(t, end), end, nil); err != nil {
+		t.Fatalf("the team's deletion past the budget: %v", err)
+	}
+}
+
+// A team's owner is kept in the state, so the budget and the count of teams
+// hold across a restart; a team made before it was kept is its first list's
+// signer's.
+func TestATeamsOwnerIsKeptAndFoundForAnOlderTeam(t *testing.T) {
+	f := newBillingFixture(t)
+	f.c.mu.Lock()
+	defer f.c.mu.Unlock()
+	if owner := f.c.state.Teams[f.team].Owner; owner != "acme" {
+		t.Fatalf("the firm team's owner: %q", owner)
+	}
+	dir := t.TempDir()
+	if err := f.c.state.Save(dir); err != nil {
+		t.Fatal(err)
+	}
+	st, err := LoadState(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Teams[f.team].Owner != "acme" {
+		t.Fatalf("the owner after a restart: %q", st.Teams[f.team].Owner)
+	}
+	f.c.state.Teams[f.team].Owner = ""
+	if owner := f.c.teamOwner(f.team); owner != "acme" || f.c.state.Teams[f.team].Owner != "acme" {
+		t.Fatalf("an older team's owner: %q", owner)
+	}
+	if f.c.firmTeamsOf("acme") != 1 || f.c.firmTeamsOf("maria") != 0 {
+		t.Fatal("the count of teams an account made")
+	}
+}
+
+// An account makes maxTeamsPerAccount firm teams, deleted ones included;
+// then MintTeam is 429 team_limit. The id it holds unused is still its.
+func TestAnAccountMakesAtMostItsFirmTeams(t *testing.T) {
+	f := newBillingFixture(t)
+	held, err := f.c.MintTeam(f.admin.caller("acme"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.c.mu.Lock()
+	for i := 1; i < maxTeamsPerAccount; i++ {
+		id := fmt.Sprintf("tm_%024x", 0xa000+i)
+		f.c.state.Teams[id] = &Team{ID: id, Owner: "acme"}
+	}
+	f.c.mu.Unlock()
+	if again, err := f.c.MintTeam(f.admin.caller("acme")); err != nil || again != held {
+		t.Fatalf("the held id at the limit: %q %v", again, err)
+	}
+	f.c.mu.Lock()
+	delete(f.c.state.TeamMints, held)
+	f.c.mu.Unlock()
+	_, err = f.c.MintTeam(f.admin.caller("acme"))
+	if !errors.Is(err, ErrTeamLimit) || statusOf(err) != http.StatusTooManyRequests || errorCode(err) != codeTeamLimit {
+		t.Fatalf("a team past the limit: %v", err)
+	}
+	if _, err := f.c.MintTeam(f.stranger.caller("globex")); err != nil {
+		t.Fatalf("another account: %v", err)
+	}
+}
+
+// The rates are checked before the list's signatures: a list past the rate
+// is 429 whatever else is wrong with it.
+func TestAListPastTheRateIsRefusedBeforeItIsChecked(t *testing.T) {
+	f := newBillingFixture(t)
+	f.c.mu.Lock()
+	for range accountLogBurst {
+		f.c.tookTeamLog(f.admin.caller("acme"), "other", f.now)
+	}
+	f.c.mu.Unlock()
+	l := f.tt.list()
+	l.Seq++
+	err := f.tt.pushList(f.admin.caller("acme"), f.admin.sign(t, l), l, nil)
+	if errorCode(err) != codeTeamLogRate {
+		t.Fatalf("a stale list past the rate: %v", err)
+	}
+	f.advance(2 * accountLogEvery)
+	if err := f.tt.pushList(f.admin.caller("acme"), f.admin.sign(t, l), l, nil); !errors.Is(err, ErrTeamStale) {
+		t.Fatalf("the stale list once the rate allows: %v", err)
+	}
+}
+
+// BenchmarkTeamLogAtItsCap is a team whose log is at teamLogMaxBytes of the
+// lists that check the most signatures (MaxMembers members with
+// MaxMemberDevices computers each): an append, and the replay its first use
+// after a restart makes.
+func BenchmarkTeamLogAtItsCap(b *testing.B) {
+	t := b
+	c, _ := newTestCoordinator(t, "ok", 0)
+	admin := newTestDevice(t)
+	tt := newTestTeam(t, c, "big")
+	devices := func() []testDevice {
+		var ds []testDevice
+		for range MaxMemberDevices {
+			ds = append(ds, newTestDevice(t))
+		}
+		return ds
+	}
+	tt.set("m_owner", "big", RoleAdmin, append(devices()[1:], admin)...)
+	for i := 1; i < MaxMembers; i++ {
+		tt.set(fmt.Sprintf("m_%02d", i), fmt.Sprintf("acct_%02d", i), RoleReviewer, devices()...)
+	}
+	for n := 0; ; n++ {
+		c.mu.Lock()
+		cur := c.state.Teams["big"]
+		c.logRate = teamLogRate{}
+		c.mu.Unlock()
+		tt.update("m_owner", func(m *ListMember) { m.Email = fmt.Sprintf("owner%d@example.com", n) })
+		l := tt.list()
+		token := admin.sign(t, l)
+		if cur != nil && cur.logBytes()+2*len(token) > teamLogMaxBytes {
+			break
+		}
+		if err := tt.pushList(admin.caller("big"), token, l, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+	c.mu.Lock()
+	log := slices.Clone(c.state.Teams["big"].Log)
+	b.Logf("%d lists, %d KiB", len(log), c.state.Teams["big"].logBytes()>>10)
+	c.mu.Unlock()
+	b.Run("append", func(b *testing.B) {
+		for range b.N {
+			b.StopTimer()
+			c.mu.Lock()
+			c.state.Teams["big"].Log = slices.Clone(log)
+			c.state.Teams["big"].state = nil
+			if _, err := c.teamState("big"); err != nil {
+				b.Fatal(err)
+			}
+			c.logRate = teamLogRate{}
+			c.mu.Unlock()
+			l := tt.list()
+			token := admin.sign(t, l)
+			b.StartTimer()
+			if _, err := c.AppendTeamList(admin.caller("big"), "big", token, nil); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("replay", func(b *testing.B) {
+		for range b.N {
+			if _, err := reduceTeam("big", testAudience, log); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	// The save each append makes, with one account's whole budget in the
+	// state.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := 1; i < accountLogMaxBytes/teamLogMaxBytes; i++ {
+		id := fmt.Sprintf("big%d", i)
+		c.state.Teams[id] = &Team{ID: id, Log: log}
+	}
+	dir := b.TempDir()
+	b.Run("save", func(b *testing.B) {
+		for range b.N {
+			if err := c.state.Save(dir); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }

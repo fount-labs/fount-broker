@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -19,18 +20,37 @@ import (
 //   - how fast: each team, and each account across its teams, appends at a
 //     steady rate after a burst (teamLogRate);
 //   - how much: a team's log holds at most teamLogMaxEntries entries and
-//     teamLogMaxBytes bytes. Only the list that deletes the team still goes
-//     in past that: the log ends there.
+//     teamLogMaxBytes bytes, the logs of the teams an account made (its own
+//     team and the firm teams minted for it, Team.Owner) accountLogMaxBytes
+//     together, and an account makes at most maxTeamsPerAccount firm teams.
+//     Only the list that deletes a team still goes in past the bytes: the
+//     log ends there.
 //
-// The rates are in memory: a restart refills them.
+// An append applies only the new entry to the team's state (commitEntry),
+// but the first use of a team after a restart replays its whole log,
+// checking each device's inclusion again, and each append rewrites the whole
+// of state.json: the bounds keep both short. The rates are in memory: a
+// restart refills them. The budgets are counted from the state.
 const (
 	// A team of MaxMembers members, each with a few computers, makes a few
 	// lists a week and a record for each invite taken, passkey used and
 	// recovery started: some hundreds of entries a year. A list of 50
 	// members with one computer each is about 34 KiB, one at maxTeamBody
-	// 512 KiB.
-	teamLogMaxEntries = 20_000
-	teamLogMaxBytes   = 64 << 20
+	// 512 KiB. At teamLogMaxBytes of the lists that check the most
+	// signatures, 50 members with 8 computers each, an append takes about
+	// 0.16 s and a replay 0.8 s on an M1 Max (BenchmarkTeamLogAtItsCap).
+	teamLogMaxEntries = 5_000
+	teamLogMaxBytes   = 4 << 20
+
+	// accountLogMaxBytes is what the logs of the teams an account made hold
+	// together: a few teams at their cap, so state.json, which each append
+	// rewrites, grows by at most this per paying account (about 30 ms a
+	// save).
+	accountLogMaxBytes = 16 << 20
+
+	// maxTeamsPerAccount is how many firm teams an account makes, deleted
+	// ones included, as their logs stay.
+	maxTeamsPerAccount = 20
 
 	// A team may append teamLogBurst entries at once, as when an admin's
 	// invites are taken together after the email goes out, then one each
@@ -55,7 +75,10 @@ type TeamLogLimitError struct {
 	// RetryAfter is how long until the append would go in, or zero for a
 	// full log, which no wait opens.
 	RetryAfter time.Duration
-	why        string
+	// Account is a log that is full because the logs of the teams its
+	// owner made are, rather than its own.
+	Account bool
+	why     string
 }
 
 func (e *TeamLogLimitError) Error() string {
@@ -65,17 +88,26 @@ func (e *TeamLogLimitError) Error() string {
 	return e.why + "; try again in " + e.RetryAfter.Round(time.Second).String()
 }
 
-// The codes a 429 from the team log carries, for Desktop.
+// ErrTeamLimit is an account that has made maxTeamsPerAccount firm teams
+// asking for another: 429.
+var ErrTeamLimit = errors.New("the account has made as many teams as it may")
+
+// The codes a 429 from the team log or MintTeam carries, for Desktop.
 const (
-	codeTeamLogFull = "team_log_full"
-	codeTeamLogRate = "team_log_rate"
+	codeTeamLogFull    = "team_log_full"
+	codeAccountLogFull = "account_log_full"
+	codeTeamLogRate    = "team_log_rate"
+	codeTeamLimit      = "team_limit"
 )
 
 func (e *TeamLogLimitError) code() string {
-	if e.RetryAfter == 0 {
-		return codeTeamLogFull
+	switch {
+	case e.RetryAfter != 0:
+		return codeTeamLogRate
+	case e.Account:
+		return codeAccountLogFull
 	}
-	return codeTeamLogRate
+	return codeTeamLogFull
 }
 
 // retryAfter sets Retry-After, in whole seconds rounded up, for an error
@@ -160,13 +192,13 @@ func (c *Coordinator) teamLogRoom(caller Caller, team string, size int, ends boo
 	if !ends {
 		var entries, total int
 		if t := c.state.Teams[team]; t != nil {
-			entries = len(t.Log)
-			for _, e := range t.Log {
-				total += len(e.List) + len(e.Record) + len(e.Hash)
-			}
+			entries, total = len(t.Log), t.logBytes()
 		}
 		if entries+1 > teamLogMaxEntries || total+size > teamLogMaxBytes {
 			return &TeamLogLimitError{why: fmt.Sprintf("the team's membership log is full (%d entries, %d KiB)", entries, total>>10)}
+		}
+		if owned := c.ownedLogBytes(c.teamOwner(team)); owned+size > accountLogMaxBytes {
+			return &TeamLogLimitError{Account: true, why: fmt.Sprintf("the membership logs of the teams this team's owner made are full (%d KiB)", owned>>10)}
 		}
 	}
 	r := &c.logRate
@@ -186,4 +218,64 @@ func (c *Coordinator) tookTeamLog(caller Caller, team string, now time.Time) {
 	}
 	rateTake(r.teams, team, now, teamLogEvery)
 	rateTake(r.accounts, caller.Account, now, accountLogEvery)
+}
+
+// logBytes is what t's log holds, as its bounds count it.
+func (t *Team) logBytes() int {
+	n := 0
+	for _, e := range t.Log {
+		n += len(e.List) + len(e.Record) + len(e.Hash)
+	}
+	return n
+}
+
+// teamOwner is the account whose budget team's log counts against: the
+// account a firm team's id was minted for, or a solo team's own. A firm team
+// made before Team.Owner was kept is its first list's signer's, as checkList
+// required, and is kept on it. Called with c.mu held.
+func (c *Coordinator) teamOwner(team string) string {
+	t := c.state.Teams[team]
+	switch {
+	case t == nil && c.state.TeamMints[team] != "":
+		return c.state.TeamMints[team]
+	case t == nil || !isFirmTeam(team):
+		return team
+	case t.Owner != "":
+		return t.Owner
+	}
+	t.Owner = team
+	if len(t.Log) > 0 {
+		if payload, _, err := splitToken(t.Log[0].List); err == nil {
+			if l, err := decodeTeamList(payload); err == nil {
+				if lm := listMemberOf(l, l.Dev, c.cfg.Audience); lm != nil && lm.Account != "" {
+					t.Owner = lm.Account
+				}
+			}
+		}
+	}
+	return t.Owner
+}
+
+// ownedLogBytes is what the logs of the teams account made hold together.
+// Called with c.mu held.
+func (c *Coordinator) ownedLogBytes(account string) int {
+	n := 0
+	for id, t := range c.state.Teams {
+		if c.teamOwner(id) == account {
+			n += t.logBytes()
+		}
+	}
+	return n
+}
+
+// firmTeamsOf is how many firm teams account has made, deleted ones
+// included. Called with c.mu held.
+func (c *Coordinator) firmTeamsOf(account string) int {
+	n := 0
+	for id := range c.state.Teams {
+		if isFirmTeam(id) && c.teamOwner(id) == account {
+			n++
+		}
+	}
+	return n
 }
