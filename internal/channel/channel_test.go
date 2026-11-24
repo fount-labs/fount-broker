@@ -536,7 +536,7 @@ func coordinatorWith(t *testing.T, side *link.Side, opt func(*Server)) string {
 	t.Cleanup(cancel)
 	s := &Server{Key: side.Key, Attester: side.Attester, AccountKeys: keys, Handler: func(p Peer) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			json.NewEncoder(w).Encode(map[string]any{"account": p.Account, "device": p.Device, "key_id": DeviceID(p.DeviceKey), "expires": p.Expires.Unix()})
+			json.NewEncoder(w).Encode(map[string]any{"account": p.Account, "device": p.Device, "key_id": DeviceID(p.DeviceKey), "expires": p.Expires.Unix(), "paid": p.Paid, "email": p.Email})
 		})
 	}}
 	if opt != nil {
@@ -769,5 +769,75 @@ func TestUsableUntil(t *testing.T) {
 		if got := c.usableUntil(tc.fresh, tc.expires, now); !got.Equal(tc.want) {
 			t.Errorf("%s: %s, want %s", tc.name, got.Sub(now), tc.want.Sub(now))
 		}
+	}
+}
+
+// A Cloud credential with no plan opens the channel as who it names, unpaid:
+// the coordinator decides what that admits (team-billing-plan.md D3). A
+// device credential still needs its own plan.
+func TestACloudCredentialWithNoPlanIsDeferredToTheCoordinator(t *testing.T) {
+	side := unattested(t)
+	cloud := func(d *device, change map[string]any) {
+		now := time.Now()
+		d.claims["typ"], d.claims["iat"], d.claims["exp"], d.claims["eml"] = CloudCredentialType, now.Unix(), now.Add(MaxCloudCredential).Unix(), "maria@example.com"
+		for k, v := range change {
+			d.claims[k] = v
+		}
+	}
+	for _, cloudOnly := range []bool{false, true} {
+		origin := coordinatorWith(t, side, func(s *Server) { s.CloudCredentialsOnly = cloudOnly })
+		for name, tc := range map[string]struct {
+			change map[string]any
+			paid   bool
+		}{
+			"identity only":    {map[string]any{"tier": nil, "status": nil, "pe": nil}, false},
+			"an unknown tier":  {map[string]any{"tier": "free"}, false},
+			"cancelled":        {map[string]any{"status": "canceled"}, false},
+			"the period ended": {map[string]any{"pe": time.Now().Unix() - 60}, false},
+			"pro":              {nil, true},
+			"a firm team's":    {map[string]any{"tier": "team"}, true},
+		} {
+			d := newDevice(t, "acct_1")
+			cloud(d, tc.change)
+			got, err := peerOf(t, client(origin, link.CheckUnattestedKey, d.identity(t, accountKey(t, 0), MaxSession)))
+			if err != nil {
+				t.Errorf("cloudOnly %v, %s: %v", cloudOnly, name, err)
+				continue
+			}
+			if got["paid"] != tc.paid || got["account"] != "acct_1" || got["email"] != "maria@example.com" {
+				t.Errorf("cloudOnly %v, %s: %v", cloudOnly, name, got)
+			}
+			// An unpaid channel lasts as long as its credential, not a paid
+			// period it doesn't have.
+			if !tc.paid && got["expires"] != float64(d.claims["exp"].(int64)) {
+				t.Errorf("cloudOnly %v, %s: expires %v, want %v", cloudOnly, name, got["expires"], d.claims["exp"])
+			}
+		}
+		// Signature and lifetime are still checked first.
+		forged := newDevice(t, "acct_1")
+		cloud(forged, map[string]any{"tier": nil, "status": nil, "pe": nil})
+		if _, _, err := client(origin, link.CheckUnattestedKey, forged.identity(t, accountKey(t, 1), time.Hour)).Dial(context.Background()); !errors.Is(err, ErrRefused) {
+			t.Errorf("cloudOnly %v: another key's identity-only credential: %v", cloudOnly, err)
+		}
+		long := newDevice(t, "acct_1")
+		cloud(long, map[string]any{"tier": nil, "status": nil, "pe": nil, "exp": time.Now().Add(MaxCloudCredential + time.Minute).Unix()})
+		if _, _, err := client(origin, link.CheckUnattestedKey, long.identity(t, accountKey(t, 0), time.Hour)).Dial(context.Background()); !errors.Is(err, ErrRefused) {
+			t.Errorf("cloudOnly %v: a longer identity-only credential: %v", cloudOnly, err)
+		}
+	}
+	// A paid Cloud credential's channel ends with its paid period.
+	origin := coordinatorWith(t, side, nil)
+	d := newDevice(t, "acct_1")
+	pe := time.Now().Add(30 * time.Minute).Unix()
+	cloud(d, map[string]any{"pe": pe})
+	got, err := peerOf(t, client(origin, link.CheckUnattestedKey, d.identity(t, accountKey(t, 0), MaxSession)))
+	if err != nil || got["paid"] != true || got["expires"] != float64(pe) {
+		t.Fatalf("a paid Cloud credential: %v %v", got, err)
+	}
+	// A device credential with no plan is refused, as before.
+	dev := newDevice(t, "acct_1")
+	dev.claims["tier"], dev.claims["status"], dev.claims["pe"] = nil, nil, nil
+	if _, _, err := client(origin, link.CheckUnattestedKey, dev.identity(t, accountKey(t, 0), time.Hour)).Dial(context.Background()); !errors.Is(err, ErrRefused) {
+		t.Fatalf("a device credential with no plan: %v", err)
 	}
 }

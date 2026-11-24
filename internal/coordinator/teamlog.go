@@ -362,7 +362,8 @@ func (c *Coordinator) AppendTeamList(caller Caller, team, token string, deks map
 }
 
 // checkList is every check on a list against its team's state before it
-// (§2.2): the order, the signer, the devices, the accounts and the workers.
+// (§2.2): the order, the signer, the devices, the accounts, the workers and,
+// for a firm team, its seats (admission.go).
 // prior is nil for a team's first list. Called with c.mu held.
 func (c *Coordinator) checkList(prior *teamState, l TeamList, caller Caller, deks map[string]DEK, now time.Time) error {
 	seq, head := uint64(0), ""
@@ -453,6 +454,11 @@ func (c *Coordinator) checkList(prior *teamState, l TeamList, caller Caller, dek
 		if !ok || w.Team != "" || w.WrappedDEK != nil || len(w.Devices) != 1 || w.ungrantedExpired(now) {
 			return refuse("worker %s isn't one waiting to join a team", lw.ID)
 		}
+		// A solo account's team takes in a worker only from a signer with
+		// a plan of its own (admission.go).
+		if !caller.Paid && !isFirmTeam(l.Team) {
+			return fmt.Errorf("%w: to add an email agent to your own team", ErrNoPlan)
+		}
 		if lm := listMemberOf(l, w.Devices[0].ID, c.cfg.Audience); lm == nil || lm.Role != RoleAdmin || lm.Account != w.Account {
 			return refuse("worker %s was made by a device that isn't an admin's", lw.ID)
 		}
@@ -469,7 +475,7 @@ func (c *Coordinator) checkList(prior *teamState, l TeamList, caller Caller, dek
 			return refuse("a DEK for %.40q, which the list doesn't name", id)
 		}
 	}
-	return nil
+	return c.checkSeats(prior, l, now)
 }
 
 // listMemberOf is the member a list puts a device under, or nil.
@@ -619,8 +625,9 @@ func (c *Coordinator) commitEntry(team string, prior *teamState, entry TeamEntry
 		}
 	}
 	rotate := []string(nil)
+	var billing *TeamBilling
 	if existed {
-		rotate = slices.Clone(t.Rotate)
+		rotate, billing = slices.Clone(t.Rotate), t.Billing
 	}
 	if lostAdmin(prior, next) {
 		for id := range prior.workers {
@@ -651,7 +658,7 @@ func (c *Coordinator) commitEntry(team string, prior *teamState, entry TeamEntry
 		}
 	}
 	restoreReleases := c.releaseLocked(removed)
-	c.state.Teams[team] = &Team{ID: team, Log: log, Rotate: rotate, state: next}
+	c.state.Teams[team] = &Team{ID: team, Log: log, Rotate: rotate, Billing: billing, state: next}
 	mintedFor, minted := c.state.TeamMints[team]
 	delete(c.state.TeamMints, team)
 	if err := c.commitSecurity(); err != nil {
@@ -757,6 +764,9 @@ const teamIDPrefix = "tm"
 func (c *Coordinator) MintTeam(caller Caller) (string, error) {
 	if err := checkID("account", caller.Account); err != nil {
 		return "", err
+	}
+	if !caller.Paid {
+		return "", fmt.Errorf("%w: to make a team", ErrNoPlan)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

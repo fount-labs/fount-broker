@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"maps"
+	"reflect"
 	"time"
 )
 
@@ -85,9 +86,16 @@ func (r Renewed) due(now time.Time) bool {
 }
 
 // renewDue renews w's mailbox if a day has passed since the last renewal.
+// A firm team's worker first follows its team's billing (teamLapseDue).
 func (c *Coordinator) renewDue(ctx context.Context, w Worker, now time.Time) {
 	m := c.mail
-	if m.cfg.Entitlements == nil || !m.service.HasKeys(w.Mailbox) {
+	if !m.service.HasKeys(w.Mailbox) {
+		return
+	}
+	c.mu.Lock()
+	pay := c.teamPayment(w.Team, now)
+	c.mu.Unlock()
+	if m.cfg.Entitlements == nil && pay == teamPayNA {
 		return
 	}
 	m.mu.Lock()
@@ -101,33 +109,45 @@ func (c *Coordinator) renewDue(ctx context.Context, w Worker, now time.Time) {
 			return
 		}
 	}
-	r.Notices = maps.Clone(r.Notices)
-	if !r.due(now) {
-		sent := maps.Clone(r.Notices)
-		r = c.holdNotices(ctx, w, r, now)
-		if !maps.Equal(sent, r.Notices) {
-			if err := c.change(w.ID, anyDevice, func(t *Tree) error { return writeJSON(t, renewedPath, r) }); err != nil {
-				log.Printf("worker %s: couldn't keep its mailbox's renewal", w.ID)
-			}
-		}
-		m.mu.Lock()
-		m.renewed[w.ID] = r
-		m.mu.Unlock()
+	next, done := c.teamLapseDue(ctx, w, r.clone(), pay, now)
+	c.keepRenewed(w, r, next)
+	if done || m.cfg.Entitlements == nil {
 		return
 	}
-	next, err := c.renew(ctx, w, r, now)
+	r = next
+	if !r.due(now) {
+		c.keepRenewed(w, r, c.holdNotices(ctx, w, r.clone(), now))
+		return
+	}
+	next, err := c.renew(ctx, w, r.clone(), now)
 	if err != nil {
 		c.fenced(ctx, w.Mailbox, err)
 		log.Printf("worker %s: couldn't renew its mailbox: %v", w.ID, err)
 	} else if next.ExpiresAt.Sub(now) < renewWarn {
 		log.Printf("worker %s: its mailbox expires %s", w.ID, next.ExpiresAt.Format(time.RFC3339))
 	}
-	if serr := c.change(w.ID, anyDevice, func(t *Tree) error { return writeJSON(t, renewedPath, next) }); serr != nil {
+	c.saveRenewed(w, next)
+}
+
+// keepRenewed saves next as w's renewal when it differs from last, and
+// caches it either way.
+func (c *Coordinator) keepRenewed(w Worker, last, next Renewed) {
+	if reflect.DeepEqual(last, next) {
+		c.mail.mu.Lock()
+		c.mail.renewed[w.ID] = next
+		c.mail.mu.Unlock()
+		return
+	}
+	c.saveRenewed(w, next)
+}
+
+func (c *Coordinator) saveRenewed(w Worker, r Renewed) {
+	if err := c.change(w.ID, anyDevice, func(t *Tree) error { return writeJSON(t, renewedPath, r) }); err != nil {
 		log.Printf("worker %s: couldn't keep its mailbox's renewal", w.ID)
 	}
-	m.mu.Lock()
-	m.renewed[w.ID] = next
-	m.mu.Unlock()
+	c.mail.mu.Lock()
+	c.mail.renewed[w.ID] = r
+	c.mail.mu.Unlock()
 }
 
 // renew asks for an entitlement and presents it. A failure keeps the last
@@ -174,6 +194,17 @@ func (c *Coordinator) renew(ctx context.Context, w Worker, last Renewed, now tim
 		c.notice(ctx, w, &next, NoticePastDue, next.GraceEnds, next.GraceEnds)
 	}
 	return next, nil
+}
+
+// clone is r with its own Notices and Lapsed, so a step on it leaves r, as
+// the loop caches it, alone.
+func (r Renewed) clone() Renewed {
+	r.Notices = maps.Clone(r.Notices)
+	if r.Lapsed != nil {
+		l := *r.Lapsed
+		r.Lapsed = &l
+	}
+	return r
 }
 
 func failed(last Renewed, now time.Time, err error) Renewed {

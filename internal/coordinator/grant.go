@@ -63,6 +63,10 @@ type Caller struct {
 	// Email is the account's verified email, from the Cloud credential's
 	// eml claim, or empty. An invite is accepted only for it.
 	Email string
+	// Paid says the caller's own credential entitles it to Cloud
+	// (channel.Peer.Paid). A caller without it is admitted only where a
+	// firm team's subscription covers it (admission.go).
+	Paid bool
 }
 
 // Device is one device that may act for a worker: its Ed25519 key, its X25519
@@ -143,6 +147,9 @@ func (c *Coordinator) CreateWorkerFor(caller Caller) (Worker, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.expireUngranted(now)
+	if err := c.admitCreate(caller); err != nil {
+		return Worker{}, err
+	}
 	device, account := 0, 0
 	for _, w := range c.state.Workers {
 		if w.WrappedDEK != nil || w.Account != caller.Account {

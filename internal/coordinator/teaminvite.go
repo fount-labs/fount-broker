@@ -354,6 +354,9 @@ func (c *Coordinator) SendInvite(ctx context.Context, caller Caller, team, invit
 		err = fmt.Errorf("%w: only an admin sends invites", ErrRole)
 	}
 	if err == nil {
+		err = c.admitTeam(caller, team)
+	}
+	if err == nil {
 		inv := st.byID[member]
 		if inv == nil || inv.Invite == nil || inv.Invite.ID != invite {
 			err = fmt.Errorf("%w: no such open invite", ErrNotFound)

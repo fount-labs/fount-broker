@@ -425,7 +425,8 @@ func (c *Coordinator) Run(ctx context.Context) {
 }
 
 // schedule starts every queued job that can start: its worker has no running
-// job, its account is under Config.AccountJobs and can get a runner slot. Each
+// job, its team pays if it is a firm team's, its account is under
+// Config.AccountJobs and can get a runner slot. Each
 // slot goes to the account with the fewest jobs running, then the oldest job,
 // so an account with a long queue takes turns with the others.
 func (c *Coordinator) schedule(ctx context.Context) {
@@ -503,14 +504,19 @@ func (c *Coordinator) whyQueued(queued []*Job, noSlot map[string]bool) {
 }
 
 // next is the index of the queued job to start next, or -1 for none. queued is
-// oldest first.
+// oldest first. A firm team's job waits while the team doesn't pay
+// (admission.go), as for a runner that isn't there: its model calls would be
+// refused mid-turn.
 func (c *Coordinator) next(queued []*Job, noSlot map[string]bool) int {
 	best, bestRunning := -1, 0
+	now := c.now()
 	for i, j := range queued {
-		account := c.state.Workers[j.WorkerID].Account
+		w := c.state.Workers[j.WorkerID]
+		account := w.Account
 		running := c.accountJobs[account]
 		switch {
 		case c.busy[j.WorkerID], noSlot[account]:
+		case !c.teamRunsJobs(w.Team, now):
 		case c.cfg.AccountJobs > 0 && running >= c.cfg.AccountJobs:
 		case best < 0 || running < bestRunning:
 			best, bestRunning = i, running

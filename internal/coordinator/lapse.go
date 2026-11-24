@@ -3,6 +3,7 @@ package coordinator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strconv"
 	"time"
@@ -25,6 +26,16 @@ import (
 //
 // When Issue answers again, the edge is told the worker resumed, and its
 // renewal goes on as before.
+//
+// A firm team's worker (team-billing-plan.md §6.2) is billed to its team, so
+// its team's billing (teambilling.go) decides it too: while fount-infra's
+// last answer doesn't entitle the team, every worker of the team lapses on
+// its next mail sweep without waiting for its own renewal, and when the team
+// pays again each worker its billing lapsed resumes (teamLapseDue). A team
+// fount-infra hasn't answered for, or whose answer ran out while it wasn't
+// answering, neither lapses nor resumes: its jobs wait (admission.go). The
+// notices are the account's as above, the team's account being the team, so
+// they reach every admin (sendowner.go).
 //
 // Not built: the export-only channel. A lapsed account's client channel
 // closes at the end of its paid period (cloud-worker-devices.md §3.2), so
@@ -75,6 +86,38 @@ type Lapse struct {
 	// retried with the renewal, hourly.
 	Edge      bool      `json:"edge"`
 	HoldUntil time.Time `json:"holdUntil,omitzero"`
+	// Team says the team's billing lapsed it, so the team's paying again
+	// resumes it, not a renewal.
+	Team bool `json:"team,omitempty"`
+}
+
+// errTeamLapsed is a firm team's billing not entitling it: the cause a team
+// worker lapses with.
+var errTeamLapsed = fmt.Errorf("%w: the team's subscription isn't active", ErrAccountLapsed)
+
+// teamLapseDue follows w's team's billing, pay, as of now: a team that
+// doesn't pay lapses w, and one that pays again resumes a w its billing
+// lapsed. done says this pass asks no renewal: fount-infra would refuse it,
+// as it bills the team.
+func (c *Coordinator) teamLapseDue(ctx context.Context, w Worker, r Renewed, pay teamPay, now time.Time) (Renewed, bool) {
+	switch pay {
+	case teamUnpaid:
+		if r.Lapsed != nil && r.Lapsed.Edge {
+			r.Lapsed.Team = true
+			return c.holdNotices(ctx, w, r, now), true
+		}
+		r = c.lapsed(ctx, w, r, now, errTeamLapsed)
+		r.Lapsed.Team = true
+		return r, true
+	case teamPaid:
+		if r.Lapsed != nil && r.Lapsed.Team {
+			r = c.resumed(ctx, w, r, now)
+			if r.Lapsed == nil {
+				r.Error = ""
+			}
+		}
+	}
+	return r, false
 }
 
 // lapsed applies fount-infra's refusal: the worker is paused, the edge told,

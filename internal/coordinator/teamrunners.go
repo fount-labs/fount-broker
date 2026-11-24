@@ -62,11 +62,11 @@ func (c *Coordinator) noteIntakeWait(workerID, account string, waiting bool) {
 // ended, since the coordinator started.
 //
 // retired is a deleted team, listed for as long as the volume keeps its log,
-// so its runner is deleted whenever the control plane next reads this. A
-// team whose subscription ended isn't retired yet: the coordinator learns
-// entitlement per worker, as a lapse (lapse.go), which pauses the worker
-// and holds its mail, and it has no "ended for good" state to read. Its
-// runner idles and is stopped instead.
+// so its runner is deleted whenever the control plane next reads this, and a
+// team whose subscription ended for good (TeamBilling.ended: canceled, or
+// over for teamRetireAfter). A team that doesn't pay (admission.go) counts
+// nothing queued, so the control plane starts no runner for it: its jobs and
+// intake wait until it pays.
 func (c *Coordinator) TeamRunners(stage string, links map[string]TeamLink, now time.Time) []ControlRunner {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -80,6 +80,12 @@ func (c *Coordinator) TeamRunners(stage string, links map[string]TeamLink, now t
 		}
 		return r
 	}
+	unpaid := map[string]bool{}
+	for id := range c.state.Teams {
+		if IsTeamID(id) && !c.teamRunsJobs(id, now) {
+			unpaid[id] = true
+		}
+	}
 	for _, j := range c.state.Jobs {
 		w := c.state.Workers[j.WorkerID]
 		if w == nil || !IsTeamID(w.Account) {
@@ -88,13 +94,16 @@ func (c *Coordinator) TeamRunners(stage string, links map[string]TeamLink, now t
 		last[w.Account] = latest(last[w.Account], j.Started, j.Ended)
 		switch j.State {
 		case JobQueued:
+			if unpaid[w.Account] {
+				continue
+			}
 			get(w.Account).Queued++
 		case JobRunning:
 			get(w.Account).Running++
 		}
 	}
 	for id, wait := range c.intakeWaits {
-		if c.state.Workers[id] == nil || now.Sub(wait.at) > intakeWaitFresh {
+		if c.state.Workers[id] == nil || now.Sub(wait.at) > intakeWaitFresh || unpaid[wait.account] {
 			continue
 		}
 		get(wait.account).Queued++
@@ -116,7 +125,7 @@ func (c *Coordinator) TeamRunners(stage string, links map[string]TeamLink, now t
 		if !IsTeamID(id) {
 			continue
 		}
-		if st, err := c.teamState(id); err == nil && st.deleted {
+		if st, err := c.teamState(id); err == nil && st.deleted || c.state.Teams[id].Billing.ended(now) {
 			get(id).Retired = true
 		}
 	}

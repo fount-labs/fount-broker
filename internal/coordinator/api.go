@@ -44,7 +44,8 @@ func (c *Coordinator) Handler() http.Handler {
 // channel authenticated, never ones the client names. Only workers of that
 // account that list that device exist here (grant.go). It is the dev API's
 // operations under /v1, each needing the role opRoles gives it on the
-// worker (members.go), plus:
+// worker (members.go) and, for a caller without its own plan, a firm team
+// that pays (admission.go), plus:
 //
 //	POST /v1/workers                      {}: an empty worker, the caller's device's, until a list adds it to a team
 //	GET  /v1/workers                      the workers the caller reaches
@@ -514,6 +515,8 @@ func statusOf(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, ErrWriteOnce), errors.Is(err, ErrNotGranted), errors.Is(err, ErrTeamStale), errors.Is(err, ErrBusy):
 		return http.StatusConflict
+	case errors.Is(err, ErrSeats), errors.Is(err, ErrNoPlan), errors.Is(err, ErrTeamUnpaid):
+		return http.StatusPaymentRequired
 	case errors.Is(err, ErrListRefused), errors.Is(err, ErrNotAdmin), errors.Is(err, ErrRole):
 		return http.StatusForbidden
 	case errors.Is(err, ErrRetired):
@@ -535,6 +538,12 @@ func reply(rw http.ResponseWriter, status int, v any) {
 	json.NewEncoder(rw).Encode(v)
 }
 
+// fail answers {"error"}, with a "code" for a refusal Desktop words itself
+// (errorCode).
 func fail(rw http.ResponseWriter, status int, err error) {
-	reply(rw, status, map[string]string{"error": err.Error()})
+	body := map[string]string{"error": err.Error()}
+	if code := errorCode(err); code != "" {
+		body["code"] = code
+	}
+	reply(rw, status, body)
 }

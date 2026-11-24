@@ -47,24 +47,28 @@ type billingFixture struct {
 	team                      string
 	admin, reviewer, stranger testDevice
 	now                       time.Time
+	tt                        *testTeam
 }
 
 func newBillingFixture(t *testing.T) *billingFixture {
 	t.Helper()
 	c, _ := newTestCoordinator(t, "ok", 0)
 	f := &billingFixture{c: c, biller: &fakeBiller{}, admin: newTestDevice(t), reviewer: newTestDevice(t), stranger: newTestDevice(t), now: time.Now().UTC().Truncate(time.Second)}
-	c.cfg.TeamBilling = f.biller
 	c.clock = func() time.Time { return f.now }
 	var err error
 	if f.team, err = c.MintTeam(f.admin.caller("acme")); err != nil {
 		t.Fatal(err)
 	}
+	// The team is made before billing is on, so its two members need no
+	// seats (admission.go).
 	tt := newTestTeam(t, c, f.team)
 	tt.set("m_owner", "acme", RoleAdmin, f.admin)
 	tt.set("m_maria", "maria", RoleReviewer, f.reviewer)
 	if err := tt.push(f.admin, "acme", nil); err != nil {
 		t.Fatal(err)
 	}
+	c.cfg.TeamBilling = f.biller
+	f.tt = tt
 	return f
 }
 

@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -29,8 +30,8 @@ import (
 // state.json: daily, after a worker of the team takes a lapse step, and when
 // a member asks (POST /v1/teams/{team}/billing-refresh, after checkout).
 //
-// Nothing here changes who may do what yet: seat counts, admission and a
-// team's lapse read Billing in a later step.
+// Who Billing admits, and its seats, are admission.go's; a team's lapse is
+// lapse.go's (teamLapseDue), and its runner's start teamrunners.go's.
 
 // StatementKind is what a billing statement says of its account.
 type StatementKind string
@@ -92,6 +93,10 @@ type TeamBilling struct {
 	CheckedAt time.Time `json:"checkedAt,omitzero"`
 	TriedAt   time.Time `json:"triedAt,omitzero"`
 	Error     string    `json:"error,omitempty"`
+	// Since is the first answer, of those since the team was last
+	// entitled, that didn't entitle it: how long its subscription has been
+	// over (TeamRunners' retired).
+	Since time.Time `json:"since,omitzero"`
 }
 
 // Entitled says whether the team's subscription covers now: active, or
@@ -104,13 +109,35 @@ func (b *TeamBilling) Entitled(now time.Time) bool {
 	case "active":
 		return b.PeriodEnd.IsZero() || now.Before(b.PeriodEnd)
 	case "past_due":
-		end := b.GraceEnds
-		if end.IsZero() {
-			end = b.PeriodEnd
-		}
-		return now.Before(end)
+		return now.Before(b.entitledUntil())
 	}
 	return false
+}
+
+// entitledUntil is when the answer stops entitling the team, or zero for
+// one that doesn't end or doesn't entitle.
+func (b *TeamBilling) entitledUntil() time.Time {
+	switch b.Status {
+	case "active":
+		return b.PeriodEnd
+	case "past_due":
+		return cmp.Or(b.GraceEnds, b.PeriodEnd)
+	}
+	return time.Time{}
+}
+
+// teamRetireAfter is how long a firm team's subscription stays over before
+// the team counts as ended for good: the edge's hold on a lapsed worker's
+// mail.
+const teamRetireAfter = 30 * 24 * time.Hour
+
+// ended says whether the team's subscription ended for good: canceled, or
+// over for teamRetireAfter. A team that never had one hasn't ended.
+func (b *TeamBilling) ended(now time.Time) bool {
+	if b == nil || b.Status != BillingNoAccess || b.Reason == "no_subscription" {
+		return false
+	}
+	return b.Reason == "canceled" || !b.Since.IsZero() && now.Sub(b.Since) >= teamRetireAfter
 }
 
 // TeamBillingView is a team's billing as its members see it (GET /v1/teams,
@@ -282,7 +309,13 @@ func billingDue(b *TeamBilling, now time.Time) bool {
 	if b.Error != "" {
 		return now.Sub(b.TriedAt) >= teamBillingRetry
 	}
-	return b.CheckedAt.IsZero() || now.Sub(b.CheckedAt) >= teamBillingEvery
+	if b.CheckedAt.IsZero() || now.Sub(b.CheckedAt) >= teamBillingEvery {
+		return true
+	}
+	// An answer that entitled the team until a time now passed is asked
+	// again then, not a day later: the team renewed, or it lapses.
+	end := b.entitledUntil()
+	return !end.IsZero() && !now.Before(end) && b.CheckedAt.Before(end)
 }
 
 // refreshTeamBilling asks fount-infra for team's billing and keeps the
@@ -320,6 +353,12 @@ func (c *Coordinator) refreshTeamBilling(ctx context.Context, team string) (Team
 	default:
 		next.TriedAt, next.Error = now, err.Error()
 	}
+	if err == nil && !next.Entitled(now) {
+		next.Since = now
+		if t.Billing != nil && !t.Billing.Since.IsZero() {
+			next.Since = t.Billing.Since
+		}
+	}
 	prev := t.Billing
 	t.Billing = &next
 	if serr := c.state.Save(c.cfg.StateDir); serr != nil {
@@ -329,6 +368,8 @@ func (c *Coordinator) refreshTeamBilling(ctx context.Context, team string) (Team
 	if prev == nil || prev.Status != next.Status {
 		log.Printf("team billing: a team's billing is now %q", next.Status)
 	}
+	// A team that pays again may have jobs waiting (admission.go).
+	c.poke()
 	return next, err
 }
 

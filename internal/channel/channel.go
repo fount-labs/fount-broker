@@ -23,7 +23,10 @@
 //     session key (identity.go), and the session key's signature over the
 //     session's other exporter (labelClient).
 //  4. The coordinator checks the credential against fount-infra's public key,
-//     pinned in its measured config, and that its claims include Cloud; that
+//     pinned in its measured config, and its lifetime; a device credential's
+//     claims must include Cloud, and a Cloud credential's are only noted
+//     (Peer.Paid), since what an account without a plan may open is the
+//     coordinator's to decide (team-billing-plan.md D3); that
 //     the device key is the one the credential names; the grant; and the
 //     binding. It answers with the account, which the client never states.
 //
@@ -33,7 +36,8 @@
 //
 // After that the connection carries HTTP/1.1, the coordinator's account API
 // (coordinator.AccountHandler), for that account and device only. It closes
-// when the credential, its paid period or the grant ends, whichever is first.
+// when the credential, the grant or, for a Peer.Paid client, its paid period
+// ends, whichever is first.
 package channel
 
 import (
@@ -98,6 +102,11 @@ type Peer struct {
 	// Email is the account's verified email from a Cloud credential
 	// (DeviceClaims.VerifiedEmail), or empty. Only invites read it.
 	Email string
+	// Paid says the credential's own claims entitle the account to Cloud:
+	// a paid tier, active or past_due, inside its period, which the channel
+	// closes at. Without it the client is only who it says it is, and the
+	// coordinator opens to it only what doesn't need its own plan.
+	Paid bool
 	// Expires is when the credential or the session grant runs out; the
 	// channel closes then.
 	Expires time.Time
@@ -161,7 +170,7 @@ func verifyHello(h hello, exporter []byte, keys []*rsa.PublicKey, cloudOnly bool
 	if h.Kind != "hello" {
 		return Peer{}, fmt.Errorf("it sent %q, not a hello", h.Kind)
 	}
-	cred, err := VerifyAccountCredential(h.Credential, keys, now, cloudOnly)
+	cred, paid, err := VerifyAccountCredential(h.Credential, keys, now, cloudOnly)
 	if err != nil {
 		return Peer{}, fmt.Errorf("credential: %w", err)
 	}
@@ -179,5 +188,9 @@ func verifyHello(h hello, exporter []byte, keys []*rsa.PublicKey, cloudOnly bool
 	if !ed25519.Verify(sessionKey, bindingMessage(exporter), h.Binding) {
 		return Peer{}, errors.New("the binding isn't the session key's, for this session")
 	}
-	return Peer{Account: cred.Acct, Device: cred.Dev, DeviceKey: device, Email: cred.VerifiedEmail(), Expires: time.Unix(min(cred.Exp, *cred.Pe, grant.Exp), 0)}, nil
+	expires := min(cred.Exp, grant.Exp)
+	if paid {
+		expires = min(expires, *cred.Pe)
+	}
+	return Peer{Account: cred.Acct, Device: cred.Dev, DeviceKey: device, Email: cred.VerifiedEmail(), Paid: paid, Expires: time.Unix(expires, 0)}, nil
 }

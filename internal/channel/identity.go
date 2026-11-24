@@ -71,8 +71,9 @@ func (c DeviceClaims) VerifiedEmail() string {
 	return c.Eml
 }
 
-// cloudTiers are the plans that include Cloud: every paid one (pricing.md).
-var cloudTiers = []string{"plus", "pro"}
+// cloudTiers are the plans that include Cloud: every paid one (pricing.md),
+// and a firm team's own subscription (fount-infra's "team" tier).
+var cloudTiers = []string{"plus", "pro", "team"}
 
 // ErrNotEntitled is a credential whose claims don't include Cloud.
 var ErrNotEntitled = errors.New("the account's subscription doesn't include Cloud")
@@ -185,28 +186,35 @@ func VerifyDeviceCredential(token string, keys []*rsa.PublicKey, now time.Time) 
 }
 
 // VerifyAccountCredential checks what a client proves its account with: a
-// Cloud credential, or unless cloudOnly a device credential; either entitled
-// to Cloud.
-func VerifyAccountCredential(token string, keys []*rsa.PublicKey, now time.Time, cloudOnly bool) (DeviceClaims, error) {
+// Cloud credential, or unless cloudOnly a device credential. It returns the
+// claims and whether they entitle the account to Cloud itself.
+//
+// A Cloud credential is taken without a plan of its own (team-billing-plan.md
+// D3): fount-infra signs one that names the account and its verified email
+// with no tier, and the coordinator decides what it opens: a firm team's
+// workers while the team pays, an invite. A device credential, which lasts a
+// week, must still be entitled itself.
+func VerifyAccountCredential(token string, keys []*rsa.PublicKey, now time.Time, cloudOnly bool) (DeviceClaims, bool, error) {
 	c, err := verifyCredential(token, keys, now)
 	if err != nil {
-		return DeviceClaims{}, err
+		return DeviceClaims{}, false, err
 	}
 	switch {
 	case c.Typ == CloudCredentialType:
 		if c.Exp <= c.Iat || time.Duration(c.Exp-c.Iat)*time.Second > MaxCloudCredential {
-			return DeviceClaims{}, fmt.Errorf("a Cloud credential lasts up to %s", MaxCloudCredential)
+			return DeviceClaims{}, false, fmt.Errorf("a Cloud credential lasts up to %s", MaxCloudCredential)
 		}
 		if c.Iat > now.Add(clockSkew).Unix() {
-			return DeviceClaims{}, errors.New("the Cloud credential is from the future")
+			return DeviceClaims{}, false, errors.New("the Cloud credential is from the future")
 		}
+		return c, c.Entitled(now) == nil, nil
 	case cloudOnly:
-		return DeviceClaims{}, errors.New("this coordinator takes only a Cloud credential, not a device credential")
+		return DeviceClaims{}, false, errors.New("this coordinator takes only a Cloud credential, not a device credential")
 	}
 	if err := c.Entitled(now); err != nil {
-		return DeviceClaims{}, err
+		return DeviceClaims{}, false, err
 	}
-	return c, nil
+	return c, true, nil
 }
 
 func verifyCredential(token string, keys []*rsa.PublicKey, now time.Time) (DeviceClaims, error) {

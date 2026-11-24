@@ -259,7 +259,8 @@ func lostAdmin(prev, next *teamState) bool {
 // with at least need. A worker the caller doesn't reach is ErrNoWorker, so it
 // can't be told from a missing one; a member who reaches it with too low a
 // role is ErrRole. A worker no list has put in a team yet is its creator's
-// device's alone, with every role. Called with c.mu held.
+// device's alone, with every role. A member the team's billing doesn't cover
+// is ErrNoPlan or ErrTeamUnpaid (admission.go). Called with c.mu held.
 func (c *Coordinator) requireRole(caller Caller, workerID string, need Role) (*Member, error) {
 	w, ok := c.state.Workers[workerID]
 	if !ok {
@@ -272,7 +273,7 @@ func (c *Coordinator) requireRole(caller Caller, workerID string, need Role) (*M
 		if !RoleAdmin.allows(need) {
 			return nil, fmt.Errorf("%w: no role %q", ErrRole, need)
 		}
-		return nil, nil
+		return nil, c.admitWorker(caller, w)
 	}
 	st, err := c.teamState(w.Team)
 	if err != nil {
@@ -284,6 +285,9 @@ func (c *Coordinator) requireRole(caller Caller, workerID string, need Role) (*M
 	}
 	if !m.Role.allows(need) {
 		return nil, fmt.Errorf("%w: a %s can't", ErrRole, m.Role)
+	}
+	if err := c.admitWorker(caller, w); err != nil {
+		return nil, err
 	}
 	return m, nil
 }

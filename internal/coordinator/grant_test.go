@@ -44,7 +44,15 @@ func (d testDevice) id() string { return deviceID(d.pub()) }
 func (d testDevice) b64() string { return b64.EncodeToString(d.pub()) }
 
 func (d testDevice) caller(account string) Caller {
-	return Caller{Account: account, Device: d.id(), DeviceKey: d.pub()}
+	return Caller{Account: account, Device: d.id(), DeviceKey: d.pub(), Paid: true}
+}
+
+// unpaid is d's caller for account with no plan of its own: an identity-only
+// Cloud credential.
+func (d testDevice) unpaid(account string) Caller {
+	c := d.caller(account)
+	c.Paid = false
+	return c
 }
 
 // include is d's inclusion in a team, under account, admitted from entry

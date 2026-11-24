@@ -67,7 +67,7 @@ func (f clientFlags) server() (*channel.Server, error) {
 // proved.
 func handler(c *coordinator.Coordinator) func(channel.Peer) http.Handler {
 	return func(p channel.Peer) http.Handler {
-		return c.AccountHandler(coordinator.Caller{Account: p.Account, Device: p.Device, DeviceKey: p.DeviceKey, Email: p.Email})
+		return c.AccountHandler(coordinator.Caller{Account: p.Account, Device: p.Device, DeviceKey: p.DeviceKey, Email: p.Email, Paid: p.Paid})
 	}
 }
 
