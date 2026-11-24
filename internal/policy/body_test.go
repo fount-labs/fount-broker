@@ -212,9 +212,26 @@ func TestDeviceDestinations(t *testing.T) {
 			t.Errorf("device_credential body %q: %v, want ok=%v", body, err, ok)
 		}
 	}
-	for _, name := range []string{"fount.device_renew", "fount.device_cloud_credential"} {
-		if err := Destinations[name].Body.Check([]byte("{}")); err == nil {
-			t.Errorf("%s took a body", name)
+	if err := Destinations["fount.device_cloud_credential"].Body.Check([]byte("{}")); err == nil {
+		t.Error("fount.device_cloud_credential took a body")
+	}
+
+	sig := strings.Repeat("A", 86)
+	renew := Destinations["fount.device_renew"].Body
+	for body, ok := range map[string]bool{
+		``:                                  true,
+		`{}`:                                true,
+		`{"seat":"eyJ2IjoxfQ.` + sig + `"}`: true,
+		`{"seat":"` + strings.Repeat("a", 1001) + `.` + sig + `"}`: false,
+		`{"seat":"eyJ2IjoxfQ.` + sig[1:] + `"}`:                    false,
+		`{"seat":"eyJ2IjoxfQ"}`:                                    false,
+		`{"seat":"a b.` + sig + `"}`:                               false,
+		`{"seat":7}`:                                               false,
+		`{"seat":"eyJ2IjoxfQ.` + sig + `","code":"x"}`:             false,
+		`[]`: false,
+	} {
+		if err := renew.Check([]byte(body)); (err == nil) != ok {
+			t.Errorf("device_renew body %.60q: %v, want ok=%v", body, err, ok)
 		}
 	}
 
