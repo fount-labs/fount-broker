@@ -195,7 +195,25 @@ func (c *Coordinator) stageSend(t *Tree, workerID string, r *sendRecord, raw []b
 	if err := t.Write(sendBytes(r.ID), raw); err != nil {
 		return false, err
 	}
-	return true, c.saveSend(t, r)
+	if err := c.saveSend(t, r); err != nil {
+		return false, err
+	}
+	if r.State == sendSending {
+		c.sendSoon(workerID)
+	}
+	return true, nil
+}
+
+// sendSoon has the mail loop pass over workerID now, for the record just put
+// in its outbox. Without it an email made outside a pass over the worker's
+// mail, as a draft's notice or approval email is when its job ends, waited
+// for whatever passed over the mailbox next: up to a sweep (10 min with the
+// changes feed). The pass reads the outbox under the tree's lock, so it sees
+// the record once its change is committed.
+func (c *Coordinator) sendSoon(workerID string) {
+	if c.mail != nil && c.mail.cfg.Send {
+		c.mail.kick(workerID)
+	}
 }
 
 // saveSend writes r and keeps the outbox to the records sending.
