@@ -105,7 +105,10 @@ lets in, so it needs a review before it is merged or deployed.
   when Desktop calls `billing-refresh` after checkout. Step 7's `team-runners` backstop cancels
   a retired team's live subscription, so it must re-check the subscription itself before
   cancelling. `/control/runners` gives a billing-retired team `retiredAt`, the billing answer
-  that ended it; the backstop leaves alone a subscription started after it.
+  that ended it (kept until an answer entitles the team again), and `retiredSubscription`, the
+  id of the subscription that answer was about when fount-infra names it; the backstop leaves
+  alone a subscription started after `retiredAt`, any other subscription, and a row that is
+  active with time left in its period.
 - **The device lane needs no plan here.** Step 6 still has to keep the proxy device lane
   refusing `fount-cloud`.
 

@@ -313,3 +313,70 @@ func TestBillingKeepsWhenItStoppedPayingAndAsksAgainAtTheEnd(t *testing.T) {
 		t.Fatal("not asked again at the period end")
 	}
 }
+
+// retiredAt and its subscription are the answer that ended the team, not the
+// latest: the backstop compares them with a re-subscription
+// (docs/team-admission-review-findings.md M3).
+func TestRetiredAtStaysAtTheAnswerThatEndedTheTeam(t *testing.T) {
+	f := newBillingFixture(t)
+	f.pay(t, TeamEntitlement{}, &TeamNotEntitled{Reason: "canceled", Subscription: "sub_1"})
+	first := f.c.TeamRunners("dev", nil, f.c.now())
+	f.advance(25 * time.Hour)
+	f.c.pollTeamBilling(context.Background(), f.c.now())
+	second := f.c.TeamRunners("dev", nil, f.c.now())
+	if len(first) != 1 || len(second) != 1 || !second[0].Retired || second[0] != first[0] ||
+		first[0].RetiredSubscription != "sub_1" {
+		t.Fatalf("retired %+v then %+v", first, second)
+	}
+	if f.biller.count() != 2 {
+		t.Fatalf("asked %d times", f.biller.count())
+	}
+	view, _ := json.Marshal(billingView(f.billing(t), f.c.now()))
+	if strings.Contains(string(view), "sub_1") {
+		t.Fatalf("members see the subscription: %s", view)
+	}
+}
+
+func TestRetiredAtClearsWhenTheTeamPaysAgain(t *testing.T) {
+	f := newBillingFixture(t)
+	f.pay(t, TeamEntitlement{}, &TeamNotEntitled{Reason: "canceled", Subscription: "sub_1"})
+	f.advance(time.Hour)
+	again := paid
+	again.Subscription = "sub_2"
+	f.pay(t, again, nil)
+	if b := f.billing(t); !b.RetiredAt.IsZero() || b.RetiredSubscription != "" || b.Subscription != "sub_2" {
+		t.Fatalf("billing %+v", b)
+	}
+	if got := f.c.TeamRunners("dev", nil, f.c.now()); len(got) != 0 {
+		t.Fatalf("listed %+v", got)
+	}
+	f.advance(time.Hour)
+	f.pay(t, TeamEntitlement{}, &TeamNotEntitled{Reason: "canceled", Subscription: "sub_2"})
+	got := f.c.TeamRunners("dev", nil, f.c.now())
+	if len(got) != 1 || got[0].RetiredAt != f.c.now().Format(time.RFC3339) || got[0].RetiredSubscription != "sub_2" {
+		t.Fatalf("retired again %+v", got)
+	}
+}
+
+// A team over for teamRetireAfter since its last answer is retired by that
+// answer, before and after the next; a later answer about another
+// subscription is a new end.
+func TestRetiredAtOfATeamOverLongEnough(t *testing.T) {
+	f := newBillingFixture(t)
+	f.pay(t, TeamEntitlement{}, &TeamNotEntitled{Reason: "period_ended", Subscription: "sub_1"})
+	ended := f.c.now().Format(time.RFC3339)
+	f.advance(teamRetireAfter + time.Hour)
+	before := f.c.TeamRunners("dev", nil, f.c.now())
+	f.pay(t, TeamEntitlement{}, &TeamNotEntitled{Reason: "period_ended", Subscription: "sub_1"})
+	after := f.c.TeamRunners("dev", nil, f.c.now())
+	if len(before) != 1 || len(after) != 1 || before[0] != after[0] ||
+		after[0].RetiredAt != ended || after[0].RetiredSubscription != "sub_1" {
+		t.Fatalf("retired %+v then %+v", before, after)
+	}
+	f.advance(time.Hour)
+	f.pay(t, TeamEntitlement{}, &TeamNotEntitled{Reason: "canceled", Subscription: "sub_2"})
+	got := f.c.TeamRunners("dev", nil, f.c.now())
+	if len(got) != 1 || got[0].RetiredAt != f.c.now().Format(time.RFC3339) || got[0].RetiredSubscription != "sub_2" {
+		t.Fatalf("another subscription ended %+v", got)
+	}
+}
