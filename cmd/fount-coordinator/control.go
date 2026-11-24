@@ -79,6 +79,7 @@ func controlAPI(token, stage string, hub *coordinator.RunnerHub, jobs *atomic.Po
 		writeControl(w, map[string]any{"runners": c.TeamRunners(stage, hub.TeamLinks(), time.Now())})
 	})
 	mux.HandleFunc("GET /control/mail", mailControl(authorized, jobs))
+	mux.HandleFunc("GET /control/backup", backupControl(authorized, jobs))
 	return mux, nil
 }
 
@@ -102,6 +103,25 @@ func mailControl(authorized func(http.ResponseWriter, *http.Request) bool, jobs 
 			return
 		}
 		writeControl(w, map[string]any{"mail": s})
+	}
+}
+
+// backupControl is GET /control/backup: whether backups are on, when the
+// last ran and last succeeded, the last error and the last root
+// (coordinator.BackupStatus). The error can name a worker, so it is behind
+// the token. Without backups it answers configured false, not 404: a
+// production coordinator without them is the thing to see.
+func backupControl(authorized func(http.ResponseWriter, *http.Request) bool, jobs *atomic.Pointer[coordinator.Coordinator]) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
+			return
+		}
+		c := jobs.Load()
+		if c == nil {
+			http.Error(w, "the coordinator is waiting for its wrapping key", http.StatusServiceUnavailable)
+			return
+		}
+		writeControl(w, map[string]any{"backup": c.BackupStatus()})
 	}
 }
 

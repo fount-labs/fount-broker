@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
+	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +33,12 @@ func TestTheControlRoute(t *testing.T) {
 	get := func(auth string) (int, string) { return getPath(t, srv.URL+"/control/runners", auth) }
 	if code, _ := getPath(t, srv.URL+"/control/mail", ""); code != http.StatusUnauthorized {
 		t.Errorf("/control/mail with no token: %d", code)
+	}
+	if code, _ := getPath(t, srv.URL+"/control/backup", "Bearer wrong"); code != http.StatusUnauthorized {
+		t.Errorf("/control/backup with the wrong token: %d", code)
+	}
+	if code, _ := getPath(t, srv.URL+"/control/backup", "Bearer "+testControlToken); code != http.StatusServiceUnavailable {
+		t.Errorf("/control/backup before the coordinator runs: %d", code)
 	}
 	for _, auth := range []string{"", "Bearer wrong", testControlToken, "Bearer " + testControlToken + "x"} {
 		if code, _ := get(auth); code != http.StatusUnauthorized {
@@ -95,6 +104,84 @@ func TestTheControlRoute(t *testing.T) {
 	}
 	if _, body := getPath(t, srv.URL+"/status", ""); strings.Contains(body, `"mail"`) {
 		t.Errorf("/status without mail: %s", body)
+	}
+	// Without backups, /control/backup says so rather than 404.
+	if code, body := getPath(t, srv.URL+"/control/backup", "Bearer "+testControlToken); code != http.StatusOK || body != `{"backup":{"configured":false}}`+"\n" {
+		t.Errorf("/control/backup without backups: %d %s", code, body)
+	}
+}
+
+func TestTheBackupControlRoute(t *testing.T) {
+	hub := coordinator.NewRunnerHub(nil)
+	defer hub.Close()
+	var jobs atomic.Pointer[coordinator.Coordinator]
+	control, err := controlAPI(testControlToken, "dev", hub, &jobs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(control)
+	defer srv.Close()
+
+	_, authority, _ := ed25519.GenerateKey(nil)
+	vault, bucket := &coordinator.MemVault{Authority: authority}, coordinator.NewMemBucket()
+	g, err := vault.Boot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	key, _ := coordinator.NewWrappingKey()
+	c, err := coordinator.New(coordinator.Config{
+		StateDir: dir + "/state", WorkDir: dir + "/work", Store: coordinator.DirStore{Root: dir + "/objects"},
+		Key: key, Pool: coordinator.NewPool(1, 1, nil), Runner: coordinator.LocalRunner{Command: []string{"false"}},
+		Backup: &coordinator.BackupConfig{Bucket: bucket, Counter: vault, Generations: g},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs.Store(c)
+	read := func() map[string]any {
+		t.Helper()
+		code, body := getPath(t, srv.URL+"/control/backup", "Bearer "+testControlToken)
+		if code != http.StatusOK {
+			t.Fatalf("%d %s", code, body)
+		}
+		var out struct {
+			Backup map[string]any `json:"backup"`
+		}
+		dec := json.NewDecoder(strings.NewReader(body))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Backup
+	}
+
+	b := read()
+	if b["configured"] != true || b["generation"] != float64(1) || !strings.HasPrefix(b["last_root"].(string), "roots/") {
+		t.Fatalf("at boot: %v", b)
+	}
+	for _, k := range []string{"last_attempt_at", "last_success_at", "last_root_at", "last_run", "interval_seconds"} {
+		if _, ok := b[k]; !ok {
+			t.Errorf("no %s: %v", k, b)
+		}
+	}
+	if _, ok := b["last_error"]; ok {
+		t.Errorf("an error at boot: %v", b)
+	}
+
+	const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+	bucket.FailPut = func(string) error { return errors.New("s3: put: 403 Forbidden: SignatureDoesNotMatch " + secret) }
+	w, _ := c.CreateWorker("acme", nil)
+	if err := c.PutFile(w.ID, "files/memo.md", []byte("memo")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Backup(context.Background()); err == nil {
+		t.Fatal("a refused put backed up")
+	}
+	b = read()
+	got, _ := b["last_error"].(string)
+	if !strings.Contains(got, "SignatureDoesNotMatch") || strings.Contains(got, secret) || b["last_error_at"] == nil {
+		t.Fatalf("after a failure: %v", b)
 	}
 }
 

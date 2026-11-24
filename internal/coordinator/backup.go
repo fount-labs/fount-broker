@@ -116,6 +116,8 @@ type durability struct {
 	// volume isn't backed up again.
 	lastState [32]byte
 	lastPrune time.Time
+
+	status backupStatus
 }
 
 // openDurability wraps the store, takes the generation, checks the volume
@@ -396,8 +398,10 @@ func (c *Coordinator) backupLocked(ctx context.Context) (string, error) {
 	defer d.mu.Unlock()
 	d.store.hold()
 	defer d.store.release()
+	d.status.noteAttempt()
 	k, err := c.takeCut()
 	if err != nil {
+		d.status.noteError("", err)
 		return "", err
 	}
 	return c.writeRoot(ctx, k)
@@ -418,12 +422,15 @@ func (c *Coordinator) Backup(ctx context.Context) (string, error) {
 	defer d.mu.Unlock()
 	d.store.hold()
 	defer d.store.release()
+	d.status.noteAttempt()
 	k, err := c.takeCut()
 	c.mu.Unlock()
 	if err != nil {
+		d.status.noteError("", err)
 		return "", err
 	}
 	if sha256.Sum256(k.state) == d.lastState {
+		d.status.noteUnchanged()
 		return "", nil
 	}
 	return c.writeRoot(ctx, k)
@@ -431,11 +438,19 @@ func (c *Coordinator) Backup(ctx context.Context) (string, error) {
 
 // writeRoot copies the cut's trees and writes its root. Called with d.mu
 // held and the store's deletes held.
-func (c *Coordinator) writeRoot(ctx context.Context, k volumeCut) (string, error) {
+func (c *Coordinator) writeRoot(ctx context.Context, k volumeCut) (key string, err error) {
 	d := c.durable
+	var run BackupRun
+	defer func() {
+		if err != nil {
+			d.status.noteError("", err)
+		} else {
+			d.status.noteRoot(key, run)
+		}
+	}()
 	body := rootBody{State: k.state, Workers: map[string]backedTree{}}
 	for _, w := range k.workers {
-		bt, err := c.backupTree(ctx, w)
+		bt, err := c.backupTree(ctx, w, &run)
 		if err != nil {
 			return "", fmt.Errorf("backing up worker %s: %w", w.ID, err)
 		}
@@ -454,18 +469,19 @@ func (c *Coordinator) writeRoot(ctx context.Context, k volumeCut) (string, error
 	if err != nil {
 		return "", err
 	}
-	key := rootKey(f.Generation, f.Seq, now)
+	key = rootKey(f.Generation, f.Seq, now)
 	if err := d.cfg.Bucket.Put(ctx, key, data); err != nil {
 		return "", fmt.Errorf("writing backup %s: %w", key, err)
 	}
+	run.Bytes += int64(len(data))
 	d.seq, d.lastState = f.Seq, sha256.Sum256(k.state)
 	return key, nil
 }
 
 // backupTree copies what w's manifest names that the bucket hasn't yet. The
 // manifest is read once and opened here, so the objects copied are the ones
-// the kept bytes name.
-func (c *Coordinator) backupTree(ctx context.Context, w Worker) (backedTree, error) {
+// the kept bytes name. What it copies is counted in run.
+func (c *Coordinator) backupTree(ctx context.Context, w Worker, run *BackupRun) (backedTree, error) {
 	d := c.durable
 	sealed, err := d.store.Store.Get(w.ID, manifestObject)
 	if errors.Is(err, ErrNotFound) && w.Version == 0 {
@@ -506,6 +522,8 @@ func (c *Coordinator) backupTree(ctx context.Context, w Worker) (backedTree, err
 			return backedTree{}, err
 		}
 		d.uploaded[key] = true
+		run.Objects++
+		run.Bytes += int64(len(data))
 	}
 	return bt, nil
 }
@@ -543,6 +561,7 @@ func (c *Coordinator) backupPass(ctx context.Context, now time.Time) bool {
 	}
 	if count, err := d.cfg.Counter.Load(ctx); err != nil {
 		log.Printf("backup: the vault's counter: %v", err)
+		d.status.noteError("the vault's counter: ", err)
 	} else if count.Generation != d.gen {
 		c.retire(fmt.Errorf("%w: the vault is at generation %d", ErrVaultGeneration, count.Generation))
 		return false
@@ -555,6 +574,7 @@ func (c *Coordinator) backupPass(ctx context.Context, now time.Time) bool {
 	if now.Sub(d.lastPrune) >= pruneEvery {
 		if err := c.pruneBackups(ctx, now); err != nil {
 			log.Printf("backup: keeping to the retention: %v", err)
+			d.status.noteError("keeping to the retention: ", err)
 		} else {
 			d.lastPrune = now
 		}

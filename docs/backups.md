@@ -16,6 +16,7 @@ decisions 15 to 18). The code is `internal/coordinator/backup*.go` and
 | The Cloud vault's generation and counter | Built in fount-mail-vault (`COORDINATOR_MODE`, `docs/COORDINATOR-COUNTER.md`); the coordinator's side is `vaultkey` (the boot) and `coordinator.WireCounter`. Not yet run against a deployed Cloud vault pair |
 | The restore drill (`scripts/restore-drill.sh`) | Built: the runbook end to end against an S3 stand-in and the vault's wire protocol, in the package and on the binary. See "Rehearsing a restore" |
 | Backups under `--wrapping-key vault` | Need `--coordinator-authority-key`. The bucket's credentials come from the vault, never from `$AWS_*` |
+| `GET /control/backup` | Built: when the last backup ran, succeeded and failed. See "Watching backups" |
 
 With `--wrapping-key vault --coordinator-authority-key <key>`, the key is the
 Cloud vaults' `GENERATION_AUTHORITY_KEY`, the same string the edge has as
@@ -62,6 +63,49 @@ under a key derived from the wrapping key. The bucket sees ciphertext and
 sizes only. Every `Put` is `If-None-Match: *`, with S3 checking a SHA-256 of
 the body. An object is written whole or not at all and is never replaced. A
 retry that meets its own bytes succeeds; other bytes are an error.
+
+## Watching backups
+
+`GET /control/backup` is on the control route, with `/control/runners` and
+`/control/mail`: it needs `$FOUNT_CONTROL_TOKEN` as a bearer token, so it is
+there only with `--runners-dial-in` and `--team-runner-stage`. It answers 503
+until the coordinator has its key. Without backups it answers
+`{"backup":{"configured":false}}`, not 404, since a production coordinator
+without them is the thing to catch. With them:
+
+```json
+{"backup": {
+  "configured": true,
+  "generation": 2,
+  "interval_seconds": 300,
+  "last_attempt_at": "2026-11-24T18:05:00Z",
+  "last_success_at": "2026-11-24T18:00:00Z",
+  "last_error": "writing backup roots/...: s3: put \"roots/...\": 403 Forbidden: AccessDenied: Access Denied",
+  "last_error_at": "2026-11-24T18:05:01Z",
+  "last_root": "roots/00000000000000000002-00000000000000000041-00000000001764007200",
+  "last_root_at": "2026-11-24T18:00:00Z",
+  "last_run": {"objects": 3, "bytes": 18211}
+}}
+```
+
+- `last_attempt_at`: a backup started, on the timer or for a security change.
+- `last_success_at`: the bucket last held the volume as it was, by a new root
+  or by finding the volume unchanged. On an idle volume it moves every
+  interval while `last_root_at` stays put. A `last_success_at` more than a
+  couple of intervals old, or older than `last_error_at`, means backups are
+  failing.
+- `last_error`: the latest failed backup, failed read of the vault's counter
+  on the timer, or failed retention pass, with what failed in front. It is
+  scrubbed before it leaves the enclave: anything shaped like an AWS key id,
+  and any run of base64 longer than an id, reads `[redacted]`. It names roots
+  and objects by key, as a bucket listing would, and can name a worker.
+- `last_run`: what writing `last_root` put in the bucket, the tree objects the
+  bucket didn't have yet and the bytes of those and the root.
+- `stopped`: why this coordinator stopped backing up, once a newer generation
+  took over.
+
+The status is in memory: a restart starts empty and fills in with the backup
+it takes at boot. The bucket name, credentials and contents are never in it.
 
 ## Restoring
 
