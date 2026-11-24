@@ -100,6 +100,33 @@ func TestDeviceCredentialForwardsTheSignedRequestAsSent(t *testing.T) {
 	}
 }
 
+func TestTeamBillingForwardsTheSignedRequestAsSent(t *testing.T) {
+	stmt := "eyJ2IjoxfQ." + strings.Repeat("A", 85) + "g"
+	for dest, c := range map[string]struct{ path, body string }{
+		"fount.team_checkout": {"device/team-checkout", `{"statement":"` + stmt + `", "seats":3,"successUrl":"https://fount.sh/success","cancelUrl":"https://fount.sh/account"}`},
+		"fount.team_portal":   {"device/team-portal", `{"statement":"` + stmt + `","returnUrl":"https://fount.sh/account"}`},
+		"fount.team_cancel":   {"device/team-cancel", `{"statement":"` + stmt + `"}`},
+	} {
+		var got []route.Request
+		s := start(t, recordingRoute(&got))
+		s.vault.Set(policy.CredentialLicense, deviceCredential)
+		s.send(`{"kind":"fetch","id":1,"dest":"`+dest+`","accept":"application/json","headers":`+signedHeaders+`}`, c.body)
+		drain(t, s, 1)
+		if len(got) != 1 {
+			t.Fatalf("%s: route saw %d requests, want 1", dest, len(got))
+		}
+		r := got[0]
+		if string(r.Body) != c.body || r.Credential != "" || r.Dest.Method != "POST" || r.Dest.Path != c.path || !maps.Equal(r.Dest.Headers, signed) {
+			t.Fatalf("%s: route got %+v", dest, r)
+		}
+
+		s.send(`{"kind":"fetch","id":2,"dest":"`+dest+`"}`, c.body)
+		if r, _ := s.recv(); r.Kind != protocol.KindError || r.Code != protocol.CodePolicy {
+			t.Fatalf("%s unsigned: got %+v, want a policy error", dest, r)
+		}
+	}
+}
+
 func TestDeviceRenewSendsTheHeadersAndNoBody(t *testing.T) {
 	for dest, path := range map[string]string{
 		"fount.device_renew":            "device/renew",

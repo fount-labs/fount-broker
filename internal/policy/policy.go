@@ -220,6 +220,49 @@ var Destinations = map[string]Destination{
 		Accept:        []string{"", "application/json"},
 		ClientHeaders: deviceSignatureHeaders,
 	},
+	// A firm team admin's Stripe Checkout for the team's seats
+	// (team-billing-plan.md §6.1). Signed like a renewal; the body carries
+	// the coordinator's admin statement, which fount-infra checks against the
+	// signing device's account.
+	"fount.team_checkout": {
+		Route:         RouteFountAPI,
+		Method:        "POST",
+		Path:          "device/team-checkout",
+		Accept:        []string{"", "application/json"},
+		ContentType:   "application/json",
+		ClientHeaders: deviceSignatureHeaders,
+		Body: Body{Kind: BodyObject, MaxBytes: 4 << 10, Fields: map[string]Field{
+			"statement":  {Types: []string{"string"}, Required: true, Pattern: teamStatementPattern},
+			"seats":      {Types: []string{"number"}, Required: true, Pattern: teamSeatsPattern},
+			"successUrl": {Types: []string{"string"}, Required: true, Pattern: returnURLPattern},
+			"cancelUrl":  {Types: []string{"string"}, Required: true, Pattern: returnURLPattern},
+		}},
+	},
+	// The team's Stripe portal, where an admin changes seats.
+	"fount.team_portal": {
+		Route:         RouteFountAPI,
+		Method:        "POST",
+		Path:          "device/team-portal",
+		Accept:        []string{"", "application/json"},
+		ContentType:   "application/json",
+		ClientHeaders: deviceSignatureHeaders,
+		Body: Body{Kind: BodyObject, MaxBytes: 4 << 10, Fields: map[string]Field{
+			"statement": {Types: []string{"string"}, Required: true, Pattern: teamStatementPattern},
+			"returnUrl": {Types: []string{"string"}, Required: true, Pattern: returnURLPattern},
+		}},
+	},
+	// Cancels the team's subscription at the period's end.
+	"fount.team_cancel": {
+		Route:         RouteFountAPI,
+		Method:        "POST",
+		Path:          "device/team-cancel",
+		Accept:        []string{"", "application/json"},
+		ContentType:   "application/json",
+		ClientHeaders: deviceSignatureHeaders,
+		Body: Body{Kind: BodyObject, MaxBytes: 2 << 10, Fields: map[string]Field{
+			"statement": {Types: []string{"string"}, Required: true, Pattern: teamStatementPattern},
+		}},
+	},
 	// Lists the account's devices, with the device credential.
 	"fount.devices": {
 		Route:      RouteFountAPI,
@@ -277,6 +320,19 @@ var deviceSignatureHeaders = map[string]*regexp.Regexp{
 	"Fount-Timestamp": regexp.MustCompile(`^[1-9][0-9]{0,11}$`),
 	"Fount-Signature": regexp.MustCompile(`^[A-Za-z0-9_-]{85}[AQgw]$`),
 }
+
+// teamStatementPattern is a coordinator statement (package teambill):
+// base64url claims, a dot, and an Ed25519 signature (64 bytes, unpadded).
+// The body's MaxBytes bounds the claims.
+var teamStatementPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{85}[AQgw]$`)
+
+// teamSeatsPattern is a whole number of seats, 1 to 999; fount-infra holds
+// the real bounds.
+var teamSeatsPattern = regexp.MustCompile(`^[1-9][0-9]{0,2}$`)
+
+// returnURLPattern is where Stripe sends the buyer back to: an http(s) URL
+// with no whitespace. fount-infra checks its origin against an allowlist.
+var returnURLPattern = regexp.MustCompile(`^https?://[^\s]+$`)
 
 // fetchURLPattern is an https URL with no user info or whitespace.
 var fetchURLPattern = regexp.MustCompile(`^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/\S*)?$`)

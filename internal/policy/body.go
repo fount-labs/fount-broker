@@ -39,7 +39,8 @@ type Field struct {
 	// "boolean", "object", "array" or "null".
 	Types    []string
 	Required bool
-	// Pattern, when set, must match a string value in full.
+	// Pattern, when set, must match a string value in full, or a number's
+	// JSON text as sent (so `^[1-9][0-9]{0,2}$` is a whole number 1-999).
 	Pattern *regexp.Regexp
 	// Fields, when set, is the rule for an object value: only these keys,
 	// each checked like a top-level field.
@@ -121,6 +122,9 @@ func (f Field) check(raw json.RawMessage) error {
 		if !f.Pattern.MatchString(s) {
 			return fmt.Errorf("value doesn't match %s", f.Pattern)
 		}
+	}
+	if f.Pattern != nil && t == "number" && !f.Pattern.Match(bytes.TrimSpace(raw)) {
+		return fmt.Errorf("value doesn't match %s", f.Pattern)
 	}
 	if f.Fields != nil && t == "object" {
 		var obj map[string]json.RawMessage
