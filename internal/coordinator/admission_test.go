@@ -294,7 +294,7 @@ func TestBillingKeepsWhenItStoppedPayingAndAsksAgainAtTheEnd(t *testing.T) {
 	if first.IsZero() {
 		t.Fatal("no since")
 	}
-	f.now = f.now.Add(time.Hour)
+	f.advance(time.Hour)
 	f.pay(t, TeamEntitlement{}, lapsedTeam)
 	if !f.billing(t).Since.Equal(first) {
 		t.Fatal("since moved")

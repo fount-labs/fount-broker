@@ -48,13 +48,26 @@ type billingFixture struct {
 	admin, reviewer, stranger testDevice
 	now                       time.Time
 	tt                        *testTeam
+	// mu guards now against the coordinator's loops, which read it through
+	// the clock; only the test writes it (advance).
+	mu sync.Mutex
+}
+
+func (f *billingFixture) advance(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.now = f.now.Add(d)
 }
 
 func newBillingFixture(t *testing.T) *billingFixture {
 	t.Helper()
 	c, _ := newTestCoordinator(t, "ok", 0)
 	f := &billingFixture{c: c, biller: &fakeBiller{}, admin: newTestDevice(t), reviewer: newTestDevice(t), stranger: newTestDevice(t), now: time.Now().UTC().Truncate(time.Second)}
-	c.clock = func() time.Time { return f.now }
+	c.setClock(func() time.Time {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return f.now
+	})
 	var err error
 	if f.team, err = c.MintTeam(f.admin.caller("acme")); err != nil {
 		t.Fatal(err)
@@ -202,7 +215,7 @@ func TestAMemberRefreshesTheTeamsBilling(t *testing.T) {
 	}
 
 	// A 403 is an answer: not entitled, with the reason.
-	f.now = f.now.Add(TeamBillingRefreshGap)
+	f.advance(TeamBillingRefreshGap)
 	f.biller.set(TeamEntitlement{}, &TeamNotEntitled{Reason: "canceled"})
 	code, out = do(t, reviewer, "POST", path, "")
 	if b := out["billing"].(map[string]any); code != 200 || b["status"] != BillingNoAccess || b["reason"] != "canceled" || b["entitled"] != false || b["seats"] != nil {
@@ -210,10 +223,10 @@ func TestAMemberRefreshesTheTeamsBilling(t *testing.T) {
 	}
 
 	// No answer keeps the last one, and says why.
-	f.now = f.now.Add(TeamBillingRefreshGap)
+	f.advance(TeamBillingRefreshGap)
 	f.biller.set(paid, nil)
 	do(t, reviewer, "POST", path, "")
-	f.now = f.now.Add(TeamBillingRefreshGap)
+	f.advance(TeamBillingRefreshGap)
 	f.biller.set(TeamEntitlement{}, errors.New("fount-infra answered 500"))
 	if code, _ := do(t, reviewer, "POST", path, ""); code != 502 {
 		t.Fatalf("a failed refresh: %d", code)
@@ -251,7 +264,7 @@ func TestTheLoopAsksDailyAndAfterALapseStep(t *testing.T) {
 	f.biller.set(paid, nil)
 	ctx := context.Background()
 	poll := func(after time.Duration) int {
-		f.now = f.now.Add(after)
+		f.advance(after)
 		f.c.pollTeamBilling(ctx, f.now)
 		return f.biller.count()
 	}

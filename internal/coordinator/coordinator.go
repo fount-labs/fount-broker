@@ -30,6 +30,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fount-labs/fount-broker/internal/jobwire"
@@ -108,19 +109,23 @@ type Coordinator struct {
 	// intakeWaits are workers' intakes waiting for a runner slot, which
 	// TeamRunners counts as queued.
 	intakeWaits map[string]intakeWait
-	// clock is the team log's time, time.Now unless a test sets it.
-	clock func() time.Time
+	// clock is the team log's time, time.Now unless a test sets it
+	// (setClock); atomic, as the coordinator's loops read it.
+	clock atomic.Pointer[func() time.Time]
 	// billing is the team billing loop's (teambilling.go).
 	billing teamBillingLoop
 }
 
 // now is the team log's time: lists' age, records' at and recoveries' wait.
 func (c *Coordinator) now() time.Time {
-	if c.clock != nil {
-		return c.clock()
+	if clock := c.clock.Load(); clock != nil {
+		return (*clock)()
 	}
 	return time.Now()
 }
+
+// setClock sets the team log's time, for tests.
+func (c *Coordinator) setClock(clock func() time.Time) { c.clock.Store(&clock) }
 
 func New(cfg Config) (*Coordinator, error) {
 	if cfg.StateDir == "" || cfg.WorkDir == "" || cfg.Store == nil || cfg.Pool == nil || cfg.Runner == nil {

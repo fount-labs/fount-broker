@@ -24,7 +24,7 @@ func newRecoveryFixture(t *testing.T) recoveryFixture {
 	t.Helper()
 	f := newTeamFixture(t)
 	at := time.Now()
-	f.c.clock = func() time.Time { return at }
+	f.c.setClock(func() time.Time { return at })
 	pk := newTestPasskey(t)
 	f.tt.update("m_owner", func(m *ListMember) { m.Rec = pk.rec(t) })
 	f.tt.update("m_admin", func(m *ListMember) { m.Role, m.Workers = RoleReviewer, []string{allWorkers} })
