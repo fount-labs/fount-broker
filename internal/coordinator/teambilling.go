@@ -123,6 +123,9 @@ type TeamBilling struct {
 	// entitled, that didn't entitle it: how long its subscription has been
 	// over (TeamRunners' retired).
 	Since time.Time `json:"since,omitzero"`
+	// OverSeatsSince is when the team, while entitled, first had more
+	// members than seats, zero while it has no more (admission.go).
+	OverSeatsSince time.Time `json:"overSeatsSince,omitzero"`
 }
 
 // Entitled says whether the team's subscription covers now: active, or
@@ -183,17 +186,29 @@ func (b *TeamBilling) ended(now time.Time) bool {
 }
 
 // TeamBillingView is a team's billing as its members see it (GET /v1/teams,
-// the refresh route).
+// the refresh route). SeatsCutAt is when a team over its seats admits only
+// the members holding them; Unseated are the members, by id, it refuses
+// since.
 type TeamBillingView struct {
 	TeamBilling
-	Entitled bool `json:"entitled"`
+	Entitled   bool      `json:"entitled"`
+	SeatsCutAt time.Time `json:"seatsCutAt,omitzero"`
+	Unseated   []string  `json:"unseated,omitempty"`
 }
 
-func billingView(b *TeamBilling, now time.Time) *TeamBillingView {
+// billingView is team's billing b for its members. Called with c.mu held.
+func (c *Coordinator) billingView(team string, b *TeamBilling, now time.Time) *TeamBillingView {
 	if b == nil {
 		return &TeamBillingView{}
 	}
-	return &TeamBillingView{TeamBilling: *b, Entitled: b.Entitled(now)}
+	v := &TeamBillingView{TeamBilling: *b, Entitled: b.Entitled(now)}
+	if !b.OverSeatsSince.IsZero() {
+		v.SeatsCutAt = b.OverSeatsSince.Add(overSeatsGrace)
+	}
+	if st, err := c.teamState(team); err == nil {
+		v.Unseated = slices.Sorted(maps.Keys(c.unseated(team, st, now)))
+	}
+	return v
 }
 
 const (
@@ -394,6 +409,7 @@ func (c *Coordinator) refreshTeamBilling(ctx context.Context, team string) (Team
 		next = *t.Billing
 	}
 	var refused *TeamNotEntitled
+	over := next.OverSeatsSince
 	switch {
 	case err == nil:
 		next = TeamBilling{Status: ent.Status, Tier: ent.Tier, PeriodEnd: ent.PeriodEnd.UTC(), Seats: ent.Seats, CheckedAt: now, TriedAt: now}
@@ -412,6 +428,10 @@ func (c *Coordinator) refreshTeamBilling(ctx context.Context, team string) (Team
 	}
 	if err == nil && next.Status == BillingRenewing {
 		next.GraceEnds = next.PeriodEnd.Add(teamRenewGrace)
+	}
+	next.OverSeatsSince = over
+	if st, serr := c.teamState(team); serr == nil {
+		next.trackSeats(len(st.members), now)
 	}
 	if err == nil && !next.Entitled(now) {
 		next.Since = now
@@ -434,8 +454,8 @@ func (c *Coordinator) refreshTeamBilling(ctx context.Context, team string) (Team
 }
 
 // BillingStatement signs a statement of kind for the caller's account in
-// team: an admin's listed device gets an admin statement, any listed
-// member's device a seat statement. Only a firm team has billing.
+// team: an admin's listed device gets an admin statement, a listed member's
+// device that holds one of the team's seats a seat statement. Only a firm team has billing.
 func (c *Coordinator) BillingStatement(caller Caller, team string, kind StatementKind) (TeamStatement, error) {
 	if c.cfg.TeamBilling == nil {
 		return TeamStatement{}, ErrBillingOff
@@ -448,15 +468,20 @@ func (c *Coordinator) BillingStatement(caller Caller, team string, kind Statemen
 	}
 	c.mu.Lock()
 	m, st, err := c.requireMember(caller, team)
-	if err == nil && st.deleted {
+	switch {
+	case err != nil:
+	case st.deleted:
 		err = ErrTeamDeleted
+	case kind == StatementAdmin && m.Role != RoleAdmin:
+		err = fmt.Errorf("%w: only an admin's device gets an admin statement", ErrRole)
+	case kind == StatementSeat:
+		// A seat beyond those paid for, once the team is cut to them
+		// (admission.go), gets none.
+		err = c.requireSeat(caller, team, c.now())
 	}
 	c.mu.Unlock()
 	if err != nil {
 		return TeamStatement{}, err
-	}
-	if kind == StatementAdmin && m.Role != RoleAdmin {
-		return TeamStatement{}, fmt.Errorf("%w: only an admin's device gets an admin statement", ErrRole)
 	}
 	return c.cfg.TeamBilling.Statement(kind, team, m.Account)
 }
@@ -486,7 +511,9 @@ func (c *Coordinator) RefreshTeamBilling(ctx context.Context, caller Caller, tea
 	if err != nil {
 		return nil, err
 	}
-	return billingView(&b, c.now()), nil
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.billingView(team, &b, c.now()), nil
 }
 
 // teamBillingFor is team's billing for its members' view, nil for a solo
@@ -499,7 +526,7 @@ func (c *Coordinator) teamBillingFor(team string) *TeamBillingView {
 	if t == nil {
 		return nil
 	}
-	return billingView(t.Billing, c.now())
+	return c.billingView(team, t.Billing, c.now())
 }
 
 // billingStatement is POST /v1/teams/{team}/billing-statement {"kind":

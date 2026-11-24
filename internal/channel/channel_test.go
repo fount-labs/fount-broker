@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -790,12 +791,13 @@ func TestACloudCredentialWithNoPlanIsDeferredToTheCoordinator(t *testing.T) {
 			change map[string]any
 			paid   bool
 		}{
-			"identity only":    {map[string]any{"tier": nil, "status": nil, "pe": nil}, false},
-			"an unknown tier":  {map[string]any{"tier": "free"}, false},
-			"cancelled":        {map[string]any{"status": "canceled"}, false},
-			"the period ended": {map[string]any{"pe": time.Now().Unix() - 60}, false},
-			"pro":              {nil, true},
-			"a firm team's":    {map[string]any{"tier": "team"}, true},
+			"identity only":      {map[string]any{"tier": nil, "status": nil, "pe": nil}, false},
+			"an unknown tier":    {map[string]any{"tier": "free"}, false},
+			"cancelled":          {map[string]any{"status": "canceled"}, false},
+			"the period ended":   {map[string]any{"pe": time.Now().Unix() - 60}, false},
+			"pro":                {nil, true},
+			"a firm team's tier": {map[string]any{"tier": "team"}, false},
+			"a team's seat":      {map[string]any{"bill": "tm_0123456789abcdef01234567"}, false},
 		} {
 			d := newDevice(t, "acct_1")
 			cloud(d, tc.change)
@@ -839,5 +841,38 @@ func TestACloudCredentialWithNoPlanIsDeferredToTheCoordinator(t *testing.T) {
 	dev.claims["tier"], dev.claims["status"], dev.claims["pe"] = nil, nil, nil
 	if _, _, err := client(origin, link.CheckUnattestedKey, dev.identity(t, accountKey(t, 0), time.Hour)).Dial(context.Background()); !errors.Is(err, ErrRefused) {
 		t.Fatalf("a device credential with no plan: %v", err)
+	}
+}
+
+// A seat-billed device credential (fount-infra's typ fount-device with the
+// team's tier, status and period, and bill naming the team) proves the
+// account but is never its own plan: it mints no team and makes no solo
+// worker, whatever the coordinator's credential setting.
+func TestASeatBilledDeviceCredentialIsNeverTheAccountsOwnPlan(t *testing.T) {
+	now := time.Now()
+	key := []*rsa.PublicKey{&accountKey(t, 0).PublicKey}
+	seat := func(change map[string]any) string {
+		d := newDevice(t, "acct_seat")
+		claims := map[string]any{}
+		maps.Copy(claims, d.claims)
+		claims["typ"], claims["tier"], claims["status"], claims["pe"] = DeviceCredentialType, "team", "active", now.Add(20*24*time.Hour).Unix()
+		claims["iat"], claims["exp"], claims["bill"] = now.Unix(), now.Add(24*time.Hour).Unix(), "tm_0123456789abcdef01234567"
+		maps.Copy(claims, change)
+		return credential(t, accountKey(t, 0), claims)
+	}
+	for name, change := range map[string]map[string]any{
+		"the team's tier and bill":  nil,
+		"bill on an account's plan": {"tier": "pro"},
+		"the team's tier, no bill":  {"bill": nil},
+	} {
+		for _, cloudOnly := range []bool{false, true} {
+			if _, paid, err := VerifyAccountCredential(seat(change), key, now, cloudOnly); err == nil || paid {
+				t.Errorf("%s, cloudOnly %v: paid %v, %v", name, cloudOnly, paid, err)
+			}
+		}
+	}
+	// The same claims without the team's are the account's own plan.
+	if _, paid, err := VerifyAccountCredential(seat(map[string]any{"tier": "pro", "bill": nil}), key, now, false); err != nil || !paid {
+		t.Fatalf("an account's own pro plan: paid %v, %v", paid, err)
 	}
 }

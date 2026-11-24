@@ -173,6 +173,7 @@ func (s *teamState) applyList(l TeamList, aud string) error {
 		}
 		s.deleted = true
 	}
+	prior := s.byID
 	s.members, s.byID, s.byDevice, s.workers = nil, map[string]*Member{}, map[string]*Member{}, map[string]string{}
 	s.passkeyAdmitted, s.recoveries = map[string]bool{}, map[string]recovery{}
 	s.name, s.lastList, s.lastAt = l.Name, l.Seq, max(s.lastAt, l.Iat)
@@ -181,6 +182,13 @@ func (s *teamState) applyList(l TeamList, aud string) error {
 	}
 	for _, lm := range l.Members {
 		m := &Member{ID: lm.ID, Account: lm.Account, Email: lm.Email, Role: lm.Role, Workers: lm.Workers, Invite: lm.Invite, Rec: lm.Rec}
+		switch old := prior[lm.ID]; {
+		case lm.Account == "":
+		case old != nil && old.Account == lm.Account:
+			m.Joined = old.Joined
+		default:
+			m.Joined = l.Seq
+		}
 		for _, token := range lm.Devices {
 			d, err := parseTeamInclusion(token, aud, l.Team, lm.Account)
 			if err != nil {
@@ -246,6 +254,9 @@ func (s *teamState) applyRecord(r TeamRecord, team, aud string) error {
 	s.lastAt = max(s.lastAt, r.At)
 	if r.Kind == RecordInvite {
 		s.usedInvites[m.Invite.ID] = true
+		if m.Account != r.Account {
+			m.Joined = r.Seq
+		}
 		m.Invite, m.Account = nil, r.Account
 	}
 	if !recordAdmits[r.Kind] {
@@ -640,6 +651,11 @@ func (c *Coordinator) commitEntry(team string, prior *teamState, entry TeamEntry
 	var billing *TeamBilling
 	if existed {
 		rotate, billing = slices.Clone(t.Rotate), t.Billing
+	}
+	if billing != nil {
+		b := *billing
+		b.trackSeats(len(next.members), c.now().UTC())
+		billing = &b
 	}
 	if lostAdmin(prior, next) {
 		for id := range prior.workers {

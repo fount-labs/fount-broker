@@ -128,7 +128,7 @@ func TestStatements(t *testing.T) {
 		t.Fatalf("admin statement %+v, expires %s", got, admin.ExpiresAt)
 	}
 	seat, _ := c.Statement(coordinator.StatementSeat, team, account)
-	if got := verify(t, seat.Token, key); got.Typ != TypeSeat || got.Exp != now.Unix()+7*86400 {
+	if got := verify(t, seat.Token, key); got.Typ != TypeSeat || got.Exp != now.Unix()+86400 {
 		t.Fatalf("seat statement %+v", got)
 	}
 	// The status request names no account.

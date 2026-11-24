@@ -145,6 +145,10 @@ func (r Role) allows(need Role) bool {
 type Member struct {
 	ID, Account, Email string
 	Role               Role
+	// Joined is the entry from which the member has held its account: the
+	// list that named it, or the record that took its invite. A firm team
+	// over its seats admits its members in this order (admission.go).
+	Joined uint64
 	// Workers are a reviewer's assignment, allWorkers for every one.
 	Workers []string
 	Devices []TeamDevice

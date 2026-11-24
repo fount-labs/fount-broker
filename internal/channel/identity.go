@@ -55,6 +55,10 @@ type DeviceClaims struct {
 	// credential's counts (VerifiedEmail): fount-infra signs it after
 	// checking live, and an invite is accepted only for it.
 	Eml string `json:"eml,omitempty"`
+	// Bill is the firm team a seat-billed device credential charges
+	// (team-billing-plan.md D4): its tier, status and period are the
+	// team's, not the account's.
+	Bill string `json:"bill,omitempty"`
 }
 
 // VerifiedEmail is the credential's verified email, or empty: a Cloud
@@ -71,17 +75,22 @@ func (c DeviceClaims) VerifiedEmail() string {
 	return c.Eml
 }
 
-// cloudTiers are the plans that include Cloud: every paid one (pricing.md),
-// and a firm team's own subscription (fount-infra's "team" tier).
-var cloudTiers = []string{"plus", "pro", "team"}
+// cloudTiers are the account plans that include Cloud: every paid one
+// (pricing.md). A firm team's subscription (fount-infra's "team" tier) is
+// never an account's own: only a seat-billed credential carries it, and the
+// coordinator admits a team's members by the team's billing instead.
+var cloudTiers = []string{"plus", "pro"}
 
 // ErrNotEntitled is a credential whose claims don't include Cloud.
 var ErrNotEntitled = errors.New("the account's subscription doesn't include Cloud")
 
 // Entitled is fount-infra's evaluateSubscriptionAccess over the claims: a
-// paid tier, active or past_due, inside its period.
+// paid tier, active or past_due, inside its period, of the account's own
+// plan, not a team's seat.
 func (c DeviceClaims) Entitled(now time.Time) error {
 	switch {
+	case c.Bill != "":
+		return fmt.Errorf("%w: a team's seat isn't the account's own plan", ErrNotEntitled)
 	case c.Tier == nil || !slices.Contains(cloudTiers, *c.Tier):
 		return fmt.Errorf("%w: no paid plan", ErrNotEntitled)
 	case c.Status == nil || (*c.Status != "active" && *c.Status != "past_due"):

@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"maps"
@@ -41,6 +42,14 @@ import (
 // removals and role changes work while over. An unentitled team has one
 // seat, enough for the admin who sets it up and pays.
 //
+// A team over its seats (they were cut below its members) removes nobody
+// (D7). Billing.OverSeatsSince keeps when it went over; once it has been
+// over for overSeatsGrace, a billing period, only its first seats members
+// with an account, admins first and then by when they joined, are admitted
+// without a plan of their own and get seat statements. The rest stay on the
+// list and are refused with ErrOverSeats until an admin adds seats or
+// removes someone.
+//
 // With no TeamBiller (Config.TeamBilling nil) none of this applies: there is
 // no team billing, and AccountHandler refuses every route to a caller
 // without its own plan (planWithoutBilling).
@@ -54,6 +63,10 @@ var (
 	ErrTeamUnpaid = errors.New("the team's subscription isn't active")
 	// ErrSeats is a list that would need more seats than the team paid for.
 	ErrSeats = errors.New("the team has no free seat")
+	// ErrOverSeats is a member, without a plan of its own, beyond the seats
+	// of a firm team that has had more members than seats for
+	// overSeatsGrace.
+	ErrOverSeats = errors.New("the team has more members than seats, and this member isn't within them")
 )
 
 // The codes a 402's body carries beside its error, for Desktop.
@@ -61,6 +74,7 @@ const (
 	codeNoPlan     = "no_plan"
 	codeTeamUnpaid = "team_unpaid"
 	codeSeats      = "seats"
+	codeOverSeats  = "over_seats"
 )
 
 // errorCode is the code fail sends with err, or empty.
@@ -71,6 +85,8 @@ func errorCode(err error) string {
 		return limit.code()
 	case errors.Is(err, ErrSeats):
 		return codeSeats
+	case errors.Is(err, ErrOverSeats):
+		return codeOverSeats
 	case errors.Is(err, ErrTeamUnpaid):
 		return codeTeamUnpaid
 	case errors.Is(err, ErrNoPlan):
@@ -134,13 +150,7 @@ func (c *Coordinator) admitWorker(caller Caller, w *Worker) error {
 	if w.Team == "" {
 		return c.admitCreate(caller)
 	}
-	switch c.teamPayment(w.Team, c.now()) {
-	case teamPaid:
-		return nil
-	case teamPayNA:
-		return ErrNoPlan
-	}
-	return ErrTeamUnpaid
+	return c.admitTeam(caller, w.Team)
 }
 
 // admitCreate says whether caller may make an empty worker: with its own
@@ -151,6 +161,7 @@ func (c *Coordinator) admitCreate(caller Caller) error {
 		return nil
 	}
 	now := c.now()
+	unseated := false
 	for _, id := range slices.Sorted(maps.Keys(c.state.Teams)) {
 		if c.teamPayment(id, now) != teamPaid {
 			continue
@@ -160,8 +171,14 @@ func (c *Coordinator) admitCreate(caller Caller) error {
 			continue
 		}
 		if m := st.byDevice[caller.Device]; m != nil && m.Account == caller.Account && m.Role == RoleAdmin {
-			return nil
+			if !c.unseated(id, st, now)[m.ID] {
+				return nil
+			}
+			unseated = true
 		}
+	}
+	if unseated {
+		return fmt.Errorf("%w: to make an email agent, add a seat or remove someone", ErrOverSeats)
 	}
 	return fmt.Errorf("%w: to make an email agent, have your own plan or be an admin of a team that pays", ErrNoPlan)
 }
@@ -173,13 +190,86 @@ func (c *Coordinator) admitTeam(caller Caller, team string) error {
 	if caller.Paid {
 		return nil
 	}
-	switch c.teamPayment(team, c.now()) {
+	now := c.now()
+	switch c.teamPayment(team, now) {
 	case teamPaid:
-		return nil
+		return c.requireSeat(caller, team, now)
 	case teamPayNA:
 		return ErrNoPlan
 	}
 	return ErrTeamUnpaid
+}
+
+// overSeatsGrace is how long a firm team may have more members than seats
+// before only the first seats of them are admitted: a billing period, for
+// its admins to add seats or remove someone.
+const overSeatsGrace = 31 * 24 * time.Hour
+
+// trackSeats keeps OverSeatsSince for a team of members at now: set when the
+// team goes over its seats, cleared when it is back within them. While the
+// team isn't entitled its seats aren't known, and it stays as it was, so a
+// lapse doesn't start the grace over.
+func (b *TeamBilling) trackSeats(members int, now time.Time) {
+	switch {
+	case !b.Entitled(now):
+	case members <= max(b.Seats, 1):
+		b.OverSeatsSince = time.Time{}
+	case b.OverSeatsSince.IsZero():
+		b.OverSeatsSince = now
+	}
+}
+
+// unseated are the members, by id, of a paying firm team that hold none of
+// its seats at now, or nil when every one does: the team has had more
+// members than seats for overSeatsGrace, and the member isn't among the first
+// seats with an account, admins first, then by when each joined. A pending
+// invite counts toward the members but holds no seat. Called with c.mu held.
+func (c *Coordinator) unseated(team string, st *teamState, now time.Time) map[string]bool {
+	if c.teamPayment(team, now) != teamPaid {
+		return nil
+	}
+	b := c.state.Teams[team].Billing
+	seats := max(b.Seats, 1)
+	if b.OverSeatsSince.IsZero() || now.Before(b.OverSeatsSince.Add(overSeatsGrace)) || len(st.members) <= seats {
+		return nil
+	}
+	var order []*Member
+	for _, m := range st.members {
+		if m.Account != "" {
+			order = append(order, m)
+		}
+	}
+	if len(order) <= seats {
+		return nil
+	}
+	rank := func(m *Member) int {
+		if m.Role == RoleAdmin {
+			return 0
+		}
+		return 1
+	}
+	slices.SortFunc(order, func(a, b *Member) int {
+		return cmp.Or(cmp.Compare(rank(a), rank(b)), cmp.Compare(a.Joined, b.Joined), cmpString(a.ID, b.ID))
+	})
+	out := map[string]bool{}
+	for _, m := range order[seats:] {
+		out[m.ID] = true
+	}
+	return out
+}
+
+// requireSeat refuses caller's member of a paying firm team with
+// ErrOverSeats when it holds no seat. Called with c.mu held.
+func (c *Coordinator) requireSeat(caller Caller, team string, now time.Time) error {
+	st, err := c.teamState(team)
+	if err != nil {
+		return err
+	}
+	if m := st.byDevice[caller.Device]; m != nil && c.unseated(team, st, now)[m.ID] {
+		seats := max(c.state.Teams[team].Billing.Seats, 1)
+		return fmt.Errorf("%w: %d members, %d seats; an admin adds a seat or removes someone", ErrOverSeats, len(st.members), seats)
+	}
+	return nil
 }
 
 // teamSeats is how many members a firm team's list may grow to: the seats

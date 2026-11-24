@@ -515,7 +515,7 @@ func statusOf(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, ErrWriteOnce), errors.Is(err, ErrNotGranted), errors.Is(err, ErrTeamStale), errors.Is(err, ErrBusy):
 		return http.StatusConflict
-	case errors.Is(err, ErrSeats), errors.Is(err, ErrNoPlan), errors.Is(err, ErrTeamUnpaid):
+	case errors.Is(err, ErrSeats), errors.Is(err, ErrOverSeats), errors.Is(err, ErrNoPlan), errors.Is(err, ErrTeamUnpaid):
 		return http.StatusPaymentRequired
 	case errors.Is(err, ErrListRefused), errors.Is(err, ErrNotAdmin), errors.Is(err, ErrRole):
 		return http.StatusForbidden
