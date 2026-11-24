@@ -454,7 +454,7 @@ func (c *Coordinator) problemNotice(t *Tree, workerID, threadID, kind, ref strin
 
 func (c *Coordinator) sendNoticeTo(t *Tree, th *threadRecord, mb *Mailbox, rs *replySettings, id string, parts []string, kind, to string, now time.Time) error {
 	words, firm := noticeText[kind], rs.firm(mb)
-	text := fmt.Sprintf(words[1], firm) + "\n\nOpen it in Fount: " + fountLink(th.WorkerID, th.ID) + "\n\n" + footer(firm, false) + "\n"
+	text := fmt.Sprintf(words[1], firm) + "\n\nOpen Fount to see it.\n\n" + footer(firm, false) + "\n"
 	r := &sendRecord{ID: id, Kind: sendKindNotice, ThreadID: th.ID, Attempt: 1, State: sendSending, To: []string{to}}
 	raw, err := c.buildOut(t, th, mb, r, parts, fmt.Sprintf(words[0], firm), "", nil, text, nil, now)
 	if err != nil {

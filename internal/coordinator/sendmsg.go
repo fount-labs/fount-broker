@@ -433,11 +433,6 @@ func messageID(part, token, domain string) string {
 	return "<fm." + part + "." + token + "@" + domain + ">"
 }
 
-// fountLink is a thread's link in the app (F).
-func fountLink(workerID, threadID string) string {
-	return "fount://worker/" + workerID + "/thread/" + threadID
-}
-
 // angled is a Message-ID in its angle brackets, or empty.
 func angled(id string) string {
 	id = strings.TrimSpace(id)

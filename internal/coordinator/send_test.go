@@ -263,10 +263,12 @@ func TestAJobsAnswerBecomesADraftWithItsBytes(t *testing.T) {
 	if !strings.Contains(string(data), `"kind":"draft","content":"result","state":"pending","draftRev":1,"to":["dana@example.com"]`) {
 		t.Fatalf("the draft's view: %s", data)
 	}
-	// Under Notify the owner hears there's a draft, without its content.
+	// Under Notify the owner hears there's a draft, without its content or a
+	// link a spam filter would weigh.
 	r.pass()
 	notices := r.send.sentTo("dana@example.com", "A draft reply is ready in Acme")
-	if len(notices) != 1 || strings.Contains(string(r.send.raw[notices[0]]), "reconciled") {
+	if len(notices) != 1 || strings.Contains(string(r.send.raw[notices[0]]), "reconciled") ||
+		strings.Contains(string(r.send.raw[notices[0]]), "fount://") {
 		t.Fatalf("notices %v", notices)
 	}
 }
