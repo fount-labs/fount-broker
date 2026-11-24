@@ -76,11 +76,18 @@ type TeamEntitlement struct {
 	// A renewing team's grace is the coordinator's (teamRenewGrace).
 	GraceEnds time.Time
 	Seats     int
+	// Subscription is the id of the subscription the answer is about, empty
+	// from a fount-infra that doesn't say.
+	Subscription string
 }
 
 // TeamNotEntitled is fount-infra's 403 no_access for a team, with its reason
-// (no_subscription, canceled, period_ended, past_due, no_cloud_plan).
-type TeamNotEntitled struct{ Reason string }
+// (no_subscription, canceled, period_ended, past_due, no_cloud_plan), and the
+// id of the team's subscription when it has one and fount-infra says.
+type TeamNotEntitled struct {
+	Reason       string
+	Subscription string
+}
 
 func (e *TeamNotEntitled) Error() string {
 	return "fount-infra: the team isn't entitled (" + e.Reason + ")"
@@ -126,6 +133,15 @@ type TeamBilling struct {
 	// OverSeatsSince is when the team, while entitled, first had more
 	// members than seats, zero while it has no more (admission.go).
 	OverSeatsSince time.Time `json:"overSeatsSince,omitzero"`
+	// Subscription is the subscription the last answer was about.
+	Subscription string `json:"subscription,omitempty"`
+	// RetiredAt is the answer that ended the team for good (ended), and
+	// RetiredSubscription the subscription it was about: kept while the team
+	// stays ended, so the control plane's backstop compares a fixed time and
+	// subscription (TeamRunners), and cleared by an answer that doesn't end
+	// it.
+	RetiredAt           time.Time `json:"retiredAt,omitzero"`
+	RetiredSubscription string    `json:"retiredSubscription,omitempty"`
 }
 
 // Entitled says whether the team's subscription covers now: active, or
@@ -185,15 +201,45 @@ func (b *TeamBilling) ended(now time.Time) bool {
 	return b.Reason == "canceled" || !b.Since.IsZero() && now.Sub(b.Since) >= teamRetireAfter
 }
 
+// retire keeps, on an answer that ends the team, the answer that first
+// ended it (retiredBy of prev, the answer before, when that one had ended it
+// too), unless that was about another subscription: the team's next one
+// ended as well, and this answer ended it.
+func (b *TeamBilling) retire(prev *TeamBilling, now time.Time) {
+	b.RetiredAt, b.RetiredSubscription = time.Time{}, ""
+	if !b.ended(now) {
+		return
+	}
+	b.RetiredAt, b.RetiredSubscription = b.CheckedAt, b.Subscription
+	if prev == nil || !prev.ended(now) {
+		return
+	}
+	if at, sub := prev.retiredBy(); sub == "" || b.Subscription == "" || sub == b.Subscription {
+		b.RetiredAt, b.RetiredSubscription = at, cmp.Or(sub, b.Subscription)
+	}
+}
+
+// retiredBy is the answer that ended the team, and its subscription: RetiredAt,
+// or for a team over long enough since its last answer, that answer.
+func (b *TeamBilling) retiredBy() (time.Time, string) {
+	if !b.RetiredAt.IsZero() {
+		return b.RetiredAt, b.RetiredSubscription
+	}
+	return b.CheckedAt, b.Subscription
+}
+
 // TeamBillingView is a team's billing as its members see it (GET /v1/teams,
 // the refresh route). SeatsCutAt is when a team over its seats admits only
 // the members holding them; Unseated are the members, by id, it refuses
-// since.
+// since. Subscription ids are the control plane's, not shown.
 type TeamBillingView struct {
 	TeamBilling
 	Entitled   bool      `json:"entitled"`
 	SeatsCutAt time.Time `json:"seatsCutAt,omitzero"`
 	Unseated   []string  `json:"unseated,omitempty"`
+	// Subscription and RetiredSubscription hide TeamBilling's.
+	Subscription        string `json:"subscription,omitempty"`
+	RetiredSubscription string `json:"retiredSubscription,omitempty"`
 }
 
 // billingView is team's billing b for its members. Called with c.mu held.
@@ -412,16 +458,16 @@ func (c *Coordinator) refreshTeamBilling(ctx context.Context, team string) (Team
 	over := next.OverSeatsSince
 	switch {
 	case err == nil:
-		next = TeamBilling{Status: ent.Status, Tier: ent.Tier, PeriodEnd: ent.PeriodEnd.UTC(), Seats: ent.Seats, CheckedAt: now, TriedAt: now}
+		next = TeamBilling{Status: ent.Status, Tier: ent.Tier, PeriodEnd: ent.PeriodEnd.UTC(), Seats: ent.Seats, CheckedAt: now, TriedAt: now, Subscription: ent.Subscription}
 		if !ent.GraceEnds.IsZero() {
 			next.GraceEnds = ent.GraceEnds.UTC()
 		}
 	case errors.As(err, &refused) && refused.Reason == reasonPeriodEnded && t.Billing.inRenewal(now):
 		prev := t.Billing
-		next = TeamBilling{Status: BillingRenewing, Reason: refused.Reason, Tier: prev.Tier, PeriodEnd: prev.PeriodEnd, Seats: prev.Seats, CheckedAt: now, TriedAt: now}
+		next = TeamBilling{Status: BillingRenewing, Reason: refused.Reason, Tier: prev.Tier, PeriodEnd: prev.PeriodEnd, Seats: prev.Seats, CheckedAt: now, TriedAt: now, Subscription: cmp.Or(refused.Subscription, prev.Subscription)}
 		err = nil
 	case errors.As(err, &refused):
-		next = TeamBilling{Status: BillingNoAccess, Reason: refused.Reason, CheckedAt: now, TriedAt: now}
+		next = TeamBilling{Status: BillingNoAccess, Reason: refused.Reason, CheckedAt: now, TriedAt: now, Subscription: refused.Subscription}
 		err = nil
 	default:
 		next.TriedAt, next.Error = now, err.Error()
@@ -438,6 +484,9 @@ func (c *Coordinator) refreshTeamBilling(ctx context.Context, team string) (Team
 		if t.Billing != nil && !t.Billing.Since.IsZero() {
 			next.Since = t.Billing.Since
 		}
+	}
+	if err == nil {
+		next.retire(t.Billing, now)
 	}
 	prev := t.Billing
 	t.Billing = &next

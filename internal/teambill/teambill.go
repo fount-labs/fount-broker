@@ -22,10 +22,12 @@
 //	POST <base>/coordinator/team-entitlement
 //
 // with no body, and the answer is { status, tier, periodEnd, graceEnds,
-// seats }, or 403 { error: "no_access", reason }. status is active,
-// past_due, or renewing: the period ended but Stripe has renewed it, and
-// fount-infra hasn't seen the invoice paid yet (the coordinator's grace).
-// An older fount-infra answers that 403 period_ended.
+// seats, subscription }, or 403 { error: "no_access", reason, subscription }.
+// status is active, past_due, or renewing: the period ended but Stripe has
+// renewed it, and fount-infra hasn't seen the invoice paid yet (the
+// coordinator's grace). An older fount-infra answers that 403 period_ended.
+// subscription, the id of the team's subscription, is absent from an older
+// fount-infra, and from a refusal for a team with none.
 package teambill
 
 import (
@@ -144,11 +146,14 @@ type answer struct {
 	PeriodEnd int64  `json:"periodEnd"`
 	GraceEnds *int64 `json:"graceEnds"`
 	Seats     int    `json:"seats"`
+	// Subscription is optional.
+	Subscription string `json:"subscription"`
 }
 
 type refusal struct {
-	Error  string `json:"error"`
-	Reason string `json:"reason"`
+	Error        string `json:"error"`
+	Reason       string `json:"reason"`
+	Subscription string `json:"subscription"`
 }
 
 // Status asks fount-infra for team's subscription. A 403 no_access is a
@@ -190,7 +195,7 @@ func (c *Client) Status(ctx context.Context, team string) (coordinator.TeamEntit
 		var r refusal
 		_ = json.Unmarshal(data, &r)
 		if resp.StatusCode == http.StatusForbidden && r.Error == "no_access" && r.Reason != "" {
-			return coordinator.TeamEntitlement{}, &coordinator.TeamNotEntitled{Reason: r.Reason}
+			return coordinator.TeamEntitlement{}, &coordinator.TeamNotEntitled{Reason: r.Reason, Subscription: r.Subscription}
 		}
 		return coordinator.TeamEntitlement{}, fmt.Errorf("fount-infra answered %d %s %s", resp.StatusCode, r.Error, r.Reason)
 	}
@@ -199,7 +204,7 @@ func (c *Client) Status(ctx context.Context, team string) (coordinator.TeamEntit
 		(a.Status != "active" && a.Status != "past_due" && a.Status != coordinator.BillingRenewing) || a.Tier == "" || a.PeriodEnd <= 0 || a.Seats < 1 {
 		return coordinator.TeamEntitlement{}, errors.New("fount-infra answered with no team status")
 	}
-	ent := coordinator.TeamEntitlement{Status: a.Status, Tier: a.Tier, PeriodEnd: time.Unix(a.PeriodEnd, 0).UTC(), Seats: a.Seats}
+	ent := coordinator.TeamEntitlement{Status: a.Status, Tier: a.Tier, PeriodEnd: time.Unix(a.PeriodEnd, 0).UTC(), Seats: a.Seats, Subscription: a.Subscription}
 	if a.GraceEnds != nil {
 		ent.GraceEnds = time.Unix(*a.GraceEnds, 0).UTC()
 	}

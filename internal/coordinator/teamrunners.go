@@ -18,12 +18,16 @@ type ControlRunner struct {
 	// LastActivityAt is RFC 3339, omitted only if the team never had any.
 	LastActivityAt string `json:"lastActivityAt,omitempty"`
 	Retired        bool   `json:"retired,omitempty"`
-	// RetiredAt is RFC 3339, set for a team retired by its billing: when
-	// fount-infra last said its subscription was over. A subscription started
-	// after it is one the coordinator hasn't heard of yet (a re-subscribe),
-	// which the control plane's backstop cancel leaves alone. Absent for a
-	// deleted team, which can't buy again.
+	// RetiredAt is RFC 3339, set for a team retired by its billing: the
+	// fount-infra answer that ended it, which stays put while it stays
+	// retired. A subscription started after it is one the coordinator hasn't
+	// heard of yet (a re-subscribe), which the control plane's backstop
+	// cancel leaves alone. Absent for a deleted team, which can't buy again.
 	RetiredAt string `json:"retiredAt,omitempty"`
+	// RetiredSubscription is the id of the subscription that answer was
+	// about; the backstop cancels no other. Absent when fount-infra didn't
+	// say.
+	RetiredSubscription string `json:"retiredSubscription,omitempty"`
 }
 
 // recentActivity is how long after its last activity a team with nothing
@@ -72,7 +76,8 @@ func (c *Coordinator) noteIntakeWait(workerID, account string, waiting bool) {
 // team whose subscription ended for good (TeamBilling.ended: canceled, or
 // over for teamRetireAfter). A team that doesn't pay (admission.go) counts
 // nothing queued, so the control plane starts no runner for it: its jobs and
-// intake wait until it pays. retiredAt is the billing answer that ended it.
+// intake wait until it pays. retiredAt is the billing answer that ended it,
+// and retiredSubscription its subscription (TeamBilling.retire).
 func (c *Coordinator) TeamRunners(stage string, links map[string]TeamLink, now time.Time) []ControlRunner {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -137,7 +142,8 @@ func (c *Coordinator) TeamRunners(stage string, links map[string]TeamLink, now t
 		} else if b.ended(now) {
 			r := get(id)
 			r.Retired = true
-			r.RetiredAt = b.CheckedAt.UTC().Format(time.RFC3339)
+			at, sub := b.retiredBy()
+			r.RetiredAt, r.RetiredSubscription = at.UTC().Format(time.RFC3339), sub
 		}
 	}
 	out := make([]ControlRunner, 0, len(by))

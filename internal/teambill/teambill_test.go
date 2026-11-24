@@ -252,3 +252,31 @@ func TestStatusRefusals(t *testing.T) {
 		})
 	}
 }
+
+// fount-infra names the team's subscription in an answer and a refusal; an
+// older one that doesn't is still an answer (TestStatus).
+func TestStatusCarriesTheSubscription(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		status     int
+	}{
+		{"answer", `{"status":"active","tier":"team","periodEnd":1800100000,"graceEnds":null,"seats":2,"subscription":"sub_123"}`, 200},
+		{"refusal", `{"error":"no_access","reason":"canceled","subscription":"sub_123"}`, 403},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			ent, err := client(t, srv).Status(context.Background(), team)
+			var refused *coordinator.TeamNotEntitled
+			switch {
+			case tc.status == 200 && (err != nil || ent.Subscription != "sub_123"):
+				t.Fatalf("answer %+v, %v", ent, err)
+			case tc.status == 403 && (!errors.As(err, &refused) || refused.Subscription != "sub_123"):
+				t.Fatalf("refusal %v", err)
+			}
+		})
+	}
+}
