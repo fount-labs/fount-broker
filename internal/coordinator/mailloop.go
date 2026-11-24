@@ -1011,15 +1011,15 @@ func (c *Coordinator) whyNotRun(s *MailSettings, l *mailLedger, th *threadRecord
 	case time.UnixMilli(msg.ReceivedAt).Before(s.AutoRunSince):
 		return "it arrived before automatic runs were turned on"
 	case paused == pausePaused || s.Paused:
-		return "the worker is paused"
+		return "the email agent is paused"
 	case paused == pauseUnknown:
-		return "Fount couldn't tell whether the worker is paused"
+		return "Fount couldn't tell whether the email agent is paused"
 	case len(c.cfg.JobConfig) == 0:
-		return "no model is set for this worker's jobs"
+		return "no model is set for this email agent's jobs"
 	case len(th.Jobs) >= maxThreadJobs:
 		return fmt.Sprintf("this thread reached its limit of %d jobs", maxThreadJobs)
 	case l.jobsSince(now.Add(-24*time.Hour), "") >= s.jobsPerDay():
-		return fmt.Sprintf("the worker's limit of %d jobs a day was reached", s.jobsPerDay())
+		return fmt.Sprintf("the email agent's limit of %d jobs a day was reached", s.jobsPerDay())
 	case l.jobsSince(now.Add(-time.Hour), sender) >= maxJobsPerSenderPerHour:
 		return fmt.Sprintf("%s started %d jobs in the last hour", sender, maxJobsPerSenderPerHour)
 	}

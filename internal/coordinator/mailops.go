@@ -40,11 +40,11 @@ const (
 func init() {
 	maps.Copy(opMessages, map[OpCode]string{
 		CodeAlreadyRun:          "This email is already being worked on.",
-		CodeAlreadyRequester:    "This address can already send this worker work.",
-		CodeFountboxAddress:     "A Fount worker can't send work to a worker.",
-		CodeRecipientNotAllowed: "That address can't send this worker work.",
-		CodeWorkerChanged:       "This worker's settings changed since you looked. Look again, then try.",
-		CodeNoMailbox:           "This worker has no email address yet.",
+		CodeAlreadyRequester:    "This address can already send this email agent work.",
+		CodeFountboxAddress:     "An email agent can't send work to another email agent.",
+		CodeRecipientNotAllowed: "That address can't send this email agent work.",
+		CodeWorkerChanged:       "This email agent's settings changed since you looked. Look again, then try.",
+		CodeNoMailbox:           "This email agent has no address yet.",
 		CodePairingClosed:       "This pairing already found its owner, or there's none waiting.",
 	})
 }
@@ -175,7 +175,7 @@ func (c *Coordinator) mayAddRequester(mb *Mailbox, s *MailSettings, address stri
 	case s.requester(address) != nil:
 		return refusal{code: CodeAlreadyRequester}
 	case len(s.Requesters) >= maxRequesters:
-		return fmt.Errorf("%w: a worker has at most %d requesters", ErrInvalid, maxRequesters)
+		return fmt.Errorf("%w: an email agent has at most %d requesters", ErrInvalid, maxRequesters)
 	}
 	return nil
 }

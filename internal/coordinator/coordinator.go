@@ -193,7 +193,7 @@ func checkKey(key WrappingKey, state *State) error {
 }
 
 var (
-	ErrNoWorker = errors.New("no such worker")
+	ErrNoWorker = errors.New("no such email agent")
 	ErrNoJob    = errors.New("no such job")
 	// ErrWriteOnce is a write over a thread file: what was received never
 	// changes, so a citation always opens the same bytes (§5.5).
@@ -696,7 +696,7 @@ func (c *Coordinator) runJob(ctx context.Context, job Job, w Worker, spec JobSpe
 	case runErr != nil:
 		return kept, dropped, runErr
 	case collectErr != nil:
-		return kept, dropped, errors.New("couldn't read back the job's results; the reason is kept with the worker")
+		return kept, dropped, errors.New("couldn't read back the job's results; the reason is kept with the email agent")
 	case result.ExitCode != 0:
 		return kept, dropped, fmt.Errorf("%w (exit %d)", errRunnerFailed, result.ExitCode)
 	}

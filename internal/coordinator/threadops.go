@@ -93,7 +93,7 @@ var opMessages = map[OpCode]string{
 	CodeEmptyText:       "Write something first.",
 	CodeTextTooLong:     "That's too long to send. Attach it as a file instead.",
 	CodeOpIDReused:      "Fount sent this action twice with different content. Try again.",
-	CodeNoModel:         "Choose a model for this worker's jobs first.",
+	CodeNoModel:         "Choose a model for this email agent's jobs first.",
 	CodeThreadCap:       fmt.Sprintf("This thread has reached its limit of %d jobs.", maxThreadJobs),
 	CodeJobFinished:     "That job already finished.",
 	CodeFilesChanged:    "This file changed since the agent's change was made. Discard the change, or ask for it again.",

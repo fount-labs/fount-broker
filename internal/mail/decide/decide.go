@@ -189,10 +189,10 @@ func Decide(w Worker, r Received, automatic string, firstSigners map[string]stri
 	inTo := listed(c.Headers.To, w.Address)
 	inCc := listed(c.Headers.Cc, w.Address)
 	if !c.RecipientSigned || !(inTo || inCc) {
-		return with(NeedsConfirmation, "the worker's address isn't in a signed To or Cc (Bcc)")
+		return with(NeedsConfirmation, "the email agent's address isn't in a signed To or Cc (Bcc)")
 	}
 	if !inTo {
-		return with(Context, "the worker was only copied (Cc)")
+		return with(Context, "the email agent was only copied (Cc)")
 	}
 	if !requester.AutoRun {
 		return with(NeedsConfirmation, "this owner's pairing needs each job confirmed")

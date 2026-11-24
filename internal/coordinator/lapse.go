@@ -155,7 +155,7 @@ func (c *Coordinator) resumed(ctx context.Context, w Worker, r Renewed, now time
 		if _, err := c.mail.service.Lapse(ctx, w.Mailbox, false); err != nil {
 			c.fenced(ctx, w.Mailbox, err)
 			log.Printf("worker %s: couldn't tell the edge it resumed: %v", w.ID, err)
-			r.Error = "the account paid, but the edge still holds this worker's mail: " + err.Error()
+			r.Error = "the account paid, but the edge still holds this email agent's mail: " + err.Error()
 			return r
 		}
 	}

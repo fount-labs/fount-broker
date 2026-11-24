@@ -376,7 +376,7 @@ func (c *Coordinator) SendInvite(ctx context.Context, caller Caller, team, invit
 			}
 		}
 		if len(candidates) == 0 {
-			err = fmt.Errorf("%w: no worker of the team has an address to send from", ErrNoMailbox)
+			err = fmt.Errorf("%w: no email agent of the team has an address to send from", ErrNoMailbox)
 		}
 	}
 	c.mu.Unlock()

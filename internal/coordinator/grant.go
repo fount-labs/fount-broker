@@ -86,14 +86,14 @@ type Device struct {
 var (
 	// ErrNotGranted is a worker made over the channel that no list has added
 	// to a team yet: it has no DEK, no files and runs no jobs.
-	ErrNotGranted = errors.New("the worker isn't in a team yet")
+	ErrNotGranted = errors.New("the email agent isn't in a team yet")
 	// ErrRetired is a v2 grant or revoke, which no worker takes any more.
 	ErrRetired = errors.New("v2 grants are retired: sign the team's membership list")
 	// ErrBusy is a worker with a running job.
-	ErrBusy = errors.New("the worker has a running job")
+	ErrBusy = errors.New("the email agent has a running job")
 	// ErrTooManyUngranted is a device or account with as many workers
 	// waiting for a team as it may have.
-	ErrTooManyUngranted = errors.New("too many workers waiting to join a team")
+	ErrTooManyUngranted = errors.New("too many email agents waiting to join a team")
 )
 
 var b64 = base64.RawURLEncoding.Strict()
