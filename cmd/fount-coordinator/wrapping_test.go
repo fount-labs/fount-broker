@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -174,5 +177,55 @@ func TestTheVaultsKeyServesNoDevAPI(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v0/workers", strings.NewReader(`{"account":"acme"}`)))
 	if rec.Code != 201 {
 		t.Errorf("dev: POST /v0/workers: %d %s", rec.Code, rec.Body)
+	}
+}
+
+type fixedCount struct{ coordinator.VaultCount }
+
+func (f fixedCount) Load(context.Context) (coordinator.VaultCount, error) { return f.VaultCount, nil }
+func (fixedCount) CompareAndSwap(context.Context, uint64, uint64, uint64) error {
+	return errors.New("not in this test")
+}
+
+// A volume behind the vault's count takes no generation: a blank disk, an
+// old copy, or a create with no disk would otherwise fence the coordinator
+// that holds the count (fount-mail-vault review H2, broker review H3).
+func TestBootOnlyWhenTheVolumeHasReachedTheCount(t *testing.T) {
+	dir := t.TempDir()
+	b := backupFlags{dir: dir}
+	allowed := func(count uint64, b backupFlags) error {
+		return bootAllowed(context.Background(), fixedCount{coordinator.VaultCount{Generation: 4, Count: count}}, b)
+	}
+	if err := allowed(0, b); err != nil {
+		t.Fatalf("a blank volume before anything was counted: %v", err)
+	}
+	if err := allowed(3, b); !errors.Is(err, errBootRefused) || !strings.Contains(err.Error(), "a blank volume") {
+		t.Fatalf("a blank volume after 3 changes: %v", err)
+	}
+	restore := b
+	restore.restore = restoreLatest
+	if err := allowed(3, restore); err != nil {
+		t.Fatalf("--restore onto a blank volume: %v", err)
+	}
+	st, err := coordinator.LoadState(filepath.Join(dir, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.SecuritySeq = 3
+	if err := os.MkdirAll(filepath.Join(dir, "state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(filepath.Join(dir, "state")); err != nil {
+		t.Fatal(err)
+	}
+	for count, ok := range map[uint64]bool{2: true, 3: true, 4: false} {
+		err := allowed(count, b)
+		if ok != (err == nil) || (!ok && !errors.Is(err, errBootRefused)) {
+			t.Fatalf("a volume at 3, the vault at %d: %v", count, err)
+		}
+	}
+	// --restore on a volume that isn't empty is the volume's own case.
+	if err := allowed(4, restore); !errors.Is(err, errBootRefused) {
+		t.Fatalf("--restore onto a volume behind the count: %v", err)
 	}
 }

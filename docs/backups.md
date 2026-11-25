@@ -20,12 +20,31 @@ decisions 15 to 18). The code is `internal/coordinator/backup*.go` and
 
 With `--wrapping-key vault --coordinator-authority-key <key>`, the key is the
 Cloud vaults' `GENERATION_AUTHORITY_KEY`, the same string the edge has as
-`COORDINATOR_AUTHORITY_KEY`. Every boot's keyset pull then boots a
-generation: the coordinator attests to a fresh per-boot Ed25519 key, and the
-vault answers a certificate for it under that authority, once both vaults
-hold the new generation. That fences every coordinator before it, at the
-vault's counter and at the edge. `--restore-dry-run` pulls without booting.
-`--mail` with the vault's key needs the authority key too.
+`COORDINATOR_AUTHORITY_KEY`. Every boot then takes a generation: the
+coordinator attests to a fresh per-boot Ed25519 key, proves it holds the
+transfer key its document names (a MAC under the X25519 agreement with the
+vault's, fount-mail-vault review C1), and the vault answers a certificate
+for it under that authority, once both vaults hold the new generation. That
+fences every coordinator before it, at the vault's counter and at the edge.
+
+The generation waits for the volume. The keyset pull boots nothing; once the
+volume is open, the coordinator boots only when its security sequence has
+reached the vault's count, when the vault has counted nothing yet, or when
+`--restore` is about to put a backup onto an empty volume. A blank disk, an
+old copy or a create with no disk is refused: `/status` says `refused` with
+why, and the coordinator serves `/status` alone until stopped, fencing
+nobody. `--restore-dry-run` never boots. A coordinator a newer generation
+retired answers `/health` with 503. `--mail` with the vault's key needs the
+authority key too.
+
+With `--counter-states` (`FOUNT_COORDINATOR_COUNTER_STATES=1`) every count
+is bound to the state it counts (counter version 2): a digest of the
+security sequence, the generation that made it, and each team's log head and
+rotation marks, with the counting generation as writer. A volume or backup
+at the vault's count with another digest is a fork and is refused, as is a
+volume one change ahead whose change is from a generation older than the
+last writer. Only Cloud vaults with version 2 answer it, so turn it on once
+both serve it. Without it the counter binds the number alone.
 
 `--dev-vault <file>` stands in for the vault: a file holding the generation
 and the count (`coordinator.FileVault`). Each boot moves the generation on and
@@ -51,6 +70,7 @@ rolled back.
 | `--coordinator-authority-key` (`FOUNT_COORDINATOR_AUTHORITY_KEY`) | With `--wrapping-key vault`: the Cloud vaults' `GENERATION_AUTHORITY_KEY`. Required for backups and for `--mail` |
 | `--restore latest\|roots/<key>` | Restore onto an empty `--dir` before serving |
 | `--restore-dry-run` | With `--restore`: check the backup and write nothing |
+| `--counter-states` (`FOUNT_COORDINATOR_COUNTER_STATES=1`) | Counter version 2: bind each count to its state. Only once both Cloud vaults serve it |
 
 With `--wrapping-key dev`, credentials come from `$AWS_ACCESS_KEY_ID`,
 `$AWS_SECRET_ACCESS_KEY`, and `$AWS_SESSION_TOKEN` for temporary credentials.
@@ -111,6 +131,8 @@ it takes at boot. The bucket name, credentials and contents are never in it.
 
 `Restore` refuses:
 - a backup below the vault's counter, which would roll back security state;
+- with `--counter-states`, a backup at the counter whose state isn't the one
+  the vault counted (a fork's);
 - one older than 80 days, past what the edge's sent records answer for;
 - a volume that already has state;
 - a generation the vault has moved past;
@@ -164,14 +186,16 @@ It needs no AWS account, vault or mail edge, and it runs two tests:
   - a restore of the backup from before the security change is refused, as
     a dry run and as a restore, and leaves the volume empty;
   - the newest is restored under a new generation. `state.json`, less the
-    restore mark, and every file in every worker's tree are then the same,
-    byte for byte, as before the loss.
+    restore mark and the security sequence, and every file in every
+    worker's tree are then the same, byte for byte, as before the loss.
+    The restore counts itself: the volume and the vault go one past the
+    backup's change, so from then on even the backup it was restored from,
+    and any disk at the old count, is a rollback.
 
   The restored coordinator then works. Mail it had already worked isn't run
   again, the draft is approved and sent once under its Message-ID, and new
   mail runs. Its next security change is counted under the new generation,
-  the old generation's swap is refused, and from then on even the backup it
-  was restored from counts as a rollback.
+  and the old generation's swap is refused.
 - `TestTheRestoreRunbookOnTheBinary` (`cmd/fount-coordinator/drill_test.go`)
   runs the coordinator binary with this page's dev flags (`--wrapping-key
   dev --dev-vault … --backup-bucket … --restore …`) against the same S3

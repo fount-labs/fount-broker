@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	blitiri.com.ar/go/spf v1.6.0
 	github.com/emersion/go-msgauth v0.7.0
-	github.com/fount-labs/fount-mail-vault/wire v0.0.0-20261120184410-d36b043a53fa
+	github.com/fount-labs/fount-mail-vault/wire v0.0.0-20261125003623-c795faaa6ded
 	github.com/tinfoilsh/tinfoil-go v0.17.0-rc.10
 	golang.org/x/net v0.62.0
 )

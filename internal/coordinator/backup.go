@@ -181,12 +181,16 @@ func (c *Coordinator) openDurability() error {
 	switch seq := c.state.SecuritySeq; {
 	case seq < count.Count:
 		return fmt.Errorf("%w: it has %d and the vault counted %d", ErrVolumeRolledBack, seq, count.Count)
+	case seq == count.Count && !sameState(count, c.state):
+		return fmt.Errorf("%w: it is at the vault's count %d with another security state than generation %d counted; it is a fork", ErrVolumeRolledBack, seq, count.Writer)
+	case seq > count.Count && count.Writer != 0 && c.state.SecurityGen < count.Writer:
+		return fmt.Errorf("%w: its uncounted change %d is generation %d's, older than generation %d, which counted %d", ErrVolumeRolledBack, seq, c.state.SecurityGen, count.Writer, count.Count)
 	case seq > count.Count:
 		log.Printf("backup: security change %d was saved and never counted; counting it now", seq)
 		if _, err := c.backupLocked(ctx); err != nil {
 			return err
 		}
-		if err := b.Counter.CompareAndSwap(ctx, d.gen, count.Count, seq); err != nil {
+		if err := countState(ctx, b.Counter, d.gen, count.Count, c.state); err != nil {
 			return fmt.Errorf("counting security change %d: %w", seq, err)
 		}
 		d.counted = seq

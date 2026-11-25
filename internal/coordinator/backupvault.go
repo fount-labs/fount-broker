@@ -65,10 +65,24 @@ type VaultCounter interface {
 }
 
 // VaultCount is what the vault holds: the current coordinator generation
-// and the security sequence it last counted.
+// and the security sequence it last counted. A StateCounter also holds the
+// digest of the state at that count (securityDigest) and the generation
+// that counted it; both are empty from a vault that doesn't keep them, or
+// before its first such swap.
 type VaultCount struct {
 	Generation uint64 `json:"generation"`
 	Count      uint64 `json:"count"`
+	Digest     string `json:"digest,omitempty"`
+	Writer     uint64 `json:"writer,omitempty"`
+}
+
+// StateCounter is a VaultCounter that binds each count to the state it
+// counts (fount-mail-vault counter version 2, broker review H2): two
+// volumes at the same count, one a fork, then differ. CompareAndSwapState
+// is CompareAndSwap that also sets the digest, with generation as writer.
+type StateCounter interface {
+	VaultCounter
+	CompareAndSwapState(ctx context.Context, generation, prev, next uint64, digest string) error
 }
 
 var (
@@ -143,7 +157,11 @@ type MemVault struct {
 	mu         sync.Mutex
 	generation uint64
 	count      uint64
+	digest     string
+	writer     uint64
 }
+
+var _ StateCounter = (*MemVault)(nil)
 
 // Boot moves the generation on and returns the new coordinator's
 // generation, fixed for the process.
@@ -166,10 +184,14 @@ func (v *MemVault) Boot() (*FixedGeneration, error) {
 func (v *MemVault) Load(context.Context) (VaultCount, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	return VaultCount{Generation: v.generation, Count: v.count}, nil
+	return VaultCount{Generation: v.generation, Count: v.count, Digest: v.digest, Writer: v.writer}, nil
 }
 
-func (v *MemVault) CompareAndSwap(_ context.Context, generation, prev, next uint64) error {
+func (v *MemVault) CompareAndSwap(ctx context.Context, generation, prev, next uint64) error {
+	return v.CompareAndSwapState(ctx, generation, prev, next, "")
+}
+
+func (v *MemVault) CompareAndSwapState(_ context.Context, generation, prev, next uint64, digest string) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.FailSwap != nil {
@@ -183,7 +205,10 @@ func (v *MemVault) CompareAndSwap(_ context.Context, generation, prev, next uint
 	case prev != v.count || next <= prev:
 		return fmt.Errorf("%w: it is %d, not %d", ErrVaultCount, v.count, prev)
 	}
-	v.count = next
+	v.count, v.digest, v.writer = next, digest, 0
+	if digest != "" {
+		v.writer = generation
+	}
 	return nil
 }
 

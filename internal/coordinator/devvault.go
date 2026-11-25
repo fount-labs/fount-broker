@@ -33,7 +33,7 @@ type FileVault struct {
 	mu sync.Mutex
 }
 
-var _ VaultCounter = (*FileVault)(nil)
+var _ StateCounter = (*FileVault)(nil)
 
 // Boot moves the generation on, keeping the count, and returns the new
 // coordinator's generation, fixed for the process.
@@ -66,7 +66,11 @@ func (v *FileVault) Load(context.Context) (VaultCount, error) {
 	return v.read()
 }
 
-func (v *FileVault) CompareAndSwap(_ context.Context, generation, prev, next uint64) error {
+func (v *FileVault) CompareAndSwap(ctx context.Context, generation, prev, next uint64) error {
+	return v.CompareAndSwapState(ctx, generation, prev, next, "")
+}
+
+func (v *FileVault) CompareAndSwapState(_ context.Context, generation, prev, next uint64, digest string) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	st, err := v.read()
@@ -79,7 +83,10 @@ func (v *FileVault) CompareAndSwap(_ context.Context, generation, prev, next uin
 	case prev != st.Count || next <= prev:
 		return fmt.Errorf("%w: it is %d, not %d", ErrVaultCount, st.Count, prev)
 	}
-	st.Count = next
+	st.Count, st.Digest, st.Writer = next, digest, 0
+	if digest != "" {
+		st.Writer = generation
+	}
 	return v.write(st)
 }
 

@@ -87,6 +87,10 @@
 // vault; with the dev key, --dev-vault, a file standing in for the vault's
 // generation and counter, and the credentials from $AWS_*. --mail with the
 // vault's key needs --backup-bucket. See docs/backups.md.
+//
+// --counter-states binds each count to the state it counts (counter version
+// 2), so a fork of the volume at the count is refused; only Cloud vaults
+// with version 2 answer it, so it is off until they serve.
 package main
 
 import (
@@ -161,6 +165,7 @@ func run() error {
 	vaults := flag.String("vaults", os.Getenv("FOUNT_VAULTS"), "with --wrapping-key vault: the vaults' hostnames, comma-separated")
 	vaultRepo := flag.String("vault-repo", os.Getenv("FOUNT_VAULT_REPO"), "with --wrapping-key vault: GitHub repository whose releases the vaults must run")
 	commitment := flag.String("keyset-commitment", os.Getenv("FOUNT_KEYSET_COMMITMENT"), "with --wrapping-key vault: the vaults' KEYSET_COMMITMENT")
+	counterStates := flag.Bool("counter-states", os.Getenv("FOUNT_COORDINATOR_COUNTER_STATES") == "1", "with --coordinator-authority-key: count each security change bound to its state (counter version 2), once every Cloud vault serves it")
 	authorityKey := flag.String("coordinator-authority-key", os.Getenv("FOUNT_COORDINATOR_AUTHORITY_KEY"), "with --wrapping-key vault: the Cloud vaults' GENERATION_AUTHORITY_KEY (the edge's COORDINATOR_AUTHORITY_KEY); every boot then takes a generation, fencing the coordinator before it, and backups count in the vault")
 	statusListen := flag.String("status-listen", "", "address for /health and /status, which may be beyond loopback")
 	clientListen := flag.String("client-listen", "", "address for the attested client channel ("+channel.Path+"), /health and /status, which may be beyond loopback")
@@ -263,7 +268,7 @@ func run() error {
 	}
 	// --client-listen serves /health and /status too, so it does for vault's
 	// --status-listen.
-	keys := keyFlags{mode: *keyMode, dir: *dir, vaults: *vaults, vaultRepo: *vaultRepo, commitment: *commitment, authority: *authorityKey,
+	keys := keyFlags{mode: *keyMode, dir: *dir, vaults: *vaults, vaultRepo: *vaultRepo, commitment: *commitment, authority: *authorityKey, counterStates: *counterStates,
 		mail: *mailLoop, dryRun: backups.dryRun, testAPI: *test, statusListen: cmp.Or(*statusListen, *clientListen)}
 	if err := keys.check(); err != nil {
 		return err
@@ -352,6 +357,9 @@ func run() error {
 	intake, _ := runner.(coordinator.IntakeRunner)
 	if *mailLoop && intake == nil {
 		return errors.New("--mail needs a runner that runs intake")
+	}
+	if err := bootGeneration(ctx, keys, backups, side, status); err != nil || ctx.Err() != nil {
+		return err
 	}
 	backups.vault = side
 	dur, err := backups.openDurable(*mailAuthority)

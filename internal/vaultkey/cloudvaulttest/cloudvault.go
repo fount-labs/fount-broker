@@ -32,8 +32,11 @@ type Pair struct {
 	mu    sync.Mutex
 	gen   uint64
 	count uint64
-	key   ed25519.PublicKey
-	last  *[3]uint64
+	// digest and writer are what a version 2 cas counted.
+	digest string
+	writer uint64
+	key    ed25519.PublicKey
+	last   *[3]uint64
 }
 
 // Start serves both vaults until the test ends.
@@ -86,7 +89,11 @@ func (p *Pair) Boot(key ed25519.PublicKey) (string, uint64, error) {
 func (p *Pair) State() wire.CounterState {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return wire.CounterState{Generation: p.gen, Count: p.count}
+	return p.state()
+}
+
+func (p *Pair) state() wire.CounterState {
+	return wire.CounterState{Generation: p.gen, Count: p.count, StateDigest: p.digest, Writer: p.writer}
 }
 
 func (p *Pair) counter(i int, w http.ResponseWriter, r *http.Request) {
@@ -112,21 +119,26 @@ func (p *Pair) counter(i int, w http.ResponseWriter, r *http.Request) {
 	result := wire.CounterOK
 	if req.Op == wire.CounterCAS {
 		swap := [3]uint64{req.Generation, req.Prev, req.Next}
+		msg := wire.CASMessage(nonce, req.Generation, req.Prev, req.Next)
+		var writer uint64
+		if req.Version == 2 {
+			msg, writer = wire.CASMessageV2(nonce, req.Generation, req.Prev, req.Next, req.StateDigest), req.Generation
+		}
 		switch {
 		case req.Generation != p.gen:
 			result = wire.CounterStaleGeneration
 		case p.key == nil:
 			result = wire.CounterNoGeneration
-		case !ed25519.Verify(p.key, wire.CASMessage(nonce, req.Generation, req.Prev, req.Next), req.Signature):
+		case !ed25519.Verify(p.key, msg, req.Signature):
 			result = wire.CounterBadSignature
-		case p.count == req.Next && p.last != nil && *p.last == swap:
+		case p.count == req.Next && p.last != nil && *p.last == swap && p.digest == req.StateDigest && p.writer == writer:
 		case p.count != req.Prev || req.Next <= req.Prev:
 			result = wire.CounterCountMismatch
 		default:
-			p.count, p.last = req.Next, &swap
+			p.count, p.last, p.digest, p.writer = req.Next, &swap, req.StateDigest, writer
 		}
 	}
-	st := wire.CounterState{Generation: p.gen, Count: p.count}
+	st := p.state()
 	p.mu.Unlock()
 	if req.Op == wire.CounterCAS && p.LoseSwap.CompareAndSwap(true, false) {
 		http.Error(w, "the answer was lost", http.StatusBadGateway)

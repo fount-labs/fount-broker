@@ -65,6 +65,31 @@ func TestFetchBootsAGenerationAndKeepsTheBucketCredentials(t *testing.T) {
 	}
 }
 
+// A boot proves the coordinator holds its transfer key (fount-mail-vault
+// review C1), and still boots at a vault from before the proof.
+func TestFetchProvesTheTransferKey(t *testing.T) {
+	for _, old := range []bool{false, true} {
+		p := newPair(t)
+		cloud := cloudvaulttest.Start(t)
+		p.a.cloud, p.a.oldBoot = cloud, old
+		src := p.source(p.a.serve(t).URL)
+		src.Authority, src.Boot = cloud.AuthorityKey(), true
+		if got, err := src.Fetch(context.Background()); err != nil || got.Generation == nil {
+			t.Fatalf("a boot at a vault (old %t): %+v %v", old, got, err)
+		}
+	}
+	// A coordinator whose document endorses a key it doesn't hold.
+	p := newPair(t)
+	p.a.cloud = cloudvaulttest.Start(t)
+	src := p.source(p.a.serve(t).URL)
+	src.Authority, src.Boot = p.a.cloud.AuthorityKey(), true
+	src.Transfer = newKey(t)
+	src.Attester = fakeAttester{p.coordinator}
+	if _, err := src.Fetch(context.Background()); err == nil || !strings.Contains(err.Error(), "refused at boot proof") {
+		t.Fatalf("a boot without the transfer key: %v", err)
+	}
+}
+
 func TestFetchRefusesACertificateNotUnderItsAuthority(t *testing.T) {
 	p := newPair(t)
 	p.a.cloud = cloudvaulttest.Start(t)

@@ -19,14 +19,39 @@ type WireCounter struct {
 	// Gen is this process's generation, whose key signs its swaps; nil in a
 	// restore dry run, which only loads.
 	Gen *FixedGeneration
+	// States speaks counter version 2, which binds each count to a state
+	// digest. Only vaults with it answer version 2, so it waits for them
+	// (fount-mail-vault docs/COORDINATOR-COUNTER.md, ship order); without
+	// it CompareAndSwapState is CompareAndSwap.
+	States bool
 }
 
+var _ StateCounter = (*WireCounter)(nil)
+
 func (c *WireCounter) Load(ctx context.Context) (VaultCount, error) {
-	st, err := c.Client.Load(ctx)
+	load := c.Client.Load
+	if c.States {
+		load = c.Client.LoadState
+	}
+	st, err := load(ctx)
 	if err != nil {
 		return VaultCount{}, counterError(err)
 	}
-	return VaultCount{Generation: st.Generation, Count: st.Count}, nil
+	return VaultCount{Generation: st.Generation, Count: st.Count, Digest: st.StateDigest, Writer: st.Writer}, nil
+}
+
+func (c *WireCounter) CompareAndSwapState(ctx context.Context, generation, prev, next uint64, digest string) error {
+	if !c.States {
+		return c.CompareAndSwap(ctx, generation, prev, next)
+	}
+	if c.Gen == nil {
+		return errors.New("a restore dry run has no generation, so it moves no count")
+	}
+	if generation != c.Gen.G.Number {
+		return fmt.Errorf("a swap under generation %d from generation %d's process", generation, c.Gen.G.Number)
+	}
+	_, err := c.Client.CompareAndSwapState(ctx, c.Gen.G.Key, generation, prev, next, digest)
+	return counterError(err)
 }
 
 func (c *WireCounter) CompareAndSwap(ctx context.Context, generation, prev, next uint64) error {

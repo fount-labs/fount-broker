@@ -171,7 +171,8 @@ func TestARestoreBelowTheCounterIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.SecuritySeq != 2 || logSeq(restored, "acme") != 2 {
+	// The restore is itself counted, one past the root's change.
+	if res.SecuritySeq != 3 || logSeq(restored, "acme") != 2 || v.count().Count != 3 {
 		t.Fatalf("restored %+v, log at %d", res, logSeq(restored, "acme"))
 	}
 	if !restored.state.Restored.TakenAt.Equal(res.TakenAt.UTC()) {
@@ -404,4 +405,57 @@ func (r *mailRig) edgeHas(mb Mailbox, id string) bool {
 	defer r.edge.mu.Unlock()
 	_, ok := r.edge.objects[mb.MailboxID][id]
 	return ok
+}
+
+// The vault's count binds the state it counted, so a volume at that count
+// with other security state, a fork, is refused, as is an uncounted change
+// from a generation older than the one that counted last (broker review
+// H2).
+func TestAForkAtTheCountIsRefused(t *testing.T) {
+	v := newVaultRig(t, nil)
+	dir := t.TempDir()
+	c := v.boot(dir)
+	soloTeam(t, c, "acme", newTestDevice(t))
+	count := v.count()
+	if count.Count != 1 || count.Writer != 1 || count.Digest == "" {
+		t.Fatalf("the vault has %+v", count)
+	}
+	st, err := LoadState(filepath.Join(dir, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if securityDigest(st) != count.Digest {
+		t.Fatal("the volume isn't the state the vault counted")
+	}
+	copyState := func(change func(*State)) string {
+		st, err := LoadState(filepath.Join(dir, "state"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		change(st)
+		other := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(other, "state"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.Save(filepath.Join(other, "state")); err != nil {
+			t.Fatal(err)
+		}
+		return other
+	}
+	fork := copyState(func(st *State) { st.Teams["acme"].Rotate = []string{"w_other"} })
+	if _, err := v.open(fork, v.next()); !errors.Is(err, ErrVolumeRolledBack) || !strings.Contains(err.Error(), "fork") {
+		t.Fatalf("a fork at the count: %v", err)
+	}
+	// A plain save outside the counted state passes.
+	same := copyState(func(st *State) { st.TeamMints["t_new"] = "acct" })
+	if _, err := v.open(same, v.next()); err != nil {
+		t.Fatalf("the counted state with an uncounted mint: %v", err)
+	}
+	if v.count().Writer != 1 {
+		t.Fatalf("opening at the count moved the vault to %+v", v.count())
+	}
+	older := copyState(func(st *State) { st.SecuritySeq, st.SecurityGen = 2, 0 })
+	if _, err := v.open(older, v.next()); !errors.Is(err, ErrVolumeRolledBack) {
+		t.Fatalf("an uncounted change older than the last writer: %v", err)
+	}
 }
