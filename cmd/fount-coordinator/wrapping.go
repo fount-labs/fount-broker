@@ -240,16 +240,24 @@ func wrappingKey(ctx context.Context, f keyFlags, status *keyStatus) (coordinato
 var errBootRefused = errors.New("refusing to take a generation")
 
 // bootGeneration takes this process's generation, after the volume opened:
-// only when the volume's security sequence has reached the vault's count,
-// when the vault has counted nothing yet, or when --restore is about to put
-// a backup onto an empty volume. Otherwise it serves /status alone until
-// stopped, saying why; exiting would only restart into the same refusal.
-// Its error is nil when ctx ends.
-func bootGeneration(ctx context.Context, f keyFlags, b backupFlags, side *vaultSide, status *keyStatus) error {
+// only when the volume's security sequence has reached the vault's count
+// with the state the vault counted, when the vault has counted nothing yet,
+// or when --restore is about to put a backup a restore would take onto an
+// empty volume. Otherwise it serves /status alone until stopped, saying
+// why; exiting would only restart into the same refusal. Its error is nil
+// when ctx ends.
+func bootGeneration(ctx context.Context, f keyFlags, b backupFlags, side *vaultSide, key coordinator.WrappingKey, status *keyStatus) error {
 	if !f.boots() || side == nil || side.src == nil {
 		return nil
 	}
-	err := bootAllowed(ctx, side.counter, b)
+	b.vault = side
+	err := bootAllowed(ctx, side.counter, b, func(ctx context.Context) error {
+		bucket, err := b.openBucket()
+		if err != nil {
+			return err
+		}
+		return coordinator.CheckRestore(ctx, bucket, side.counter, key, b.restoreRoot())
+	})
 	switch {
 	case ctx.Err() != nil:
 		return nil
@@ -289,31 +297,66 @@ func bootGeneration(ctx context.Context, f keyFlags, b backupFlags, side *vaultS
 }
 
 // bootAllowed is nil when this volume may take a generation, errBootRefused
-// when it may not, and another error when it can't tell.
-func bootAllowed(ctx context.Context, counter coordinator.VaultCounter, b backupFlags) error {
+// when it may not, and another error when it can't tell. A volume at the
+// vault's count must hold the state the vault counted: a copy of the live
+// disk, or a fenced generation's, is a fork, and would take a generation
+// only for openDurability to refuse it (re-review N4). --restore onto an
+// empty volume first runs Restore's refusals through checkRestore, so a
+// restore that would be refused takes no generation (re-review L1).
+func bootAllowed(ctx context.Context, counter coordinator.VaultCounter, b backupFlags, checkRestore func(context.Context) error) error {
 	has, mark, err := b.volume()
 	if err != nil {
 		return fmt.Errorf("reading the volume's state: %w", err)
 	}
 	if b.restore != "" && !b.dryRun && !has {
+		if err := retryVault(ctx, "the backup --restore takes", checkRestore); err != nil {
+			if refusedRestore(err) {
+				return fmt.Errorf("%w: --restore %s: %w", errBootRefused, b.restore, err)
+			}
+			return err
+		}
 		log.Printf("boot: --restore %s onto an empty volume takes a generation", b.restore)
 		return nil
 	}
-	var seq uint64
+	var st *coordinator.State
 	if has {
-		st, err := coordinator.LoadState(filepath.Join(b.dir, "state"))
-		if err != nil {
+		if st, err = coordinator.LoadState(filepath.Join(b.dir, "state")); err != nil {
 			return fmt.Errorf("reading the volume's state: %w", err)
 		}
-		seq = st.SecuritySeq
 	}
 	var count coordinator.VaultCount
+	if err := retryVault(ctx, "the vault's count", func(ctx context.Context) (err error) {
+		count, err = counter.Load(ctx)
+		return err
+	}); err != nil {
+		return err
+	}
+	what := "a blank volume"
+	if has {
+		what = fmt.Sprintf("a volume at security change %d", st.SecuritySeq)
+		if mark != nil {
+			what += fmt.Sprintf(" (restored from %s)", mark.Root)
+		}
+	}
+	switch {
+	case !has && count.Count > 0, has && st.SecuritySeq < count.Count:
+		return fmt.Errorf("%w: %s, and the vault counted %d under generation %d; a generation now would fence the coordinator that holds it. Attach that coordinator's volume, or --restore onto an empty one", errBootRefused, what, count.Count, count.Generation)
+	case has && st.SecuritySeq == count.Count && !coordinator.SameState(count, st):
+		return fmt.Errorf("%w: %s, the vault's count, with another security state than generation %d counted: a fork, such as a copy of a disk. Attach the coordinator's own volume, or --restore onto an empty one", errBootRefused, what, count.Writer)
+	}
+	return nil
+}
+
+// retryVault runs f until it succeeds, is refused, or ctx ends, backing off
+// on the errors a vault or bucket that is down returns.
+func retryVault(ctx context.Context, what string, f func(context.Context) error) error {
 	wait := vaultkey.DefaultBackoff.First
 	for {
-		if count, err = counter.Load(ctx); err == nil {
-			break
+		err := f(ctx)
+		if err == nil || refusedRestore(err) || ctx.Err() != nil {
+			return err
 		}
-		log.Printf("boot: the vault's count: %v; trying again in %s", err, wait)
+		log.Printf("boot: %s: %v; trying again in %s", what, err, wait)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -321,17 +364,12 @@ func bootAllowed(ctx context.Context, counter coordinator.VaultCounter, b backup
 		}
 		wait = min(2*wait, vaultkey.DefaultBackoff.Most)
 	}
-	if seq < count.Count {
-		what := "a blank volume"
-		if has {
-			what = fmt.Sprintf("a volume at security change %d", seq)
-			if mark != nil {
-				what += fmt.Sprintf(" (restored from %s)", mark.Root)
-			}
-		}
-		return fmt.Errorf("%w: %s, and the vault counted %d under generation %d; a generation now would fence the coordinator that holds it. Attach that coordinator's volume, or --restore onto an empty one", errBootRefused, what, count.Count, count.Generation)
-	}
-	return nil
+}
+
+// refusedRestore is whether err is a restore's refusal, not a vault or
+// bucket that couldn't be reached.
+func refusedRestore(err error) bool {
+	return errors.Is(err, coordinator.ErrNoBackup) || errors.Is(err, coordinator.ErrBackupTooOld) || errors.Is(err, coordinator.ErrBackupRolledBack)
 }
 
 func (s *keyStatus) refused(err error) {

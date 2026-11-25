@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -194,7 +195,7 @@ func TestBootOnlyWhenTheVolumeHasReachedTheCount(t *testing.T) {
 	dir := t.TempDir()
 	b := backupFlags{dir: dir}
 	allowed := func(count uint64, b backupFlags) error {
-		return bootAllowed(context.Background(), fixedCount{coordinator.VaultCount{Generation: 4, Count: count}}, b)
+		return bootAllowed(context.Background(), fixedCount{coordinator.VaultCount{Generation: 4, Count: count}}, b, func(context.Context) error { return nil })
 	}
 	if err := allowed(0, b); err != nil {
 		t.Fatalf("a blank volume before anything was counted: %v", err)
@@ -227,5 +228,36 @@ func TestBootOnlyWhenTheVolumeHasReachedTheCount(t *testing.T) {
 	// --restore on a volume that isn't empty is the volume's own case.
 	if err := allowed(4, restore); !errors.Is(err, errBootRefused) {
 		t.Fatalf("--restore onto a volume behind the count: %v", err)
+	}
+	// The 2026-11-25 re-review's N4 probe, flipped: a volume at the count
+	// with another state than the vault counted is a fork, and took a
+	// generation before openDurability refused it.
+	fork := fixedCount{coordinator.VaultCount{Generation: 4, Count: 3, Writer: 4, Digest: "the-live-volumes-digest"}}
+	if err := bootAllowed(context.Background(), fork, b, nil); !errors.Is(err, errBootRefused) || !strings.Contains(err.Error(), "fork") {
+		t.Fatalf("a fork at the vault's count: %v", err)
+	}
+}
+
+// --restore onto an empty volume runs Restore's refusals before it takes a
+// generation; a bucket it can't reach is tried again, not refused
+// (re-review L1).
+func TestARefusedRestoreTakesNoGeneration(t *testing.T) {
+	b := backupFlags{dir: t.TempDir(), restore: restoreLatest}
+	count := fixedCount{coordinator.VaultCount{Generation: 4, Count: 3}}
+	for _, refusal := range []error{coordinator.ErrNoBackup, coordinator.ErrBackupTooOld, coordinator.ErrBackupRolledBack} {
+		err := bootAllowed(context.Background(), count, b, func(context.Context) error { return fmt.Errorf("roots/x: %w", refusal) })
+		if !errors.Is(err, errBootRefused) || !errors.Is(err, refusal) {
+			t.Fatalf("a restore refused with %v: %v", refusal, err)
+		}
+	}
+	tries := 0
+	err := bootAllowed(context.Background(), count, b, func(context.Context) error {
+		if tries++; tries < 2 {
+			return errors.New("the bucket is down")
+		}
+		return nil
+	})
+	if err != nil || tries != 2 {
+		t.Fatalf("a bucket down once: %v after %d tries", err, tries)
 	}
 }

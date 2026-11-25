@@ -122,41 +122,11 @@ func Restore(ctx context.Context, o RestoreOptions) (RestoreResult, error) {
 	if !o.DryRun && count.Generation != g.Number {
 		return RestoreResult{}, fmt.Errorf("%w: the vault is at generation %d and this coordinator has %d", ErrStaleCoordinator, count.Generation, g.Number)
 	}
-	roots, err := listRoots(ctx, o.Bucket)
-	if err != nil {
-		return RestoreResult{}, err
-	}
-	var ref rootRef
-	switch {
-	case len(roots) == 0:
-		return RestoreResult{}, ErrNoBackup
-	case o.Root == "":
-		ref = roots[len(roots)-1]
-	default:
-		i := slices.IndexFunc(roots, func(r rootRef) bool { return r.key == o.Root })
-		if i < 0 {
-			return RestoreResult{}, fmt.Errorf("%w: %.80q", ErrNoBackup, o.Root)
-		}
-		ref = roots[i]
-	}
-	root, err := openRoot(ctx, o.Bucket, backupKey(&o.Key), ref)
+	ref, root, st, err := restorable(ctx, o.Bucket, o.Key, o.Root, count)
 	if err != nil {
 		return RestoreResult{}, err
 	}
 	now := time.Now().UTC()
-	if age := now.Sub(root.taken); age > MaxRestoreAge {
-		return RestoreResult{}, fmt.Errorf("%w: %s was taken %s ago, and the most is %s", ErrBackupTooOld, ref.key, age.Round(time.Hour), MaxRestoreAge)
-	}
-	if root.securitySeq < count.Count {
-		return RestoreResult{}, fmt.Errorf("%w: %s has security change %d, and the vault counted %d", ErrBackupRolledBack, ref.key, root.securitySeq, count.Count)
-	}
-	st, err := rootState(root)
-	if err != nil {
-		return RestoreResult{}, err
-	}
-	if root.securitySeq == count.Count && !sameState(count, st) {
-		return RestoreResult{}, fmt.Errorf("%w: %s is at the vault's count %d with another security state than generation %d counted; it is a fork's", ErrBackupRolledBack, ref.key, count.Count, count.Writer)
-	}
 	res := RestoreResult{Root: ref.key, TakenAt: root.taken, SecuritySeq: root.securitySeq, Generation: g.Number, DryRun: o.DryRun}
 
 	// The trees first and state.json last: a restore cut short leaves no
@@ -337,3 +307,63 @@ func (d *dryStore) Get(workerID, objectID string) ([]byte, error) {
 }
 
 func (*dryStore) Delete(string, string) error { return errors.New("a dry run writes nothing") }
+
+// restorable is the root name names, newest when empty, if a restore may
+// take it at the vault's count: it opens under key, is no older than
+// MaxRestoreAge, isn't below the count, and at the count is the state the
+// vault counted.
+func restorable(ctx context.Context, bucket BackupBucket, key WrappingKey, name string, count VaultCount) (rootRef, *backupRoot, *State, error) {
+	roots, err := listRoots(ctx, bucket)
+	if err != nil {
+		return rootRef{}, nil, nil, err
+	}
+	var ref rootRef
+	switch {
+	case len(roots) == 0:
+		return rootRef{}, nil, nil, ErrNoBackup
+	case name == "":
+		ref = roots[len(roots)-1]
+	default:
+		i := slices.IndexFunc(roots, func(r rootRef) bool { return r.key == name })
+		if i < 0 {
+			return rootRef{}, nil, nil, fmt.Errorf("%w: %.80q", ErrNoBackup, name)
+		}
+		ref = roots[i]
+	}
+	root, err := openRoot(ctx, bucket, backupKey(&key), ref)
+	if err != nil {
+		return rootRef{}, nil, nil, err
+	}
+	if age := time.Since(root.taken); age > MaxRestoreAge {
+		return rootRef{}, nil, nil, fmt.Errorf("%w: %s was taken %s ago, and the most is %s", ErrBackupTooOld, ref.key, age.Round(time.Hour), MaxRestoreAge)
+	}
+	if root.securitySeq < count.Count {
+		return rootRef{}, nil, nil, fmt.Errorf("%w: %s has security change %d, and the vault counted %d", ErrBackupRolledBack, ref.key, root.securitySeq, count.Count)
+	}
+	st, err := rootState(root)
+	if err != nil {
+		return rootRef{}, nil, nil, err
+	}
+	if root.securitySeq == count.Count && !sameState(count, st) {
+		return rootRef{}, nil, nil, fmt.Errorf("%w: %s is at the vault's count %d with another security state than generation %d counted; it is a fork's", ErrBackupRolledBack, ref.key, count.Count, count.Writer)
+	}
+	return ref, root, st, nil
+}
+
+// CheckRestore is Restore's refusals alone, for before the vault is asked
+// for a generation (re-review L1): a restore it refuses would otherwise take
+// one first, at every restart. It reads the root, not the trees, and writes
+// nothing.
+func CheckRestore(ctx context.Context, bucket BackupBucket, counter VaultCounter, key WrappingKey, name string) error {
+	count, err := counter.Load(ctx)
+	if err != nil {
+		return fmt.Errorf("the vault's counter: %w", err)
+	}
+	_, _, _, err = restorable(ctx, bucket, key, name, count)
+	return err
+}
+
+// SameState is whether st is the state the vault counted at count, as a
+// boot checks it before taking a generation: always when the vault keeps
+// no digest.
+func SameState(count VaultCount, st *State) bool { return sameState(count, st) }

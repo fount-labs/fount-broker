@@ -273,6 +273,14 @@ func (f backupFlags) volume() (bool, *coordinator.RestoreMark, error) {
 	return true, st.Restored, nil
 }
 
+// restoreRoot is --restore as Restore takes it: "" for the newest.
+func (f backupFlags) restoreRoot() string {
+	if f.restore == restoreLatest {
+		return ""
+	}
+	return f.restore
+}
+
 // errDryRunDone ends a dry run: the coordinator checked the backup and
 // serves nothing.
 var errDryRunDone = errors.New("the restore dry run is done")
@@ -286,10 +294,7 @@ func (f backupFlags) restoreVolume(ctx context.Context, d *durable, key coordina
 	if f.restore == "" {
 		return nil
 	}
-	root := f.restore
-	if root == restoreLatest {
-		root = ""
-	}
+	root := f.restoreRoot()
 	stateDir := filepath.Join(f.dir, "state")
 	opts := coordinator.RestoreOptions{Bucket: d.bucket, Counter: d.vault, Key: key, Root: root, DryRun: f.dryRun}
 	if !f.dryRun {
