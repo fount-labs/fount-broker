@@ -246,7 +246,7 @@ func drillView(t *testing.T, c *Coordinator) map[string]string {
 	c.mu.Lock()
 	st := *c.state
 	// The restore marks the volume and counts itself.
-	st.Restored, st.SecuritySeq = nil, 0
+	st.Restored, st.SecuritySeq, st.SecurityGen = nil, 0, 0
 	state, err := json.MarshalIndent(st, "", " ")
 	ids := slices.Sorted(maps.Keys(c.state.Workers))
 	c.mu.Unlock()

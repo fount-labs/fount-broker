@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -27,6 +28,7 @@ import (
 type cloudRig struct {
 	t      *testing.T
 	pair   *cloudvaulttest.Pair
+	states bool
 	bucket *MemBucket
 	key    WrappingKey
 }
@@ -42,7 +44,7 @@ func (r *cloudRig) boot() *FixedGeneration {
 }
 
 func (r *cloudRig) counter(g *FixedGeneration) *WireCounter {
-	return &WireCounter{Client: &wire.CounterClient{Vaults: r.pair.Vaults(), Authority: r.pair.AuthorityKey(), Client: http.DefaultClient}, Gen: g}
+	return &WireCounter{Client: &wire.CounterClient{Vaults: r.pair.Vaults(), Authority: r.pair.AuthorityKey(), Client: http.DefaultClient}, Gen: g, States: r.states}
 }
 
 func (r *cloudRig) open(dir string, g *FixedGeneration) *Coordinator {
@@ -202,5 +204,51 @@ func TestWireCounterWithoutAGenerationOnlyLoads(t *testing.T) {
 	r.pair.Down(1, true)
 	if _, err := c.Load(context.Background()); err == nil || errors.Is(err, ErrVaultGeneration) || errors.Is(err, ErrVaultCount) {
 		t.Fatalf("both vaults down: %v", err)
+	}
+}
+
+// Counter version 2 over the wire: each count names its state and writer,
+// a fork of the volume at the count is refused, and so is a fork's backup.
+func TestTheCloudVaultCountsTheState(t *testing.T) {
+	key, _ := NewWrappingKey()
+	r := &cloudRig{t: t, pair: cloudvaulttest.Start(t), bucket: NewMemBucket(), key: key, states: true}
+	dir := t.TempDir()
+	c1 := r.open(dir, r.boot())
+	soloTeam(t, c1, "acme", newTestDevice(t))
+	st := r.pair.State()
+	if st.Count != 1 || st.Writer != 1 || !wire.ValidStateDigest(st.StateDigest) {
+		t.Fatalf("after the first change the vault has %+v", st)
+	}
+	vol, err := LoadState(filepath.Join(dir, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if securityDigest(vol) != st.StateDigest {
+		t.Fatal("the vault counted another state than the volume's")
+	}
+	vol.Teams["acme"].Rotate = []string{"w_other"}
+	fork := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(fork, "state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := vol.Save(filepath.Join(fork, "state")); err != nil {
+		t.Fatal(err)
+	}
+	g := r.boot()
+	_, err = New(Config{
+		StateDir: filepath.Join(fork, "state"), WorkDir: filepath.Join(fork, "work"),
+		Store: DirStore{Root: filepath.Join(fork, "objects")}, Key: r.key, Pool: NewPool(1, 2, nil),
+		Runner: LocalRunner{Command: []string{"true"}}, Audience: testAudience,
+		Backup: &BackupConfig{Bucket: r.bucket, Counter: r.counter(g), Generations: g},
+	})
+	if !errors.Is(err, ErrVolumeRolledBack) {
+		t.Fatalf("a fork of the volume at the count: %v", err)
+	}
+	// The restore of the real backup counts itself under the new writer.
+	if _, res, err := r.restore("", g); err != nil || res.SecuritySeq != 2 {
+		t.Fatalf("restoring the counted backup: %+v %v", res, err)
+	}
+	if st := r.pair.State(); st.Count != 2 || st.Writer != g.G.Number {
+		t.Fatalf("after the restore the vault has %+v", st)
 	}
 }

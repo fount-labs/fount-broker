@@ -60,10 +60,13 @@ func (c *Coordinator) commitSecurity() error {
 			d.counted = count.Count
 		}
 	}
-	prev := c.state.SecuritySeq
+	prev, prevGen := c.state.SecuritySeq, c.state.SecurityGen
 	c.state.SecuritySeq++
+	if d != nil {
+		c.state.SecurityGen = d.gen
+	}
 	if err := c.state.Save(c.cfg.StateDir); err != nil {
-		c.state.SecuritySeq = prev
+		c.state.SecuritySeq, c.state.SecurityGen = prev, prevGen
 		return err
 	}
 	if d == nil {
@@ -72,7 +75,7 @@ func (c *Coordinator) commitSecurity() error {
 	if _, err := c.backupLocked(ctx); err != nil {
 		return fmt.Errorf("%w: backing it up: %v", ErrNotDurable, err)
 	}
-	if err := d.cfg.Counter.CompareAndSwap(ctx, d.gen, d.counted, c.state.SecuritySeq); err != nil {
+	if err := countState(ctx, d.cfg.Counter, d.gen, d.counted, c.state); err != nil {
 		if errors.Is(err, ErrVaultGeneration) || errors.Is(err, ErrVaultCount) {
 			c.retire(err)
 			return fmt.Errorf("%w: %v", ErrStaleCoordinator, err)

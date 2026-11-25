@@ -26,6 +26,9 @@ type State struct {
 	// counts the changes to them (commitSecurity).
 	Teams       map[string]*Team `json:"teams,omitempty"`
 	SecuritySeq uint64           `json:"securitySeq,omitempty"`
+	// SecurityGen is the coordinator generation that made change
+	// SecuritySeq, which securityDigest covers.
+	SecurityGen uint64 `json:"securityGen,omitempty"`
 	// TeamMints are firm teams' ids the coordinator made (MintTeam) whose
 	// first list hasn't been appended yet, each with the account it was made
 	// for: one at a time per account.

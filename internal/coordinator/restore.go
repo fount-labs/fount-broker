@@ -154,6 +154,9 @@ func Restore(ctx context.Context, o RestoreOptions) (RestoreResult, error) {
 	if err != nil {
 		return RestoreResult{}, err
 	}
+	if root.securitySeq == count.Count && !sameState(count, st) {
+		return RestoreResult{}, fmt.Errorf("%w: %s is at the vault's count %d with another security state than generation %d counted; it is a fork's", ErrBackupRolledBack, ref.key, count.Count, count.Writer)
+	}
 	res := RestoreResult{Root: ref.key, TakenAt: root.taken, SecuritySeq: root.securitySeq, Generation: g.Number, DryRun: o.DryRun}
 
 	// The trees first and state.json last: a restore cut short leaves no
@@ -204,7 +207,7 @@ func Restore(ctx context.Context, o RestoreOptions) (RestoreResult, error) {
 	// root's, so no other disk or root at the old count, from this lineage
 	// or a fenced one, passes afterwards (broker review H2). A change the
 	// backup saved and never counted is counted with it.
-	st.SecuritySeq = max(count.Count, root.securitySeq) + 1
+	st.SecuritySeq, st.SecurityGen = max(count.Count, root.securitySeq)+1, g.Number
 	res.SecuritySeq = st.SecuritySeq
 	if err := os.MkdirAll(o.StateDir, 0o700); err != nil {
 		return RestoreResult{}, err
@@ -212,7 +215,7 @@ func Restore(ctx context.Context, o RestoreOptions) (RestoreResult, error) {
 	if err := st.Save(o.StateDir); err != nil {
 		return RestoreResult{}, err
 	}
-	if err := o.Counter.CompareAndSwap(ctx, g.Number, count.Count, st.SecuritySeq); err != nil {
+	if err := countState(ctx, o.Counter, g.Number, count.Count, st); err != nil {
 		return RestoreResult{}, fmt.Errorf("counting the restore as security change %d: %w", st.SecuritySeq, err)
 	}
 	log.Printf("restore: %s, taken %s, onto a new volume under generation %d: %d workers, %d objects, %d jobs stopped",

@@ -30,6 +30,8 @@ type keyFlags struct {
 	// authority is --coordinator-authority-key, the Cloud vaults'
 	// GENERATION_AUTHORITY_KEY: with it, a boot takes a generation.
 	authority string
+	// counterStates is --counter-states: counter version 2.
+	counterStates bool
 	// mail is --mail, which with the vault's key needs a generation.
 	mail bool
 	// dryRun is --restore-dry-run, which must not move the generation.
@@ -224,6 +226,9 @@ func wrappingKey(ctx context.Context, f keyFlags, status *keyStatus) (coordinato
 	}
 	if side != nil {
 		side.src = src
+		if wc, ok := side.counter.(*coordinator.WireCounter); ok {
+			wc.States = f.counterStates
+		}
 	}
 	return got.Key, side, nil
 }
@@ -273,6 +278,7 @@ func bootGeneration(ctx context.Context, f keyFlags, b backupFlags, side *vaultS
 	if err != nil {
 		return err
 	}
+	counter.States = f.counterStates
 	side.counter = counter
 	if got.S3 != nil {
 		side.s3 = got.S3
