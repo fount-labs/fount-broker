@@ -102,10 +102,13 @@ func (c *Coordinator) bumpSecurity() (map[string]uint64, error) {
 
 // noteLoadedCount takes a count this generation made whose answer was lost:
 // only this generation's key moves the count within it, so a count above
-// the one confirmed and at most the volume's sequence is one it sent.
-// Called with c.mu held.
+// the one confirmed and below the volume's sequence is one it sent, and
+// the volume holds its state. A count at the volume's sequence is taken
+// only if it counted this state: a team change whose answer was lost is
+// put back, and the next save writes that sequence without it, which only
+// a new count covers. Called with c.mu held.
 func (c *Coordinator) noteLoadedCount(count VaultCount) {
-	if count.Count <= c.state.SecuritySeq {
+	if count.Count < c.state.SecuritySeq || (count.Count == c.state.SecuritySeq && sameState(count, c.state)) {
 		c.durable.noteCounted(count.Count)
 	}
 }

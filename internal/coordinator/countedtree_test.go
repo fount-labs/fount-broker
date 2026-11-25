@@ -541,3 +541,55 @@ func TestAReplayedVolumeDoesntBootWhileItsBackupsCantBeFetched(t *testing.T) {
 		t.Fatalf("the replayed volume is marked %+v", mark)
 	}
 }
+
+// lostAnswer is a vault whose next swap lands and then answers as if the
+// connection dropped.
+type lostAnswer struct {
+	StateCounter
+	lose atomic.Bool
+}
+
+func (v *lostAnswer) CompareAndSwapState(ctx context.Context, generation, prev, next uint64, digest string) error {
+	err := v.StateCounter.CompareAndSwapState(ctx, generation, prev, next, digest)
+	if err == nil && v.lose.CompareAndSwap(true, false) {
+		return errors.New("connection reset")
+	}
+	return err
+}
+
+// The round-4 check's P1: a team change whose swap landed but whose answer
+// was lost is put back in memory, and a plain save then writes the volume
+// at the vault's count without it. The next count must not take the
+// vault's count as this volume's: it counts again, so a reboot isn't
+// refused as a fork (R4-1).
+func TestALostSwapAnswerIsCountedAgain(t *testing.T) {
+	r := newMailRig(t, MailConfig{})
+	v := newVaultRig(t, r.edge.authority)
+	v.key = r.key
+	la := &lostAnswer{StateCounter: v.vault}
+	r.backup = v.backups(v.next())
+	r.backup.Counter = la
+	r.start()
+	w, _ := r.worker()
+
+	la.lose.Store(true)
+	if err := soloTeamErr(t, r.c, "acme", newTestDevice(t)); !errors.Is(err, ErrNotDurable) {
+		t.Fatalf("a team change whose answer was lost: %v", err)
+	}
+	if err := r.c.PutFile(w.ID, "files/after.md", []byte("a plain save")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.countOff(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	r.c.mu.Lock()
+	seq, digest := r.c.state.SecuritySeq, securityDigest(r.c.state)
+	r.c.mu.Unlock()
+	if got := v.count(); got.Count != seq || got.Digest != digest {
+		t.Fatalf("the vault counted %d %.8s, the volume is %d %.8s", got.Count, got.Digest, seq, digest)
+	}
+	r.backup = v.backups(v.next())
+	if err := r.startErr(); err != nil {
+		t.Fatalf("a reboot after a lost answer: %v", err)
+	}
+}
