@@ -40,8 +40,9 @@ import (
 const ledgerCountEvery = 30 * time.Second
 
 // owe records that workerID's tree at version holds a change the vault
-// should count. Called with c.mu held.
-func (c *Coordinator) owe(workerID string, version uint64) {
+// should count, which takes something away when away is set. Called with
+// c.mu held.
+func (c *Coordinator) owe(workerID string, version uint64, away bool) {
 	if c.durable == nil {
 		return
 	}
@@ -49,6 +50,32 @@ func (c *Coordinator) owe(workerID string, version uint64) {
 		c.owed = map[string]uint64{}
 	}
 	c.owed[workerID] = max(c.owed[workerID], version)
+	if away {
+		if c.owedAway == nil {
+			c.owedAway = map[string]uint64{}
+		}
+		c.owedAway[workerID] = max(c.owedAway[workerID], version)
+	}
+}
+
+// countedAway drops the take-away changes a count covered: away is
+// c.owedAway as the count's sequence was taken (bumpSecurity), and a later
+// change to the same worker stays owed. Called with c.mu held.
+func (c *Coordinator) countedAway(away map[string]uint64) {
+	for id, v := range away {
+		if c.owedAway[id] <= v {
+			delete(c.owedAway, id)
+		}
+	}
+}
+
+// awayOwed is whether workerID has a take-away change the vault hasn't
+// counted: one whose count failed, which its retry, finding the tree
+// already changed, must count before it is acknowledged (2026-11-25
+// re-check, R3-4). Called with c.mu held.
+func (c *Coordinator) awayOwed(workerID string) bool {
+	_, ok := c.owedAway[workerID]
+	return ok
 }
 
 // countDue is whether anything saved is still uncounted: a worker's change,
@@ -59,7 +86,8 @@ func (c *Coordinator) countDue() bool {
 }
 
 // countOff counts what is owed now, holding c.mu only to take the next
-// sequence and the cut of the volume: the vault's counter, the root's upload and the compare-and-swap
+// sequence and the cut of the volume, and then to drop what the count
+// covered: the vault's counter, the root's upload and the compare-and-swap
 // run without it, so a vault or bucket that hangs stalls nothing else
 // (2026-11-25 re-check, R3-2). A change made meanwhile is counted by a later
 // count; one in flight beside this one is reconciled by swapCount. A count
@@ -89,7 +117,8 @@ func (c *Coordinator) countOff(ctx context.Context) (err error) {
 		c.mu.Unlock()
 		return nil
 	}
-	if err := c.bumpSecurity(); err != nil {
+	away, err := c.bumpSecurity()
+	if err != nil {
 		c.mu.Unlock()
 		return err
 	}
@@ -104,7 +133,13 @@ func (c *Coordinator) countOff(ctx context.Context) (err error) {
 	if _, err := c.writeCut(ctx, cut); err != nil {
 		return fmt.Errorf("%w: backing it up: %v", ErrNotDurable, err)
 	}
-	return c.swapCount(ctx, prev, next, digest)
+	if err := c.swapCount(ctx, prev, next, digest); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.countedAway(away)
+	c.mu.Unlock()
+	return nil
 }
 
 // countLedger counts the mail ledger's progress, at most every

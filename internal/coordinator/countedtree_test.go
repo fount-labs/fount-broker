@@ -2,6 +2,7 @@ package coordinator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -438,5 +439,39 @@ func TestCountsInFlightTogetherReconcile(t *testing.T) {
 		if got := v.count().Count; got != seq || due || r.c.durable.counted.Load() != seq {
 			t.Fatalf("ledger first %v: the vault at %d, the volume at %d, still due %v", ledgerFirst, got, seq, due)
 		}
+	}
+}
+
+// A take-away change whose count failed is counted before its retry is
+// acknowledged, though the tree has it already (2026-11-25 re-check, R3-4).
+func TestARetriedTakeAwayIsCountedBeforeItIsAcknowledged(t *testing.T) {
+	r := newCountedRig(t)
+	w, _ := r.worker()
+	failing := errors.New("the vault is restarting")
+	r.v.vault.FailSwap = func(uint64, uint64, uint64) error { return failing }
+	pause := func(op string) error {
+		raw, _ := json.Marshal(switchArgs{On: true})
+		_, err := r.c.applyWorkerOp(anyDevice, w.ID, workerOpEnvelope{OpID: op, Kind: "setPaused", Args: raw})
+		return err
+	}
+	if err := pause("op_pause"); !errors.Is(err, ErrNotDurable) {
+		t.Fatalf("pausing with the vault down: %v", err)
+	}
+	before := r.v.count().Count
+	if err := pause("op_pause_again"); !errors.Is(err, ErrNotDurable) {
+		t.Fatalf("the retry was acknowledged uncounted: %v", err)
+	}
+	r.v.vault.FailSwap = nil
+	if err := pause("op_pause_third"); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.v.count().Count; got <= before {
+		t.Fatalf("the retry left the vault at %d", got)
+	}
+	r.c.mu.Lock()
+	owed := r.c.awayOwed(w.ID)
+	r.c.mu.Unlock()
+	if owed {
+		t.Fatal("the counted take-away is still owed")
 	}
 }

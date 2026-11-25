@@ -122,10 +122,11 @@ type Coordinator struct {
 	recoveryTick    time.Time
 	recoveryUnsaved time.Duration
 	// owed is each worker's tree version with a change the vault hasn't
-	// counted yet, lastOwedCount when the ledger's progress was last
-	// counted and counting whether a count of it is in flight
-	// (countedtree.go). Under mu.
+	// counted yet, owedAway those that take something away, lastOwedCount
+	// when the ledger's progress was last counted and counting whether a
+	// count of it is in flight (countedtree.go). Under mu.
 	owed          map[string]uint64
+	owedAway      map[string]uint64
 	lastOwedCount time.Time
 	counting      bool
 }
@@ -881,12 +882,14 @@ func (c *Coordinator) changeThen(workerID, device string, fn func(*Tree) error, 
 		err = c.state.Save(c.cfg.StateDir)
 	}
 	if err == nil && (t.counted || t.ledger) {
-		c.owe(workerID, version)
+		c.owe(workerID, version, t.counted)
 	}
 	// A change that takes something away is acknowledged only once
-	// counted. One that fails stays owed, and the backup loop counts it on
-	// its next pass. The count holds the tree's lock, not c.mu.
-	count := err == nil && t.counted
+	// counted, and so is the retry of one whose count failed: the tree has
+	// it already, so t.counted isn't set again. One that fails stays owed,
+	// and the backup loop counts it on its next pass. The count holds the
+	// tree's lock, not c.mu.
+	count := err == nil && c.awayOwed(workerID)
 	c.mu.Unlock()
 	if err != nil {
 		return err

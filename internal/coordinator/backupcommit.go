@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -65,31 +66,38 @@ func (c *Coordinator) commitSecurity() (err error) {
 		}
 		c.noteLoadedCount(count)
 	}
-	if err := c.bumpSecurity(); err != nil || d == nil {
+	away, err := c.bumpSecurity()
+	if err != nil || d == nil {
 		return err
 	}
 	if _, err := c.backupLocked(ctx); err != nil {
 		return fmt.Errorf("%w: backing it up: %v", ErrNotDurable, err)
 	}
-	return c.swapCount(ctx, d.counted.Load(), c.state.SecuritySeq, securityDigest(c.state))
+	if err := c.swapCount(ctx, d.counted.Load(), c.state.SecuritySeq, securityDigest(c.state)); err != nil {
+		return err
+	}
+	c.countedAway(away)
+	return nil
 }
 
 // bumpSecurity takes the next security sequence, folds in the workers'
-// changes owed so far and saves the state. On a failed save the state is as
-// it was. Called with c.mu held.
-func (c *Coordinator) bumpSecurity() error {
+// changes owed so far and saves the state. It returns the take-away changes
+// that a count of this sequence covers (countedAway). On a failed save the
+// state is as it was. Called with c.mu held.
+func (c *Coordinator) bumpSecurity() (map[string]uint64, error) {
 	prev, prevGen := c.state.SecuritySeq, c.state.SecurityGen
 	c.state.SecuritySeq++
 	if c.durable != nil {
 		c.state.SecurityGen = c.durable.gen
 	}
+	away := maps.Clone(c.owedAway)
 	undo := c.foldOwed()
 	if err := c.state.Save(c.cfg.StateDir); err != nil {
 		c.state.SecuritySeq, c.state.SecurityGen = prev, prevGen
 		undo()
-		return err
+		return nil, err
 	}
-	return nil
+	return away, nil
 }
 
 // noteLoadedCount takes a count this generation made whose answer was lost:
