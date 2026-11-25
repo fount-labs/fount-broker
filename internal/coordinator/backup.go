@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fount-labs/fount-broker/internal/mail"
@@ -76,7 +77,8 @@ const (
 	recentRoots = 24 * time.Hour
 	// pruneEvery spaces out retention passes.
 	pruneEvery = time.Hour
-	// durableTimeout bounds each bucket and vault call made under c.mu.
+	// durableTimeout bounds each count of a change: the vault's counter,
+	// the root and the compare-and-swap, under c.mu or not.
 	durableTimeout = 30 * time.Second
 
 	backupRootPrefix   = "roots/"
@@ -104,12 +106,19 @@ type durability struct {
 	key   [KeySize]byte
 	gen   uint64
 
-	// mu serializes backups. It is taken after c.mu, never before.
-	mu sync.Mutex
-	// counted is the count the vault last confirmed.
-	counted uint64
-	// seq is the last root's number in this generation.
-	seq uint64
+	// sem serializes backups: writing a root and pruning. It is a channel,
+	// not a mutex, so that commitSecurity, which waits for it under c.mu,
+	// waits at most its context's time for a root another count or the
+	// backup loop is uploading (2026-11-25 re-check, R3-2). Taken after
+	// c.mu, never before.
+	sem chan struct{}
+	// counted is the count the vault last confirmed, which only rises.
+	counted atomic.Uint64
+	// seq is the last root's number in this generation, and last the cut
+	// it was written from: a cut older than it isn't written after it, so
+	// the newest root is always the newest cut (writeRoot). Under sem.
+	seq  uint64
+	last cutMark
 	// uploaded are the object keys the bucket has.
 	uploaded map[string]bool
 	// lastState is the hash of the last root's state.json, so an unchanged
@@ -157,7 +166,8 @@ func (c *Coordinator) openDurability() error {
 	}
 	store := &backupStore{Store: c.cfg.Store}
 	c.cfg.Store = store
-	d := &durability{cfg: b, store: store, key: backupKey(&c.cfg.Key), gen: g.Number, counted: count.Count, uploaded: map[string]bool{}}
+	d := &durability{cfg: b, store: store, key: backupKey(&c.cfg.Key), gen: g.Number, uploaded: map[string]bool{}, sem: make(chan struct{}, 1)}
+	d.counted.Store(count.Count)
 	objects, err := b.Bucket.List(ctx, backupObjectPrefix)
 	if err != nil {
 		return fmt.Errorf("listing the backups: %w", err)
@@ -204,7 +214,7 @@ func (c *Coordinator) openDurability() error {
 		if err := countState(ctx, b.Counter, d.gen, count.Count, c.state); err != nil {
 			return fmt.Errorf("counting security change %d: %w", seq, err)
 		}
-		d.counted = seq
+		d.noteCounted(seq)
 		return nil
 	}
 	_, err = c.backupLocked(ctx)
@@ -383,11 +393,42 @@ func openRoot(ctx context.Context, b BackupBucket, key [KeySize]byte, ref rootRe
 	return r, nil
 }
 
+// lock takes sem, or fails when ctx ends first.
+func (d *durability) lock(ctx context.Context) error {
+	select {
+	case d.sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("waiting for the backup in progress: %w", ctx.Err())
+	}
+}
+
+func (d *durability) unlock() { <-d.sem }
+
+// noteCounted records that the vault confirmed count n.
+func (d *durability) noteCounted(n uint64) {
+	for {
+		was := d.counted.Load()
+		if n <= was || d.counted.CompareAndSwap(was, n) {
+			return
+		}
+	}
+}
+
 // volumeCut is the volume as a backup takes it, under c.mu.
 type volumeCut struct {
-	state       []byte
-	securitySeq uint64
-	workers     []Worker
+	state   []byte
+	mark    cutMark
+	workers []Worker
+}
+
+// cutMark orders cuts: by security sequence, then by saves.
+type cutMark struct {
+	securitySeq, saves uint64
+}
+
+func (m cutMark) after(o cutMark) bool {
+	return m.securitySeq > o.securitySeq || m.securitySeq == o.securitySeq && m.saves > o.saves
 }
 
 // takeCut is the volume now. Called with c.mu held.
@@ -396,7 +437,7 @@ func (c *Coordinator) takeCut() (volumeCut, error) {
 	if err != nil {
 		return volumeCut{}, err
 	}
-	k := volumeCut{state: data, securitySeq: c.state.SecuritySeq}
+	k := volumeCut{state: data, mark: cutMark{c.state.SecuritySeq, c.state.Saves}}
 	for _, id := range slices.Sorted(maps.Keys(c.state.Workers)) {
 		if w := c.state.Workers[id]; w.WrappedDEK != nil {
 			k.workers = append(k.workers, *w)
@@ -406,11 +447,14 @@ func (c *Coordinator) takeCut() (volumeCut, error) {
 }
 
 // backupLocked writes a root of the volume now. Called with c.mu held, as
-// commitSecurity is.
+// commitSecurity is: it waits for a backup in progress at most until ctx
+// ends.
 func (c *Coordinator) backupLocked(ctx context.Context) (string, error) {
 	d := c.durable
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	if err := d.lock(ctx); err != nil {
+		return "", err
+	}
+	defer d.unlock()
 	d.store.hold()
 	defer d.store.release()
 	d.status.noteAttempt()
@@ -423,7 +467,8 @@ func (c *Coordinator) backupLocked(ctx context.Context) (string, error) {
 }
 
 // Backup writes a root of the volume now, when it changed since the last.
-// It holds c.mu only to take state.json.
+// It holds c.mu only to take state.json, and never waits under it for a
+// backup in progress.
 func (c *Coordinator) Backup(ctx context.Context) (string, error) {
 	d := c.durable
 	if d == nil {
@@ -433,17 +478,27 @@ func (c *Coordinator) Backup(ctx context.Context) (string, error) {
 		return "", ErrStaleCoordinator
 	}
 	c.mu.Lock()
-	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.store.hold()
-	defer d.store.release()
-	d.status.noteAttempt()
 	k, err := c.takeCut()
 	c.mu.Unlock()
+	defer d.store.release()
 	if err != nil {
 		d.status.noteError("", err)
 		return "", err
 	}
+	return c.writeCut(ctx, k)
+}
+
+// writeCut writes a root of k, taken with the store's deletes held, unless
+// it is the last root's or older.
+func (c *Coordinator) writeCut(ctx context.Context, k volumeCut) (string, error) {
+	d := c.durable
+	if err := d.lock(ctx); err != nil {
+		d.status.noteError("", err)
+		return "", err
+	}
+	defer d.unlock()
+	d.status.noteAttempt()
 	if sha256.Sum256(k.state) == d.lastState {
 		d.status.noteUnchanged()
 		return "", nil
@@ -451,10 +506,16 @@ func (c *Coordinator) Backup(ctx context.Context) (string, error) {
 	return c.writeRoot(ctx, k)
 }
 
-// writeRoot copies the cut's trees and writes its root. Called with d.mu
-// held and the store's deletes held.
+// writeRoot copies the cut's trees and writes its root. A cut no newer than
+// the last root's, taken before a newer one was written, is passed over:
+// the newer root holds all it has. Called with sem held and the store's
+// deletes held.
 func (c *Coordinator) writeRoot(ctx context.Context, k volumeCut) (key string, err error) {
 	d := c.durable
+	if d.last != (cutMark{}) && !k.mark.after(d.last) {
+		d.status.noteUnchanged()
+		return "", nil
+	}
 	var run BackupRun
 	defer func() {
 		if err != nil {
@@ -476,7 +537,7 @@ func (c *Coordinator) writeRoot(ctx context.Context, k volumeCut) (key string, e
 		return "", err
 	}
 	now := time.Now()
-	f := rootFile{V: backupRootVersion, Generation: d.gen, Seq: d.seq + 1, SecuritySeq: k.securitySeq, TakenAt: now.UnixMilli()}
+	f := rootFile{V: backupRootVersion, Generation: d.gen, Seq: d.seq + 1, SecuritySeq: k.mark.securitySeq, TakenAt: now.UnixMilli()}
 	if f.Body, err = seal(d.key[:], plain, f.aad()); err != nil {
 		return "", err
 	}
@@ -489,7 +550,7 @@ func (c *Coordinator) writeRoot(ctx context.Context, k volumeCut) (key string, e
 		return "", fmt.Errorf("writing backup %s: %w", key, err)
 	}
 	run.Bytes += int64(len(data))
-	d.seq, d.lastState = f.Seq, sha256.Sum256(k.state)
+	d.seq, d.last, d.lastState = f.Seq, k.mark, sha256.Sum256(k.state)
 	return key, nil
 }
 
@@ -574,7 +635,10 @@ func (c *Coordinator) backupPass(ctx context.Context, now time.Time) bool {
 	if c.Retired() {
 		return false
 	}
-	if count, err := d.cfg.Counter.Load(ctx); err != nil {
+	loadCtx, cancel := context.WithTimeout(ctx, durableTimeout)
+	count, err := d.cfg.Counter.Load(loadCtx)
+	cancel()
+	if err != nil {
 		log.Printf("backup: the vault's counter: %v", err)
 		d.status.noteError("the vault's counter: ", err)
 	} else if count.Generation != d.gen {
@@ -633,8 +697,10 @@ func keptRoots(roots []rootRef, retention time.Duration, now time.Time) map[stri
 // kept root names.
 func (c *Coordinator) pruneBackups(ctx context.Context, now time.Time) error {
 	d := c.durable
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	if err := d.lock(ctx); err != nil {
+		return err
+	}
+	defer d.unlock()
 	roots, err := listRoots(ctx, d.cfg.Bucket)
 	if err != nil {
 		return err
@@ -686,9 +752,7 @@ func (c *Coordinator) pruneBackups(ctx context.Context, now time.Time) error {
 // has acted on is in every restorable backup.
 func (c *Coordinator) restorableFloor(ctx context.Context, now time.Time) (*backupRoot, error) {
 	d := c.durable
-	d.mu.Lock()
-	counted := d.counted
-	d.mu.Unlock()
+	counted := d.counted.Load()
 	roots, err := listRoots(ctx, d.cfg.Bucket)
 	if err != nil {
 		return nil, err

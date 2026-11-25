@@ -1,10 +1,12 @@
 package coordinator
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -134,6 +136,7 @@ func TestTheMailLedgersProgressIsCounted(t *testing.T) {
 	id := r.edge.deliver(mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Q3"})
 	r.pass()
 	waitJob(t, r.c, mailJobID(id))
+	waitCounted(t, r.c)
 	first := r.v.count().Count
 	if first != before+1 {
 		t.Fatalf("the ledger's progress left the vault at %d, from %d", first, before)
@@ -151,8 +154,25 @@ func TestTheMailLedgersProgressIsCounted(t *testing.T) {
 		t.Fatalf("a second message within %s moved the vault to %d", ledgerCountEvery, got)
 	}
 	r.c.countLedger(time.Now().Add(ledgerCountEvery))
+	waitCounted(t, r.c)
 	if got := r.v.count().Count; got != first+1 {
 		t.Fatalf("after %s the vault is at %d", ledgerCountEvery, got)
+	}
+}
+
+// waitCounted waits for the mail ledger's count in flight, if any.
+func waitCounted(t *testing.T, c *Coordinator) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		c.mu.Lock()
+		counting := c.counting
+		c.mu.Unlock()
+		if !counting {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the ledger's count is still in flight")
+		}
 	}
 }
 
@@ -211,5 +231,212 @@ func TestTheDigestCoversCountedTreesOnlyWhenThereAreAny(t *testing.T) {
 	st.Counted["w_a"] = 4
 	if withA == base || securityDigest(st) == withA {
 		t.Fatal("the digest doesn't bind the counted tree versions")
+	}
+}
+
+// hangingVault is a vault whose counter calls hang, while hang is set, until
+// their context ends or released is closed.
+type hangingVault struct {
+	StateCounter
+	hang     atomic.Bool
+	calls    atomic.Int32
+	released chan struct{}
+}
+
+func (v *hangingVault) wait(ctx context.Context) error {
+	if !v.hang.Load() {
+		return nil
+	}
+	v.calls.Add(1)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-v.released:
+		return errors.New("the vault hung up")
+	}
+}
+
+func (v *hangingVault) Load(ctx context.Context) (VaultCount, error) {
+	if err := v.wait(ctx); err != nil {
+		return VaultCount{}, err
+	}
+	return v.StateCounter.Load(ctx)
+}
+
+func (v *hangingVault) CompareAndSwapState(ctx context.Context, generation, prev, next uint64, digest string) error {
+	if err := v.wait(ctx); err != nil {
+		return err
+	}
+	return v.StateCounter.CompareAndSwapState(ctx, generation, prev, next, digest)
+}
+
+// A vault that hangs while the mail ledger's progress is counted holds up
+// no team's reads, mail intake, job dispatch or change that takes nothing
+// away; the count fails, backs off, and shows on the status (2026-11-25
+// re-check, R3-2).
+func TestAHangingVaultStallsNothingButTheCount(t *testing.T) {
+	r := newMailRig(t, MailConfig{})
+	v := newVaultRig(t, r.edge.authority)
+	v.key = r.key
+	hv := &hangingVault{StateCounter: v.vault, released: make(chan struct{})}
+	r.backup = v.backups(v.next())
+	r.backup.Counter = hv
+	r.start()
+	w, mb := r.worker()
+	soloTeam(t, r.c, "acme", newTestDevice(t))
+
+	hv.hang.Store(true)
+	defer close(hv.released)
+	id := r.edge.deliver(mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Q3"})
+	r.pass()
+	countLedgerNow(r.c)
+	for deadline := time.Now().Add(5 * time.Second); hv.calls.Load() == 0; time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("no count reached the vault")
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = r.c.Load()
+		_ = logSeq(r.c, "acme")
+		if res := r.workerOp(w.ID, "op_unpause", "setPaused", switchArgs{On: false}); !res.OK {
+			t.Errorf("setPaused off: %+v", res)
+		}
+		waitJob(t, r.c, mailJobID(id))
+		id2 := r.edge.deliver(mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Q4"})
+		r.pass()
+		waitJob(t, r.c, mailJobID(id2))
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a hanging vault held up the coordinator")
+	}
+
+	r.c.mu.Lock()
+	counting := r.c.counting
+	r.c.mu.Unlock()
+	if !counting {
+		t.Fatal("the count isn't in flight")
+	}
+	hv.released <- struct{}{}
+	waitCounted(t, r.c)
+	b := r.c.BackupStatus()
+	if b.CountingFailingSince == nil || b.CountRetryAt == nil || !b.CountRetryAt.After(time.Now().Add(countBackoffMin/2-time.Second)) {
+		t.Fatalf("a failed count shows as %+v", b)
+	}
+	calls := hv.calls.Load()
+	countLedgerNow(r.c)
+	waitCounted(t, r.c)
+	if hv.calls.Load() != calls {
+		t.Fatal("a count was tried again at once after a failure")
+	}
+	if !r.c.CountingFailing(time.Now()).IsZero() || r.c.CountingFailing(time.Now().Add(CountUnhealthyAfter)).IsZero() {
+		t.Fatalf("unhealthy before %s, or not after", CountUnhealthyAfter)
+	}
+
+	hv.hang.Store(false)
+	if err := r.c.countOff(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if b := r.c.BackupStatus(); b.CountingFailingSince != nil || b.CountError != "" {
+		t.Fatalf("a count that worked leaves %+v", b)
+	}
+}
+
+// countLedgerNow is the mail loop's countLedger once ledgerCountEvery has
+// passed since the last count.
+func countLedgerNow(c *Coordinator) {
+	c.mu.Lock()
+	c.lastOwedCount = time.Time{}
+	c.mu.Unlock()
+	c.countLedger(time.Now())
+}
+
+// swapGate holds the first swaps, each until its let is closed.
+type swapGate struct {
+	StateCounter
+	on   atomic.Bool
+	n    atomic.Int32
+	in   [2]chan struct{}
+	let  [2]chan struct{}
+	done [2]chan struct{}
+}
+
+func newSwapGate(c StateCounter) *swapGate {
+	g := &swapGate{StateCounter: c}
+	for i := range 2 {
+		g.in[i], g.let[i], g.done[i] = make(chan struct{}), make(chan struct{}), make(chan struct{})
+	}
+	return g
+}
+
+func (g *swapGate) CompareAndSwapState(ctx context.Context, generation, prev, next uint64, digest string) error {
+	if !g.on.Load() {
+		return g.StateCounter.CompareAndSwapState(ctx, generation, prev, next, digest)
+	}
+	i := int(g.n.Add(1)) - 1
+	if i >= 2 {
+		return g.StateCounter.CompareAndSwapState(ctx, generation, prev, next, digest)
+	}
+	close(g.in[i])
+	<-g.let[i]
+	defer close(g.done[i])
+	return g.StateCounter.CompareAndSwapState(ctx, generation, prev, next, digest)
+}
+
+// A team's change counted while the ledger's count is in flight, both from
+// the same confirmed count, reconciles in either order: the one that lands
+// second finds the count moved by its own generation, and is done when the
+// count is past it or tried again from it when below. Neither retires the
+// coordinator (swapCount).
+func TestCountsInFlightTogetherReconcile(t *testing.T) {
+	for _, ledgerFirst := range []bool{false, true} {
+		r := newMailRig(t, MailConfig{})
+		v := newVaultRig(t, r.edge.authority)
+		v.key = r.key
+		g := newSwapGate(v.vault)
+		r.backup = v.backups(v.next())
+		r.backup.Counter = g
+		r.start()
+		_, mb := r.worker()
+		id := r.edge.deliver(mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Q3"})
+		r.c.mu.Lock()
+		r.c.lastOwedCount = time.Now().Add(time.Hour)
+		r.c.mu.Unlock()
+		r.pass()
+		waitJob(t, r.c, mailJobID(id))
+
+		g.on.Store(true)
+		countLedgerNow(r.c)
+		<-g.in[0]
+		teamDone := make(chan struct{})
+		go func() {
+			defer close(teamDone)
+			soloTeam(t, r.c, "acme", newTestDevice(t))
+		}()
+		<-g.in[1]
+		if ledgerFirst {
+			close(g.let[0])
+			<-g.done[0]
+			close(g.let[1])
+		} else {
+			close(g.let[1])
+			<-g.done[1]
+			close(g.let[0])
+		}
+		<-teamDone
+		waitCounted(t, r.c)
+		if r.c.Retired() {
+			t.Fatalf("ledger first %v: retired", ledgerFirst)
+		}
+		r.c.mu.Lock()
+		seq, due := r.c.state.SecuritySeq, r.c.countDue()
+		r.c.mu.Unlock()
+		if got := v.count().Count; got != seq || due || r.c.durable.counted.Load() != seq {
+			t.Fatalf("ledger first %v: the vault at %d, the volume at %d, still due %v", ledgerFirst, got, seq, due)
+		}
 	}
 }

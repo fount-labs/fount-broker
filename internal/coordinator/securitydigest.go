@@ -59,10 +59,16 @@ func securityDigest(st *State) string {
 // countState moves the vault's count from prev to st's sequence, bound to
 // st when the counter keeps states.
 func countState(ctx context.Context, counter VaultCounter, generation, prev uint64, st *State) error {
+	return casCount(ctx, counter, generation, prev, st.SecuritySeq, securityDigest(st))
+}
+
+// casCount moves the vault's count from prev to next, bound to digest when
+// the counter keeps states.
+func casCount(ctx context.Context, counter VaultCounter, generation, prev, next uint64, digest string) error {
 	if sc, ok := counter.(StateCounter); ok {
-		return sc.CompareAndSwapState(ctx, generation, prev, st.SecuritySeq, securityDigest(st))
+		return sc.CompareAndSwapState(ctx, generation, prev, next, digest)
 	}
-	return counter.CompareAndSwap(ctx, generation, prev, st.SecuritySeq)
+	return counter.CompareAndSwap(ctx, generation, prev, next)
 }
 
 // sameState is whether st is the state the vault counted at count: always

@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"math/rand/v2"
 	"regexp"
 	"sync"
 	"time"
@@ -34,6 +35,41 @@ type BackupStatus struct {
 	LastRoot   string     `json:"last_root,omitempty"`
 	LastRootAt *time.Time `json:"last_root_at,omitempty"`
 	LastRun    *BackupRun `json:"last_run,omitempty"`
+	// CountingFailingSince is when counting changes in the vault began
+	// failing, while none has succeeded since; CountError the latest
+	// failure and CountRetryAt when the mail ledger's count is tried again.
+	// Past CountUnhealthyAfter, /health fails too.
+	CountingFailingSince *time.Time `json:"counting_failing_since,omitempty"`
+	CountError           string     `json:"count_error,omitempty"`
+	CountRetryAt         *time.Time `json:"count_retry_at,omitempty"`
+}
+
+const (
+	// countBackoffMin is the wait before the mail ledger's count is tried
+	// again after its first failure, doubling each failure to
+	// countBackoffMax, each wait drawn from its upper half so coordinators
+	// that failed together don't retry together. A count the vault never
+	// answers holds nothing else up (countOff), but without the backoff the
+	// mail loop would start one every 5 s (2026-11-25 re-check, R3-2).
+	countBackoffMin = ledgerCountEvery
+	countBackoffMax = DefaultBackupInterval
+	// CountUnhealthyAfter is how long counting may fail before /health
+	// does. A vault restart takes about 72 s and a redeploy a few minutes;
+	// 10 minutes is past both, and is about twenty missed ledger counts,
+	// so that much mail could run again after a replay of the disk: long
+	// enough that an operator should look, short enough that they do
+	// before it is a day. A running instance marked unhealthy keeps
+	// running on Tinfoil; only monitoring sees it.
+	CountUnhealthyAfter = 10 * time.Minute
+)
+
+// countBackoff is the wait after the fails-th failure in a row.
+func countBackoff(fails int) time.Duration {
+	d := countBackoffMax
+	if fails < 8 {
+		d = min(countBackoffMin<<(fails-1), countBackoffMax)
+	}
+	return d/2 + rand.N(d/2+1)
 }
 
 // BackupRun is what one root's backup put in the bucket: the tree objects it
@@ -55,6 +91,35 @@ type backupStatus struct {
 	root        string
 	rootAt      time.Time
 	run         BackupRun
+
+	countFails int
+	countSince time.Time
+	countRetry time.Time
+	countError string
+}
+
+// noteCount records how a count of changes in the vault went.
+func (s *backupStatus) noteCount(err error, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err == nil {
+		s.countFails, s.countSince, s.countRetry, s.countError = 0, time.Time{}, time.Time{}, ""
+		return
+	}
+	s.countFails++
+	if s.countSince.IsZero() {
+		s.countSince = now
+	}
+	s.countRetry = now.Add(countBackoff(s.countFails))
+	s.countError = scrubBackupError(err.Error())
+}
+
+// countBackingOff is whether the mail ledger's count waits, at now, after a
+// failure.
+func (s *backupStatus) countBackingOff(now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return now.Before(s.countRetry)
 }
 
 func (s *backupStatus) noteAttempt() {
@@ -134,7 +199,23 @@ func (c *Coordinator) BackupStatus() BackupStatus {
 		run := s.run
 		out.LastRun = &run
 	}
+	out.CountingFailingSince, out.CountError, out.CountRetryAt = utcOrNil(s.countSince), s.countError, utcOrNil(s.countRetry)
 	return out
+}
+
+// CountingFailing is when counting changes in the vault began failing, when
+// it has failed for at least CountUnhealthyAfter at now; zero otherwise.
+func (c *Coordinator) CountingFailing(now time.Time) time.Time {
+	d := c.durable
+	if d == nil {
+		return time.Time{}
+	}
+	d.status.mu.Lock()
+	defer d.status.mu.Unlock()
+	if s := d.status.countSince; !s.IsZero() && now.Sub(s) >= CountUnhealthyAfter {
+		return s
+	}
+	return time.Time{}
 }
 
 func utcOrNil(t time.Time) *time.Time {

@@ -166,6 +166,15 @@ func statusAPI(s *keyStatus, jobs *atomic.Pointer[coordinator.Coordinator], runn
 			http.Error(w, what, http.StatusServiceUnavailable)
 			return
 		}
+		// Nor does one whose changes the vault hasn't counted for
+		// CountUnhealthyAfter: it serves, but a replay of its disk would
+		// bring back what was taken away since (2026-11-25 re-check, R3-2).
+		if c := jobs.Load(); c != nil {
+			if since := c.CountingFailing(time.Now()); !since.IsZero() {
+				http.Error(w, "counting changes in the vault failing since "+since.UTC().Format(time.RFC3339)+"; see /status", http.StatusServiceUnavailable)
+				return
+			}
+		}
 		io.WriteString(w, "ok\n")
 	})
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
@@ -176,6 +185,11 @@ func statusAPI(s *keyStatus, jobs *atomic.Pointer[coordinator.Coordinator], runn
 			// /control/mail.
 			if m := c.MailStatus(); m != nil {
 				out["mail"] = map[string]any{"phase": m.Phase, "generation": m.Generation, "unsent_notices": m.UnsentNotices}
+			}
+			// When counting fails, since when and the next try: the
+			// error stays behind /control/backup.
+			if b := c.BackupStatus(); b.CountingFailingSince != nil {
+				out["counting"] = map[string]any{"failing_since": b.CountingFailingSince, "retry_at": b.CountRetryAt}
 			}
 		}
 		if runners != nil {

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"sync/atomic"
+	"time"
 )
 
 // commitSecurity makes a change to security state (a team's log, or the
@@ -32,9 +33,16 @@ import (
 // committed transaction whose acknowledgement was lost. A client that saw
 // the error finds its entry in the log, or appends again.
 //
+// A team's log change and a key rotation hold c.mu through all three, as
+// the caller puts its change back under the same lock: at the rate people
+// make them, each bounded by durableTimeout. The workers' changes are
+// counted by countOff, which holds c.mu only to take the sequence and the
+// cut (2026-11-25 re-check, R3-2); the two may be in flight together
+// (swapCount).
+//
 // Without Config.Backup (dev and tests) it is step 1 alone. Called with c.mu
 // held.
-func (c *Coordinator) commitSecurity() error {
+func (c *Coordinator) commitSecurity() (err error) {
 	if c.Retired() {
 		return ErrStaleCoordinator
 	}
@@ -42,6 +50,7 @@ func (c *Coordinator) commitSecurity() error {
 	ctx, cancel := context.WithTimeout(context.Background(), durableTimeout)
 	defer cancel()
 	if d != nil {
+		defer func() { d.status.noteCount(err, time.Now()) }()
 		// Refuse before writing anything when another generation has
 		// taken over, so a stale coordinator's change reaches neither its
 		// volume nor the bucket.
@@ -54,40 +63,91 @@ func (c *Coordinator) commitSecurity() error {
 			c.retire(err)
 			return fmt.Errorf("%w: %v", ErrStaleCoordinator, err)
 		}
-		// A swap whose answer was lost: the vault counted a change this
-		// coordinator sent, since only this generation's key moves the count
-		// within it.
-		if count.Count > d.counted && count.Count <= c.state.SecuritySeq {
-			d.counted = count.Count
-		}
+		c.noteLoadedCount(count)
 	}
+	if err := c.bumpSecurity(); err != nil || d == nil {
+		return err
+	}
+	if _, err := c.backupLocked(ctx); err != nil {
+		return fmt.Errorf("%w: backing it up: %v", ErrNotDurable, err)
+	}
+	return c.swapCount(ctx, d.counted.Load(), c.state.SecuritySeq, securityDigest(c.state))
+}
+
+// bumpSecurity takes the next security sequence, folds in the workers'
+// changes owed so far and saves the state. On a failed save the state is as
+// it was. Called with c.mu held.
+func (c *Coordinator) bumpSecurity() error {
 	prev, prevGen := c.state.SecuritySeq, c.state.SecurityGen
 	c.state.SecuritySeq++
-	if d != nil {
-		c.state.SecurityGen = d.gen
+	if c.durable != nil {
+		c.state.SecurityGen = c.durable.gen
 	}
-	// Workers' changes owed so far are counted with this one.
 	undo := c.foldOwed()
 	if err := c.state.Save(c.cfg.StateDir); err != nil {
 		c.state.SecuritySeq, c.state.SecurityGen = prev, prevGen
 		undo()
 		return err
 	}
-	if d == nil {
-		return nil
+	return nil
+}
+
+// noteLoadedCount takes a count this generation made whose answer was lost:
+// only this generation's key moves the count within it, so a count above
+// the one confirmed and at most the volume's sequence is one it sent.
+// Called with c.mu held.
+func (c *Coordinator) noteLoadedCount(count VaultCount) {
+	if count.Count <= c.state.SecuritySeq {
+		c.durable.noteCounted(count.Count)
 	}
-	if _, err := c.backupLocked(ctx); err != nil {
-		return fmt.Errorf("%w: backing it up: %v", ErrNotDurable, err)
-	}
-	if err := countState(ctx, d.cfg.Counter, d.gen, d.counted, c.state); err != nil {
-		if errors.Is(err, ErrVaultGeneration) || errors.Is(err, ErrVaultCount) {
+}
+
+// maxSwapTries bounds swapCount's compare-and-swaps for one count.
+const maxSwapTries = 4
+
+// swapCount moves the vault's count from prev to next, the sequence of the
+// state whose digest is digest. Two counts may be in flight at once, a
+// team's change under c.mu and the workers' changes beside it (countOff),
+// each from the count confirmed when it began. A swap that finds the count
+// moved by this generation (only its key moves the count within it) since
+// then is done when the count is already at next or past it, since every
+// count is of a state that holds every change before it, and is tried again
+// from that count when it is below. Anything else is a count this
+// coordinator didn't make: it is retired. Needs no c.mu.
+func (c *Coordinator) swapCount(ctx context.Context, prev, next uint64, digest string) error {
+	d := c.durable
+	for range maxSwapTries {
+		err := casCount(ctx, d.cfg.Counter, d.gen, prev, next, digest)
+		if err == nil {
+			d.noteCounted(next)
+			return nil
+		}
+		if errors.Is(err, ErrVaultGeneration) {
 			c.retire(err)
 			return fmt.Errorf("%w: %v", ErrStaleCoordinator, err)
 		}
-		return fmt.Errorf("%w: counting it: %v", ErrNotDurable, err)
+		if !errors.Is(err, ErrVaultCount) {
+			return fmt.Errorf("%w: counting it: %v", ErrNotDurable, err)
+		}
+		count, lerr := d.cfg.Counter.Load(ctx)
+		switch {
+		case lerr != nil:
+			return fmt.Errorf("%w: counting it: %v; then the vault's counter: %v", ErrNotDurable, err, lerr)
+		case count.Generation != d.gen:
+			err := fmt.Errorf("%w: the vault is at generation %d", ErrVaultGeneration, count.Generation)
+			c.retire(err)
+			return fmt.Errorf("%w: %v", ErrStaleCoordinator, err)
+		case count.Count >= next:
+			d.noteCounted(next)
+			return nil
+		case count.Count > prev:
+			prev = count.Count
+			continue
+		}
+		c.retire(err)
+		return fmt.Errorf("%w: %v", ErrStaleCoordinator, err)
 	}
-	d.counted = c.state.SecuritySeq
-	return nil
+	return fmt.Errorf("%w: counting it: the count moved under it %d times", ErrNotDurable, maxSwapTries)
 }
 
 // fence is whether this coordinator has been retired: a newer generation

@@ -122,10 +122,12 @@ type Coordinator struct {
 	recoveryTick    time.Time
 	recoveryUnsaved time.Duration
 	// owed is each worker's tree version with a change the vault hasn't
-	// counted yet, and lastOwedCount when it last counted them
+	// counted yet, lastOwedCount when the ledger's progress was last
+	// counted and counting whether a count of it is in flight
 	// (countedtree.go). Under mu.
 	owed          map[string]uint64
 	lastOwedCount time.Time
+	counting      bool
 }
 
 // now is the team log's time: lists' age, records' at and recoveries' wait.
@@ -881,14 +883,21 @@ func (c *Coordinator) changeThen(workerID, device string, fn func(*Tree) error, 
 	if err == nil && (t.counted || t.ledger) {
 		c.owe(workerID, version)
 	}
-	if err == nil && t.counted {
-		// Acknowledged only once counted. One that fails stays owed, and
-		// the backup loop counts it on its next pass.
-		err = c.countOwed()
-	}
+	// A change that takes something away is acknowledged only once
+	// counted. One that fails stays owed, and the backup loop counts it on
+	// its next pass. The count holds the tree's lock, not c.mu.
+	count := err == nil && t.counted
 	c.mu.Unlock()
 	if err != nil {
 		return err
+	}
+	if count {
+		ctx, cancel := context.WithTimeout(context.Background(), durableTimeout)
+		err := c.countOff(ctx)
+		cancel()
+		if err != nil {
+			return err
+		}
 	}
 	if then != nil {
 		then()

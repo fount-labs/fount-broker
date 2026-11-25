@@ -55,32 +55,90 @@ func (c *Coordinator) owe(workerID string, version uint64) {
 // or a security change whose count failed after it was saved. Called with
 // c.mu held.
 func (c *Coordinator) countDue() bool {
-	return c.durable != nil && (len(c.owed) > 0 || c.durable.counted < c.state.SecuritySeq)
+	return c.durable != nil && (len(c.owed) > 0 || c.durable.counted.Load() < c.state.SecuritySeq)
 }
 
-// countOwed counts what is owed now. Called with c.mu held.
-func (c *Coordinator) countOwed() error {
-	if !c.countDue() {
+// countOff counts what is owed now, holding c.mu only to take the next
+// sequence and the cut of the volume: the vault's counter, the root's upload and the compare-and-swap
+// run without it, so a vault or bucket that hangs stalls nothing else
+// (2026-11-25 re-check, R3-2). A change made meanwhile is counted by a later
+// count; one in flight beside this one is reconciled by swapCount. A count
+// that fails leaves its sequence uncounted, so countDue stays true and the
+// next count covers it. Called without c.mu.
+func (c *Coordinator) countOff(ctx context.Context) (err error) {
+	d := c.durable
+	if d == nil {
 		return nil
 	}
-	if err := c.commitSecurity(); err != nil {
+	if c.Retired() {
+		return ErrStaleCoordinator
+	}
+	defer func() { d.status.noteCount(err, time.Now()) }()
+	count, err := d.cfg.Counter.Load(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: the vault's counter: %v", ErrNotDurable, err)
+	}
+	if count.Generation != d.gen {
+		err := fmt.Errorf("%w: the vault is at generation %d", ErrVaultGeneration, count.Generation)
+		c.retire(err)
+		return fmt.Errorf("%w: %v", ErrStaleCoordinator, err)
+	}
+	c.mu.Lock()
+	c.noteLoadedCount(count)
+	if !c.countDue() {
+		c.mu.Unlock()
+		return nil
+	}
+	if err := c.bumpSecurity(); err != nil {
+		c.mu.Unlock()
 		return err
 	}
-	c.lastOwedCount = time.Now()
-	return nil
+	next, digest, prev := c.state.SecuritySeq, securityDigest(c.state), d.counted.Load()
+	cut, err := c.takeCut()
+	d.store.hold()
+	c.mu.Unlock()
+	defer d.store.release()
+	if err != nil {
+		return err
+	}
+	if _, err := c.writeCut(ctx, cut); err != nil {
+		return fmt.Errorf("%w: backing it up: %v", ErrNotDurable, err)
+	}
+	return c.swapCount(ctx, prev, next, digest)
 }
 
 // countLedger counts the mail ledger's progress, at most every
-// ledgerCountEvery.
+// ledgerCountEvery and not while a count of it is in flight or backing off
+// after a failure, in the background: the mail loop and the backup loop
+// that call it don't wait on the vault.
 func (c *Coordinator) countLedger(now time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.countDue() || c.Retired() || now.Sub(c.lastOwedCount) < ledgerCountEvery {
+	d := c.durable
+	if d == nil || c.Retired() {
 		return
 	}
-	if err := c.countOwed(); err != nil {
-		log.Printf("backup: counting the workers' changes: %v; tried again", err)
+	c.mu.Lock()
+	due := c.countDue() && !c.counting && now.Sub(c.lastOwedCount) >= ledgerCountEvery && !d.status.countBackingOff(now)
+	if due {
+		c.counting = true
 	}
+	c.mu.Unlock()
+	if !due {
+		return
+	}
+	c.running.Go(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), durableTimeout)
+		defer cancel()
+		err := c.countOff(ctx)
+		if err != nil {
+			log.Printf("backup: counting the workers' changes: %v; tried again after a backoff", err)
+		}
+		c.mu.Lock()
+		c.counting = false
+		if err == nil {
+			c.lastOwedCount = time.Now()
+		}
+		c.mu.Unlock()
+	})
 }
 
 // foldOwed moves what is owed into st.Counted for commitSecurity, and drops
