@@ -46,8 +46,8 @@ func (r recoveryFixture) wait(d time.Duration) {
 	*r.at = r.at.Add(d)
 	r.c.mu.Lock()
 	defer r.c.mu.Unlock()
-	for ; d > 0; d -= maxRecoveryTick {
-		r.c.countRecoveryWaits(min(d, maxRecoveryTick))
+	for ; d > 0; d -= recoveryTickEvery {
+		r.c.countRecoveryWaits(min(d, recoveryTickEvery))
 	}
 }
 
@@ -147,7 +147,7 @@ func TestABackdatedClockDoesntShortenARecovery(t *testing.T) {
 }
 
 // A clock set forward ends no wait either, and one tick counts at most
-// maxRecoveryTick however far the monotonic clock leapt.
+// recoveryTickEvery however far the monotonic clock leapt.
 func TestAClockSetForwardDoesntEndARecovery(t *testing.T) {
 	r := newRecoveryFixture(t)
 	if err := r.start(t, r.laptop, "acme", "m_owner"); err != nil {
@@ -159,8 +159,38 @@ func TestAClockSetForwardDoesntEndARecovery(t *testing.T) {
 	if err := r.pushAs(r.laptop, "acme", []testDevice{r.laptop}); !errors.Is(err, ErrNotAdmin) {
 		t.Fatalf("a clock and a monotonic clock that leapt a week: %v", err)
 	}
-	if w := r.team(t).RecoveryWaits["m_owner"]; w == nil || w.Waited != maxRecoveryTick {
+	if w := r.team(t).RecoveryWaits["m_owner"]; w == nil || w.Waited != recoveryTickEvery {
 		t.Fatalf("the counted wait after one leap: %+v", w)
+	}
+}
+
+// The 2026-11-25 re-review's N2 probe, flipped: a host that leaps the
+// guest's monotonic clock 2 minutes before every tick used to gain 2
+// minutes a tick, 24 times real time. Now each tick counts at most
+// recoveryTickEvery, so over a day of such ticks the wait counts at most a
+// day: the rate is the ticker's, about 1x, not the clock's.
+func TestALeapingClockCountsNoFasterThanTheTicks(t *testing.T) {
+	r := newRecoveryFixture(t)
+	if err := r.start(t, r.laptop, "acme", "m_owner"); err != nil {
+		t.Fatal(err)
+	}
+	mono := time.Now()
+	r.c.tickRecoveryWaits(mono)
+	ticks := int(24 * time.Hour / recoveryTickEvery)
+	for range ticks {
+		mono = mono.Add(2 * time.Minute)
+		r.c.tickRecoveryWaits(mono)
+	}
+	w := r.team(t).RecoveryWaits["m_owner"]
+	if real := time.Duration(ticks) * recoveryTickEvery; w == nil || w.Waited > real {
+		t.Fatalf("%d ticks a day apart counted %+v, over the %s they took", ticks, w, real)
+	}
+	// Ticks that come late count as one tick each: the wait runs slow.
+	before := w.Waited
+	mono = mono.Add(time.Hour)
+	r.c.tickRecoveryWaits(mono)
+	if got := r.team(t).RecoveryWaits["m_owner"].Waited - before; got != recoveryTickEvery {
+		t.Fatalf("a tick an hour late counted %s", got)
 	}
 }
 

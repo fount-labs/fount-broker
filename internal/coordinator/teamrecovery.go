@@ -30,11 +30,21 @@ import (
 // host sets, so a clock set back for the one request that writes the record
 // would date it a week ago on a quiet team, and one set forward would end the
 // wait at once (security review 2026-11-24, M3). The count adds up the
-// process's monotonic clock between ticks of Run, at most maxRecoveryTick a
-// tick, and is kept in the state: time the coordinator is down, or a state
+// process's monotonic clock between ticks of Run, at most recoveryTickEvery
+// a tick, and is kept in the state: time the coordinator is down, or a state
 // restored from before, only makes the wait longer. Desktop counts it again
 // from when its listed devices first saw the log without the record
 // (team_log.rs).
+//
+// Counting at most a tick a tick bounds the count by the rate Run's ticker
+// fires, not by how far the clock moves: a host that leaps the guest's clock
+// before each tick gains at most one tick a leap, so the wait runs at most
+// as fast as the ticker does in real time, about 1x. What it doesn't bound
+// is a host that runs the guest's whole clock fast (scaling its TSC or
+// kvmclock without SecureTSC): the ticker fires faster with it, and the wait
+// passes as fast as the host makes the guest's time pass. Only authenticated
+// time (Roughtime) or SecureTSC would close that; until then Desktop's
+// first-seen count is the backstop, weak for a device that reads rarely.
 //
 // A list ends every open recovery, as it ends what records admitted since
 // the last one: it includes the device, which then signs as any listed one,
@@ -58,12 +68,13 @@ const (
 	// up to grantSkew ahead of the coordinator's.
 	recoverySkew = grantSkew
 
-	// recoveryTickEvery is how often Run counts the open recoveries' waits,
-	// maxRecoveryTick the most one tick adds, so a stalled process or a
-	// clock that leaps doesn't end a wait, and recoverySaveEvery how much
-	// counted time goes unsaved before the state is.
-	recoveryTickEvery = 30 * time.Second
-	maxRecoveryTick   = 2 * time.Minute
+	// recoveryTickEvery is Run's tick, and the most one tick counts into
+	// the open recoveries' waits, so the count runs at the tick rate, not
+	// the clock's: a stalled process, or a monotonic clock the host leaps,
+	// only makes the wait longer (2026-11-25 re-review, N2).
+	// recoverySaveEvery is how much counted time goes unsaved before the
+	// state is.
+	recoveryTickEvery = runTickEvery
 	recoverySaveEvery = 10 * time.Minute
 )
 
@@ -159,14 +170,11 @@ func (c *Coordinator) tickRecoveryWaits(mono time.Time) {
 		return
 	}
 	elapsed := mono.Sub(c.recoveryTick)
-	if elapsed < recoveryTickEvery {
-		return
-	}
 	c.recoveryTick = mono
 	c.countRecoveryWaits(elapsed)
 }
 
-// countRecoveryWaits adds elapsed, at most maxRecoveryTick, to the wait of
+// countRecoveryWaits adds elapsed, at most recoveryTickEvery, to the wait of
 // every recovery open on a team, starts a wait for a recovery that has none,
 // and forgets the waits of recoveries a list ended. The state is saved once
 // recoverySaveEvery is counted unsaved; a retired coordinator counts nothing.
@@ -175,7 +183,7 @@ func (c *Coordinator) countRecoveryWaits(elapsed time.Duration) {
 	if c.Retired() {
 		return
 	}
-	elapsed = min(max(elapsed, 0), maxRecoveryTick)
+	elapsed = min(max(elapsed, 0), recoveryTickEvery)
 	counted := false
 	for id, t := range c.state.Teams {
 		if len(t.RecoveryWaits) == 0 && t.state != nil && len(t.state.recoveries) == 0 {

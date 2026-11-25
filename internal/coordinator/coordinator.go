@@ -424,9 +424,13 @@ func (c *Coordinator) poke() {
 	}
 }
 
+// runTickEvery is how often Run schedules, expires ungranted workers and
+// counts the recoveries' waits.
+const runTickEvery = 5 * time.Second
+
 // Run schedules jobs until ctx ends, then waits for the running ones.
 func (c *Coordinator) Run(ctx context.Context) {
-	tick := time.NewTicker(5 * time.Second)
+	tick := time.NewTicker(runTickEvery)
 	defer tick.Stop()
 	for {
 		c.schedule(ctx)
