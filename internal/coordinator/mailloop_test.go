@@ -157,6 +157,7 @@ type email struct {
 	recipient  string // the envelope recipient; to's address when empty
 	subject    string
 	inReplyTo  string
+	references string
 	messageID  string // with its angle brackets; none when empty
 	sigHash    string // the aligned signature's hash; random when empty
 	unsigned   bool
@@ -202,7 +203,7 @@ func (f *fakeMailEdge) deliver(mb Mailbox, e email) string {
 		"from":    map[string]any{"address": e.from, "domain": domain, "name": "Dana"},
 		"dkim":    dkim,
 		"aligned": !e.unsigned, "recipient_signed": true, "date_skew_seconds": -30,
-		"headers":    map[string]any{"to": []string{e.to}, "subject": e.subject, "in_reply_to": e.inReplyTo, "message_id": e.messageID},
+		"headers":    map[string]any{"to": []string{e.to}, "subject": e.subject, "in_reply_to": e.inReplyTo, "references": e.references, "message_id": e.messageID},
 		"raw_sha256": hex.EncodeToString(sum[:]),
 	})
 	at := e.receivedAt

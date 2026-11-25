@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	fmail "github.com/fount-labs/fount-broker/internal/mail"
 )
 
 // approvalsTo is the Message-IDs of the approval emails delivered to
@@ -105,7 +103,7 @@ func TestTheApprovalEmailIsAPlainReplyInTheOwnersThread(t *testing.T) {
 		}
 	}
 	d := r.draft(th.ID, e.ID)
-	ids := approvalIDs(&fmail.EdgeCheck{Headers: fmail.EdgeCheckHeaders{InReplyTo: h.Get("Message-Id")}}, domainOf(testWorkerAddr))
+	ids := approvalIDs(h.Get("Message-Id"), domainOf(testWorkerAddr))
 	if d.Ask == nil || len(ids) != 1 || ids[0] != r.c.approvalToken(r.w.ID, th.ID, e.ID, d.Ask) {
 		t.Fatalf("the Message-ID %s doesn't carry the approval token: %v", h.Get("Message-Id"), ids)
 	}
@@ -153,5 +151,143 @@ func TestADraftsEmailGoesOnTheNextPass(t *testing.T) {
 				t.Fatalf("after a pass that sweeps nothing, %d sent", n)
 			}
 		})
+	}
+}
+
+// askMessageID is the Message-ID of the approval email the owner got for
+// draft e on th.
+func (r *sendRig) askMessageID(th *threadRecord, e *threadEntry) string {
+	r.t.Helper()
+	d := r.draft(th.ID, e.ID)
+	if d.Ask == nil {
+		r.t.Fatalf("draft %s has no approval email", e.ID)
+	}
+	token := r.c.approvalToken(r.w.ID, th.ID, e.ID, d.Ask)
+	for _, id := range r.send.approvalsTo("dana@example.com") {
+		if ids := approvalIDs(id, domainOf(testWorkerAddr)); len(ids) == 1 && ids[0] == token {
+			return id
+		}
+	}
+	r.t.Fatalf("no approval email for draft %s was sent", e.ID)
+	return ""
+}
+
+// drafts are th's drafts, oldest first, once there are n.
+func (r *sendRig) drafts(threadID string, n int) (*threadRecord, []*threadEntry) {
+	r.t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		r.pass()
+		th, err := r.c.thread(anyDevice, r.w.ID, threadID)
+		if err != nil {
+			r.t.Fatal(err)
+		}
+		var out []*threadEntry
+		for i := range th.Entries {
+			if th.Entries[i].Kind == entryDraft {
+				out = append(out, &th.Entries[i])
+			}
+		}
+		if len(out) >= n {
+			return th, out
+		}
+		if time.Now().After(deadline) {
+			r.t.Fatalf("%d drafts on the thread, want %d", len(out), n)
+		}
+	}
+}
+
+// refusals are the reasons th's email approvals were refused.
+func (r *sendRig) refusals(threadID string) []string {
+	r.t.Helper()
+	th, err := r.c.thread(anyDevice, r.w.ID, threadID)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	var out []string
+	for _, e := range th.Entries {
+		if e.Kind == entryEvent && e.Code == "approval_refused" {
+			out = append(out, e.Args["reason"])
+		}
+	}
+	return out
+}
+
+// twoDrafts is the 11-24 review's H5 setup: draft 1's approval email A1 is
+// out, the owner answers it with a note, and the turn that note starts makes
+// draft 2, whose approval email A2 threads under the note, so its References
+// carry A1.
+func twoDrafts(t *testing.T) (r *sendRig, th *threadRecord, d1, d2 *threadEntry, a1, a2 string) {
+	r = newSendRig(t, modeFull)
+	const request = "<q3-close@example.com>"
+	id := r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Q3 close", messageID: request})
+	r.pass()
+	waitJob(t, r.c, mailJobID(id))
+	th = r.waitStatus(r.w.ID, onlyThread(t, r.threads(r.w.ID)).ID, StatusReview)
+	d1 = draftOn(t, th)
+	r.pass()
+	a1 = r.askMessageID(th, d1)
+
+	r.intake.set(func(f *fakeIntake) { f.instruction, f.source, f.reply = "Also attach the invoice.", "owner", true })
+	r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close",
+		messageID: "<note@example.com>", inReplyTo: a1, references: request + " " + a1})
+	th, ds := r.drafts(th.ID, 2)
+	d1, d2 = ds[0], ds[1]
+	r.pass()
+	a2 = r.askMessageID(th, d2)
+	m, _ := r.send.message(t, a2)
+	if refs := m.Header.Get("References"); !strings.Contains(refs, a1) {
+		t.Fatalf("A2's References don't carry A1: %q", refs)
+	}
+	r.intake.set(func(f *fakeIntake) { f.instruction, f.source, f.reply = "Yes.", "owner", true })
+	return r, th, d1, d2, a1, a2
+}
+
+// The 11-24 review's H5 probe, flipped: a "yes" to the newer approval email,
+// whose client's References carry the older one too, sends the draft it
+// names, never the older one.
+func TestAYesToTheNewerApprovalSendsOnlyItsDraft(t *testing.T) {
+	r, th, d1, d2, a1, a2 := twoDrafts(t)
+	r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close",
+		inReplyTo: a2, references: "<q3-close@example.com> " + a1 + " <note@example.com> " + a2})
+	r.pass()
+	if d := r.draft(th.ID, d1.ID); d.State != draftPending {
+		t.Fatalf("the older draft is %s", d.State)
+	}
+	if d := r.draft(th.ID, d2.ID); d.State != draftSent || d.Approval.Via != viaEmail {
+		t.Fatalf("the draft the yes answered is %s: %v", d.State, r.refusals(th.ID))
+	}
+}
+
+// A reply with no In-Reply-To whose References name two live approval
+// emails approves neither, and says why.
+func TestAYesThatNamesTwoLiveApprovalsSendsNeither(t *testing.T) {
+	r, th, d1, d2, a1, a2 := twoDrafts(t)
+	r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close",
+		references: "<q3-close@example.com> " + a1 + " <note@example.com> " + a2})
+	r.pass()
+	for _, e := range []*threadEntry{d1, d2} {
+		if d := r.draft(th.ID, e.ID); d.State != draftPending {
+			t.Fatalf("draft %s is %s", e.ID, d.State)
+		}
+	}
+	if why := r.refusals(th.ID); len(why) != 1 || !strings.Contains(why[0], "more than one approval email") {
+		t.Fatalf("refusals %v", why)
+	}
+}
+
+// A "yes" straight to the older approval email, once a newer draft is
+// waiting, sends nothing: the conversation moved on from it.
+func TestAYesToAnOlderApprovalWithANewerDraftSendsNothing(t *testing.T) {
+	r, th, d1, d2, a1, _ := twoDrafts(t)
+	r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close",
+		inReplyTo: a1, references: "<q3-close@example.com> " + a1})
+	r.pass()
+	for _, e := range []*threadEntry{d1, d2} {
+		if d := r.draft(th.ID, e.ID); d.State != draftPending {
+			t.Fatalf("draft %s is %s", e.ID, d.State)
+		}
+	}
+	if why := r.refusals(th.ID); len(why) != 1 || why[0] != "a newer draft is waiting on this thread" {
+		t.Fatalf("refusals %v", why)
 	}
 }

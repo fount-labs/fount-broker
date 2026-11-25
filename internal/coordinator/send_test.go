@@ -485,9 +485,29 @@ func TestAReviewerApprovesAndANonMemberCant(t *testing.T) {
 	}
 }
 
+// A "yes" with the thread's reply token but not the approval token is an
+// ordinary reply: it sends nothing.
+func TestApprovalByEmailNeedsTheToken(t *testing.T) {
+	r := newSendRig(t, modeFull)
+	r.intake.set(func(f *fakeIntake) { f.instruction, f.source, f.reply = "Yes.", "owner", true })
+	th, e := r.drafted()
+	r.pass()
+	asks := r.send.approvalsTo("dana@example.com")
+	if len(asks) != 1 {
+		t.Fatalf("the approval email: %v", asks)
+	}
+	parts := strings.Split(strings.Trim(asks[0], "<>"), ".")
+	wrong := "<fm." + strings.Repeat("a", 26) + "." + parts[2] + "." + strings.Join(parts[3:], ".") + ">"
+	r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close", inReplyTo: wrong})
+	r.pass()
+	if d := r.draft(th.ID, e.ID); d.State != draftPending {
+		t.Fatalf("a wrong token: the draft is %s", d.State)
+	}
+}
+
 // Approval by email: the owner on Full answers the approval email with
-// "yes". A wrong token, a reply that isn't aligned, someone else, or the same
-// approval again sends nothing.
+// "yes". A reply that isn't aligned, someone else, or the same approval again
+// sends nothing.
 func TestApprovalByEmail(t *testing.T) {
 	r := newSendRig(t, modeFull)
 	r.intake.set(func(f *fakeIntake) { f.instruction, f.source, f.reply = "Yes.", "owner", true })
@@ -509,11 +529,6 @@ func TestApprovalByEmail(t *testing.T) {
 			t.Fatalf("%s: the draft is %s", why, d.State)
 		}
 	}
-	// The thread's reply token is right, the approval token isn't.
-	parts := strings.Split(strings.Trim(ask, "<>"), ".")
-	wrong := "<fm." + strings.Repeat("a", 26) + "." + parts[2] + "." + strings.Join(parts[3:], ".") + ">"
-	reply(email{inReplyTo: wrong})
-	pending("a wrong token")
 	reply(email{inReplyTo: ask, unsigned: true})
 	pending("an unsigned reply")
 	reply(email{from: "eve@else.example", inReplyTo: ask})
