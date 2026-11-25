@@ -81,6 +81,9 @@ type fakeVault struct {
 	// the payload.
 	cloud *cloudvaulttest.Pair
 	s3    *wire.S3Credentials
+	// oldBoot is a Cloud vault from before boot proofs: it names no
+	// holder key at begin, and boots without a proof.
+	oldBoot bool
 
 	mu     sync.Mutex
 	nonces map[string]bool
@@ -96,7 +99,11 @@ func (v *fakeVault) serve(t *testing.T) *httptest.Server {
 		v.mu.Lock()
 		v.nonces[hex.EncodeToString(n)] = true
 		v.mu.Unlock()
-		json.NewEncoder(w).Encode(wire.BeginResponse{Nonce: hex.EncodeToString(n)})
+		begun := wire.BeginResponse{Nonce: hex.EncodeToString(n)}
+		if !v.oldBoot {
+			begun.HolderKey = v.key.PublicKey().Bytes()
+		}
+		json.NewEncoder(w).Encode(begun)
 	})
 	mux.HandleFunc("POST /transfer/finish", func(w http.ResponseWriter, r *http.Request) {
 		v.pulls.Add(1)
@@ -129,6 +136,13 @@ func (v *fakeVault) serve(t *testing.T) *httptest.Server {
 			if v.cloud == nil {
 				http.Error(w, "refused at boot: not a Cloud vault", http.StatusForbidden)
 				return
+			}
+			if !v.oldBoot {
+				n := wire.Nonces{Issued: issued, Answer: answer}
+				if err := wire.VerifyBootProof(v.key, requester, n, req.CoordinatorKey, req.BootProof); err != nil {
+					http.Error(w, "refused at boot proof: "+err.Error(), http.StatusForbidden)
+					return
+				}
 			}
 			if p.GenerationCertificate, _, err = v.cloud.Boot(req.CoordinatorKey); err != nil {
 				http.Error(w, "booting a generation: "+err.Error(), http.StatusServiceUnavailable)
