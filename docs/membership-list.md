@@ -201,7 +201,16 @@ Each admission notifies the team's admins (decision 26 step 5): the owner is ema
 (`member_joined`, `device_added` for a passkey join, or `member_back` for a member invited again,
 which says their old computers were removed; the last two also go to the member's own address), and Desktop shows recent admissions with Remove in the members dialog and, on the
 member's other devices, as "New computer added". The window to cancel is any admin's next list,
-which removes the device by omitting it. The log is the used-token store for
+which removes the device by omitting it.
+
+That list also revokes the passkey that added the device (security review 2026-11-24, M4). The
+coordinator refuses a list that leaves out a device a record added with its member's passkey since
+the last list while it still names that passkey for the member (`revokesRemovedPasskey`,
+`teamlog.go`). Desktop's Remove and Cancel clear the member's `rec` in the list. Otherwise the
+passkey, the way the device came in, would add it straight back, with wraps of the DEK epoch made
+to cut it off, and start another recovery. Until an admin's list names a passkey again
+(Desktop's "Set up your passkey") or the member takes an invite again, no passkey join is
+possible for the member. The log is the used-token store for
 invite secrets, so a restore can't make a secret usable again (§4.2).
 
 #### 2.3.1 Delayed recovery (2026-11-23)
@@ -217,7 +226,8 @@ below, the device signs lists like a listed one, so it signs the list that drops
 A list ends every open recovery, as it ends what records admitted since the last one: it includes
 the device, which then signs as a listed one, or leaves it out, which removes it. During the wait
 only a listed admin device can sign a list, so any list shows an admin who could include the device
-is there. Cancel is removing the device (Desktop's Cancel signs that list); there is no cancel
+is there. Cancel is removing the device, and with it the member's passkey (§2.3; Desktop's
+Cancel signs that list); there is no cancel
 record. A member invited again loses their devices and their recovery with them. One recovery is
 open per member, the signature is good for one append (its `prev`), and a recovery a list ended
 can't be used again: the next waits its 7 days from its own start. A passkey-added device whose
@@ -531,7 +541,7 @@ The review in `launch-plan.md` T and `teams.md` §11 should take each of these.
 | 10 | A demoted admin's admin-only write (a file, a raw job) in flight when the list lands | Its route check passed before the list; the tree path rechecks the device, not the role, so the write can finish. Narrow: they were admin a moment before. A removed member's can't. |
 | 11 | A removed member keeps the DEK they opened | It opens only what the worker stored before the removal: the removal starts a new DEK epoch, and after it the manifest opens only under the current epoch (or, until the reseal is recorded, the one before), so a forged old-epoch manifest is refused too. Address keys rotate when an admin is lost (§5). |
 | 12 | An invite link forwarded or intercepted | Single use, expiring, and only for an account whose verified email is the invite's. Whoever controls that mailbox can accept it, as with every email invite; admins are notified and can remove the device. |
-| 12a | A member's passkey phished or synced to an attacker's device | The attacker also needs a sign-in to the member's account. The assertion's rp, origin and user verification are checked; the device is admitted at once, the owner and member are emailed and the member's other devices show it with Remove; an admin's list removes it, and removing `rec` stops another. A copied authenticator that counts shows as a sign count that doesn't rise. A device a record admits signs no list until a list includes it (H3, `teamsigner.go`), except that a device an admin's passkey added (a passkey join, or the invite record of an admin invited again) signs at once when no admin, that one included, has a device a list included: else an admin whose every device was removed could never sign again. While the owner keeps a listed device, a phished passkey's device reaches the workers but can't drop the owner's devices; the listed device includes it, or Remove drops it. An admin who lost every computer while the log still lists one starts a recovery: their passkey's device signs 7 days later unless a list ends it first, and every admin is emailed at the start (§2.3.1). A phished passkey is then a takeover only if no admin removes the device for 7 days. |
+| 12a | A member's passkey phished or synced to an attacker's device | The attacker also needs a sign-in to the member's account. The assertion's rp, origin and user verification are checked; the device is admitted at once, the owner and member are emailed and the member's other devices show it with Remove; an admin's list removes it and, in the same list, the member's `rec`, so the passkey can't add another (M4). A copied authenticator that counts shows as a sign count that doesn't rise. A device a record admits signs no list until a list includes it (H3, `teamsigner.go`), except that a device an admin's passkey added (a passkey join, or the invite record of an admin invited again) signs at once when no admin, that one included, has a device a list included: else an admin whose every device was removed could never sign again. While the owner keeps a listed device, a phished passkey's device reaches the workers but can't drop the owner's devices; the listed device includes it, or Remove drops it. An admin who lost every computer while the log still lists one starts a recovery: their passkey's device signs 7 days later unless a list ends it first, and every admin is emailed at the start (§2.3.1). A phished passkey is then a takeover only if no admin removes the device for 7 days. |
 | 13 | Parser differential between Desktop (serde) and the coordinator (Go) on a signed list | Strict decoding with unknown fields and duplicate keys refused on both sides; the stored bytes are what is hashed; shared test vectors (`testdata/team-vectors.json`, `team-passkey-join-vectors.json` (with the invite's passkey), `team-passkey-vouch-vectors.json`). A passkey's client data is one flat object read by exact key with no escapes, so both read the same fields; the vectors carry a high-S signature, nested, numeric, repeated and case-varied keys. |
 | 14 | A list that leaves no admin | Refused. |
 | 15 | One device under two members, one account as two members, or a worker in two teams | Refused. |

@@ -51,6 +51,13 @@ func (r recoveryFixture) wait(d time.Duration) {
 	}
 }
 
+// cancel is Cancel on the recovery from the owner's listed device: the list
+// drops the laptop and the passkey that added it.
+func (r recoveryFixture) cancel() error {
+	r.tt.update("m_owner", func(m *ListMember) { m.Rec = nil })
+	return r.pushAs(r.owner, "acme", []testDevice{r.owner})
+}
+
 // start has d start a recovery for its member over the log's head.
 func (r recoveryFixture) start(t *testing.T, d testDevice, account, member string) error {
 	t.Helper()
@@ -172,7 +179,7 @@ func TestARecoveryWaitIsKeptAndForgotten(t *testing.T) {
 	if w := loaded.Teams["acme"].RecoveryWaits["m_owner"]; w == nil || w.Waited != recoverySaveEvery {
 		t.Fatalf("the saved wait: %+v", w)
 	}
-	if err := r.pushAs(r.owner, "acme", []testDevice{r.owner}); err != nil {
+	if err := r.cancel(); err != nil {
 		t.Fatal(err)
 	}
 	r.wait(time.Minute)
@@ -204,18 +211,31 @@ func TestAListedDeviceCancelsARecoveryByRemovingTheDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.wait(time.Hour)
-	if err := r.pushAs(r.owner, "acme", []testDevice{r.owner}); err != nil {
+	// Security review 2026-11-24, M4: Cancel revokes the passkey that added
+	// the device, in the same list, or the passkey would add it straight
+	// back.
+	if err := r.pushAs(r.owner, "acme", []testDevice{r.owner}); !errors.Is(err, ErrListRefused) || !strings.Contains(err.Error(), "keeps that passkey") {
+		t.Fatalf("cancelling a recovery but keeping the passkey: %v", err)
+	}
+	if err := r.cancel(); err != nil {
 		t.Fatalf("the owner's listed device removing the recovering one: %v", err)
 	}
 	r.wait(RecoveryDelay)
 	if err := r.pushAs(r.laptop, "acme", []testDevice{r.laptop}); !errors.Is(err, ErrNotAdmin) {
 		t.Fatalf("a removed recovering device: %v", err)
 	}
-
-	// The passkey adds it back: the old recovery is gone, and a new one
-	// waits again from its own start.
-	r.tt.devices["m_owner"] = []testDevice{r.owner}
 	again := newTestDevice(t)
+	if _, err := r.c.StartPasskeyJoin(again.caller("acme"), "acme", again.pub(), again.enc.PublicKey().Bytes()); !errors.Is(err, ErrNoPasskey) {
+		t.Fatalf("the revoked passkey joining again: %v", err)
+	}
+
+	// An admin lists the passkey again: it adds the device back, the old
+	// recovery is gone, and a new one waits again from its own start.
+	r.tt.devices["m_owner"] = []testDevice{r.owner}
+	r.tt.update("m_owner", func(m *ListMember) { m.Rec = r.pk.rec(t) })
+	if err := r.pushAs(r.owner, "acme", []testDevice{r.owner}); err != nil {
+		t.Fatal(err)
+	}
 	ownerPasskeyJoin(t, r.teamFixture, r.pk, again)
 	r.laptop = again
 	if err := r.pushAs(again, "acme", []testDevice{again}); !errors.Is(err, ErrNotAdmin) {
@@ -382,7 +402,7 @@ func TestARecoveryNoticeGoesToTheOwnerAndTheAdmins(t *testing.T) {
 	r.pass()
 	for _, to := range []string{"dana@example.com", "ann@example.com"} {
 		sent := r.send.sentTo(to, "Someone is recovering access to Acme")
-		if len(sent) != 1 || !strings.Contains(string(r.send.raw[sent[0]]), "If this wasn't you, cancel it") {
+		if len(sent) != 1 || !strings.Contains(string(r.send.raw[sent[0]]), "If this wasn't you, cancel it") || !strings.Contains(string(r.send.raw[sent[0]]), "Cancelling also turns that passkey off") {
 			t.Fatalf("%s: %v", to, sent)
 		}
 	}

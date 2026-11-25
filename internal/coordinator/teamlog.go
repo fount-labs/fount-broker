@@ -461,6 +461,38 @@ func (c *Coordinator) checkListSigner(prior *teamState, l TeamList, caller Calle
 	return prior.maySignLists(caller, l.Iat, now, c.state.Teams[l.Team].RecoveryWaits)
 }
 
+// revokesRemovedPasskey refuses a list that removes a device a record added
+// with its member's passkey since the last list, a passkey join no list
+// included yet or a recovering device, while it still names that passkey
+// for the member (security review 2026-11-24, M4). Removing such a device is
+// Remove on the new-computer notice and Cancel on a recovery: the passkey is
+// how it came in, so a list that kept the passkey would let it join again at
+// once, with wraps of the epoch made to cut it off, and start another
+// recovery. The list clears the member's passkey or names another, which an
+// admin's list sets (SetPasskey) or an invite taken again lists.
+func revokesRemovedPasskey(prior *teamState, l TeamList, aud string) error {
+	kept := map[string]bool{}
+	recs := map[string]*ListRec{}
+	for _, lm := range l.Members {
+		recs[lm.ID] = lm.Rec
+		for _, token := range lm.Devices {
+			if d, err := parseTeamInclusion(token, aud, l.Team, lm.Account); err == nil {
+				kept[d.ID] = true
+			}
+		}
+	}
+	for id := range prior.passkeyAdmitted {
+		m := prior.byDevice[id]
+		if m == nil || m.Rec == nil || kept[id] {
+			continue
+		}
+		if rec := recs[m.ID]; rec != nil && rec.Pub == m.Rec.Pub {
+			return fmt.Errorf("removing device %s, which member %s's passkey added, keeps that passkey, which would add it again; the list clears or replaces it", id, m.ID)
+		}
+	}
+	return nil
+}
+
 // checkList is every check on a list against its team's state before it
 // (§2.2): the order, the signer (checkListSigner), the devices, the
 // accounts, the workers and, for a firm team, its seats (admission.go).
@@ -515,6 +547,11 @@ func (c *Coordinator) checkList(prior *teamState, l TeamList, caller Caller, dek
 			case holder == nil && d.Since != l.Seq:
 				return refuse("device %s's inclusion is for entry %d, and it must be for %d", d.ID, d.Since, l.Seq)
 			}
+		}
+	}
+	if prior != nil {
+		if err := revokesRemovedPasskey(prior, l, c.cfg.Audience); err != nil {
+			return refuse("%v", err)
 		}
 	}
 	listed := map[string]bool{}

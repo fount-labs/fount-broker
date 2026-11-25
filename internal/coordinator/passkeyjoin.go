@@ -118,7 +118,7 @@ type PasskeyChallenge struct {
 
 var (
 	// ErrNoPasskey is a member the list names no passkey for.
-	ErrNoPasskey = errors.New("no passkey is set up for you on this team; ask an admin to invite you again")
+	ErrNoPasskey = errors.New("no passkey is set up for you on this team, or it was turned off when a computer it added was removed; ask an admin to set one up under Members or to invite you again")
 	// ErrPasskeyChallenge is a join with no live challenge: never asked,
 	// used, or past its time.
 	ErrPasskeyChallenge = errors.New("the passkey challenge is used or expired; try again")
