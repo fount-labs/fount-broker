@@ -161,6 +161,7 @@ func run() error {
 	jobConfig := flag.String("job-config", "", "JSON file, or a JSON object, of the model settings for every job a thread operation starts; without it those operations are refused with NO_MODEL")
 	test := flag.Bool("test-api", false, "listen beyond loopback, behind the bearer token in $"+testTokenEnv+"; test data only")
 	runnerRepo := flag.String("runner-repo", os.Getenv("FOUNT_RUNNER_REPO"), "GitHub repository whose releases the runner enclave must run, or unattested")
+	runnerMinTag := flag.String("runner-min-tag", "", "the oldest release of --runner-repo a runner may run, vMAJOR.MINOR.PATCH; none when empty. A flag, not an environment variable, so it is in the measured config")
 	keyMode := flag.String("wrapping-key", keyVault, "where the wrapping key comes from: vault, Fount Cloud's vaults, held in memory only; or dev, a file in --dir, for test coordinators")
 	vaults := flag.String("vaults", os.Getenv("FOUNT_VAULTS"), "with --wrapping-key vault: the vaults' hostnames, comma-separated")
 	vaultRepo := flag.String("vault-repo", os.Getenv("FOUNT_VAULT_REPO"), "with --wrapping-key vault: GitHub repository whose releases the vaults must run")
@@ -216,6 +217,11 @@ func run() error {
 		side, err := linkSide(*runnerRepo)
 		if err != nil {
 			return err
+		}
+		if *runnerMinTag != "" {
+			if err := side.RequireMinTag(*runnerMinTag); err != nil {
+				return fmt.Errorf("--runner-min-tag: %w", err)
+			}
 		}
 		if *runnersDialIn {
 			hub = coordinator.NewRunnerHub(side)

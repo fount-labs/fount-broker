@@ -55,6 +55,7 @@ func runner(args []string) error {
 	sockets := fs.String("sockets", "/sockets", "volume shared with the supervisor")
 	listen := fs.String("listen", "127.0.0.1:7400", "the coordinator's job listener")
 	coordinatorRepo := fs.String("coordinator-repo", os.Getenv("FOUNT_COORDINATOR_REPO"), "GitHub repository whose releases the coordinator must run")
+	coordinatorMinTag := fs.String("coordinator-min-tag", "", "the oldest release of --coordinator-repo the coordinator may run, vMAJOR.MINOR.PATCH; none when empty. A flag, not an environment variable, so it is in the measured config")
 	coordinatorURL := fs.String("coordinator", os.Getenv("FOUNT_COORDINATOR"), "the coordinator's origin, https://<domain>, to dial for jobs instead of taking them on --listen's "+link.Path)
 	name := fs.String("name", os.Getenv("FOUNT_RUNNER_NAME"), "with --coordinator: this enclave's container name; runner-<stage>-tm-<24 hex> asks the coordinator to bind it to that team for the boot, anything else is a pool runner; nothing attests it")
 	spare := fs.Int("spare-links", relay.DefaultSpare, "with --coordinator: links kept parked at the coordinator, waiting for jobs")
@@ -72,6 +73,11 @@ func runner(args []string) error {
 	side, err := linkSide(*coordinatorRepo)
 	if err != nil {
 		return err
+	}
+	if *coordinatorMinTag != "" {
+		if err := side.RequireMinTag(*coordinatorMinTag); err != nil {
+			return fmt.Errorf("--coordinator-min-tag: %w", err)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
