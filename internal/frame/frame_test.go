@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"runtime"
 	"testing"
 )
 
@@ -65,5 +66,40 @@ func TestTruncatedFrameIsUnexpectedEOF(t *testing.T) {
 	buf.WriteString("{}")
 	if _, err := Read(&buf); !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("missing body: got %v, want io.ErrUnexpectedEOF", err)
+	}
+}
+
+// A peer that declares a large body and sends none of it costs a small
+// buffer, not the body it declared.
+func TestADeclaredLengthAllocatesOnlyWhatCame(t *testing.T) {
+	var buf bytes.Buffer
+	buf.Write(binary.BigEndian.AppendUint32(nil, 2))
+	buf.WriteString("{}")
+	buf.Write(binary.BigEndian.AppendUint32(nil, MaxBody))
+	buf.Write(make([]byte, 100<<10))
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	if _, err := Read(&buf); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("got %v, want io.ErrUnexpectedEOF", err)
+	}
+	runtime.ReadMemStats(&after)
+	if got := after.TotalAlloc - before.TotalAlloc; got > 1<<20 {
+		t.Fatalf("a %d-byte declared body with 100 KiB sent allocated %d bytes", MaxBody, got)
+	}
+}
+
+func TestReadMaxBoundsTheBody(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+	if err := w.Write(Frame{Header: []byte(`{}`), Body: make([]byte, 300<<10)}); err != nil {
+		t.Fatal(err)
+	}
+	raw := buf.Bytes()
+	if _, err := ReadMax(bytes.NewReader(raw), 256<<10); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("got %v, want ErrTooLarge", err)
+	}
+	f, err := ReadMax(bytes.NewReader(raw), 512<<10)
+	if err != nil || len(f.Body) != 300<<10 {
+		t.Fatalf("got %d bytes, %v", len(f.Body), err)
 	}
 }

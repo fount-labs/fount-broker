@@ -68,6 +68,9 @@ type RunnerHub struct {
 	// runner-<TeamStage>-tm-<24 hex> serve that team alone, and teams' jobs
 	// go only to them. Empty puts every job on every runner, as before.
 	TeamStage string
+	// Handshakes bounds the links being set up, whose peers haven't proved
+	// their release yet (link.Gate).
+	Handshakes link.Gate
 
 	mu      sync.Mutex
 	parked  []*parkedLink
@@ -221,17 +224,26 @@ func (h *RunnerHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(name) > 253 {
 		name = name[:253]
 	}
-	conn, ok := link.Upgrade(w, r, link.DialInProtocol)
+	done, ok := h.Handshakes.Enter(link.Source(r))
 	if !ok {
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "too many runner links being set up; try again", http.StatusServiceUnavailable)
 		return
 	}
-	go h.admit(conn, name)
+	conn, ok := link.Upgrade(w, r, link.DialInProtocol)
+	if !ok {
+		done()
+		return
+	}
+	go h.admit(conn, name, done)
 }
 
-// admit runs the handshake on a runner's connection and parks it.
-func (h *RunnerHub) admit(raw net.Conn, name string) {
+// admit runs the handshake on a runner's connection and parks it. done
+// gives back its handshake's place.
+func (h *RunnerHub) admit(raw net.Conn, name string, done func()) {
 	start := time.Now()
 	conn, e, err := h.Side.ServerEndorsed(h.ctx, raw)
+	done()
 	if err != nil {
 		raw.Close()
 		log.Printf("runner link from %s (%q): %v", raw.RemoteAddr(), name, err)

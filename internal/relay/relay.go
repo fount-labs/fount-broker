@@ -45,6 +45,9 @@ type Relay struct {
 	// NewBroker makes the broker for one connection on a job's socket. It
 	// must set Locked, and give it no mail and no package tunnel.
 	NewBroker func(vault *broker.Vault) *broker.Broker
+	// Handshakes bounds the links Serve is setting up, whose peers haven't
+	// proved their release yet (link.Gate).
+	Handshakes link.Gate
 
 	mu sync.Mutex
 	// bound is the account a coordinator's bind frame gave this runner for
@@ -98,7 +101,14 @@ func (r *Relay) Serve(ctx context.Context, l net.Listener) error {
 		wg.Go(func() {
 			defer conn.Close()
 			if r.Link != nil {
+				// The shim is every peer's source here: only the total counts.
+				done, ok := r.Handshakes.Enter("")
+				if !ok {
+					log.Printf("link from %s: too many links being set up", conn.RemoteAddr())
+					return
+				}
 				tc, err := r.Link.Server(ctx, conn)
+				done()
 				if err != nil {
 					log.Printf("link from %s: %v", conn.RemoteAddr(), err)
 					return
