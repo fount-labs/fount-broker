@@ -452,3 +452,64 @@ func TestAMemberBackNoticeSaysTheOldComputersWereRemoved(t *testing.T) {
 		}
 	}
 }
+
+// Security review 2026-11-24, M4: Remove on a device the member's passkey
+// added revokes the passkey in the same list. A list that keeps it is
+// refused, since the passkey would add the device straight back; one that
+// clears it, or names a new one, goes through, and the old passkey joins no
+// more.
+func TestRemovingAPasskeyAddedDeviceRevokesThePasskey(t *testing.T) {
+	f := newTeamFixture(t)
+	pk := newTestPasskey(t)
+	f.tt.update("m_owner", func(m *ListMember) { m.Rec = pk.rec(t) })
+	if err := f.tt.push(f.owner, "acme", nil); err != nil {
+		t.Fatal(err)
+	}
+	intruder := newTestDevice(t)
+	ownerPasskeyJoin(t, f, pk, intruder)
+	if err := f.tt.push(f.owner, "acme", nil); !errors.Is(err, ErrListRefused) || !strings.Contains(err.Error(), "keeps that passkey") {
+		t.Fatalf("removing the device and keeping the passkey: %v", err)
+	}
+	fresh := newTestPasskey(t)
+	f.tt.update("m_owner", func(m *ListMember) { m.Rec = fresh.rec(t) })
+	if err := f.tt.push(f.owner, "acme", nil); err != nil {
+		t.Fatalf("removing the device and naming a new passkey: %v", err)
+	}
+	again := newTestDevice(t)
+	ch, err := f.c.StartPasskeyJoin(again.caller("acme"), "acme", again.pub(), again.enc.PublicKey().Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.c.PasskeyJoin(again.caller("acme"), "acme", pk.request(t, ch, mustB64(t, ch.Challenge), again, "acme", "acme", ceremony{})); !errors.Is(err, ErrListRefused) {
+		t.Fatalf("the replaced passkey joining again: %v", err)
+	}
+
+	// Cleared, no passkey joins until an admin lists one.
+	ownerPasskeyJoin(t, f, fresh, intruder)
+	f.tt.update("m_owner", func(m *ListMember) { m.Rec = nil })
+	if err := f.tt.push(f.owner, "acme", nil); err != nil {
+		t.Fatalf("removing the device and clearing the passkey: %v", err)
+	}
+	if _, err := f.c.StartPasskeyJoin(again.caller("acme"), "acme", again.pub(), again.enc.PublicKey().Bytes()); !errors.Is(err, ErrNoPasskey) {
+		t.Fatalf("a member whose passkey was cleared: %v", err)
+	}
+
+	// A list that keeps the device keeps the passkey too; one listed device
+	// removed later is an ordinary removal.
+	f.tt.update("m_owner", func(m *ListMember) { m.Rec = fresh.rec(t) })
+	if err := f.tt.push(f.owner, "acme", nil); err != nil {
+		t.Fatal(err)
+	}
+	laptop := newTestDevice(t)
+	ownerPasskeyJoin(t, f, fresh, laptop)
+	seq, _ := f.tt.head()
+	f.tt.devices["m_owner"] = append(f.tt.devices["m_owner"], laptop)
+	f.tt.since[laptop.id()] = seq
+	if err := f.tt.push(f.owner, "acme", nil); err != nil {
+		t.Fatalf("including the passkey-joined device: %v", err)
+	}
+	f.tt.devices["m_owner"] = []testDevice{f.owner}
+	if err := f.tt.push(f.owner, "acme", nil); err != nil {
+		t.Fatalf("removing a device a list included: %v", err)
+	}
+}

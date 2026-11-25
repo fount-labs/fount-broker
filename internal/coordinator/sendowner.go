@@ -26,10 +26,10 @@ var accountNoticeText = map[string][2]string{
 	// added a device.
 	noticeMemberJoined: {"A new device joined %s", "Someone joined %s in Fount, by an invite or as a member's new device. If you didn't expect it, an admin can remove them in Fount, under Members.%s"},
 	// A member's passkey added a computer of theirs (passkeyjoin.go).
-	noticeDeviceAdded: {"New computer added to %s", "A new computer was added to %s in Fount with a member's passkey. If it wasn't you, remove it in Fount: on another of your computers, or an admin can under Members.%s"},
+	noticeDeviceAdded: {"New computer added to %s", "A new computer was added to %s in Fount with a member's passkey. If it wasn't you, remove it in Fount: on another of your computers, or an admin can under Members. Removing it also turns that passkey off, so it can't add the computer again.%s"},
 	// A passkey-added admin computer started its wait to sign the team's
 	// changes (teamrecovery.go).
-	noticeRecoveryStarted: {"Someone is recovering access to %s", "Someone is recovering access to %s in Fount from a new computer, with an admin's passkey. In 7 days it can change the team, unless someone cancels it. If this wasn't you, cancel it in Fount, under Members, from a computer of yours the team already had.%s"},
+	noticeRecoveryStarted: {"Someone is recovering access to %s", "Someone is recovering access to %s in Fount from a new computer, with an admin's passkey. In 7 days it can change the team, unless someone cancels it. If this wasn't you, cancel it in Fount, under Members, from a computer of yours the team already had. Cancelling also turns that passkey off, so it can't start again.%s"},
 	// A member invited again took it on a new computer (teaminvite.go).
 	noticeMemberBack: {"New computer added to %s", "A member invited again joined %s in Fount on a new computer, with a new passkey. Their old computers were removed. If it wasn't you, an admin can remove it in Fount, under Members.%s"},
 }

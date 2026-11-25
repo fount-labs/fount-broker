@@ -116,6 +116,11 @@ type Coordinator struct {
 	billing teamBillingLoop
 	// logRate is the team logs' append rates (teamloglimits.go).
 	logRate teamLogRate
+	// recoveryTick is when Run last counted the recoveries' waits, by the
+	// monotonic clock, and recoveryUnsaved the time counted since the state
+	// was saved (teamrecovery.go). Under mu.
+	recoveryTick    time.Time
+	recoveryUnsaved time.Duration
 }
 
 // now is the team log's time: lists' age, records' at and recoveries' wait.
@@ -427,6 +432,7 @@ func (c *Coordinator) Run(ctx context.Context) {
 		case <-c.wake:
 		case <-tick.C:
 			c.ExpireUngranted()
+			c.tickRecoveryWaits(time.Now())
 		}
 	}
 }

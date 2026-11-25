@@ -31,7 +31,7 @@ import (
 //     for passkeyChallengeLifetime, and PasskeyJoinChallenge over the
 //     coordinator, team, member, the log's head, the nonce and the device's
 //     keys.
-//  2. The member's passkey signs the challenge (WebAuthn get, rp fount.sh).
+//  2. The member's passkey signs the challenge (WebAuthn get, rp PasskeyRPID).
 //  3. The device posts the assertion with its team inclusion for the next
 //     entry (POST /teams/{team}/passkey-join). The coordinator appends a
 //     passkey-join record whose proof is the nonce and the assertion, and
@@ -45,9 +45,17 @@ import (
 // and every computer is invited again.
 
 const (
-	// PasskeyRPID is the passkey's relying party, as Desktop's native
-	// passkey calls and the edge have it.
-	PasskeyRPID = "fount.sh"
+	// PasskeyRPID is the team passkey's relying party, as Desktop's native
+	// passkey calls have it (account/passkey_join.rs TEAM_PASSKEY_RP_ID,
+	// checked against testdata/team-passkey-join-vectors.json).
+	//
+	// Whoever runs script on an origin the RP ID covers can mint every proof
+	// a team passkey makes: passkey-join, passkey-vouch, recovery-start and
+	// invite (security review 2026-11-24, H1). So it is a host that serves
+	// nothing else: no app pages and no third-party script, only the files
+	// docs/passkey-rp-host.md lists. It was fount.sh, the marketing site,
+	// until 2026-11-24; a passkey made for fount.sh doesn't verify here.
+	PasskeyRPID = "id.fount.sh"
 	// PasskeyJoinContext starts what a passkey join's challenge is a hash of.
 	PasskeyJoinContext = "fount-team-passkey-join-v1\x00"
 
@@ -59,9 +67,10 @@ const (
 	maxPasskeyChallenges       = 1000
 )
 
-// PasskeyOrigins are the client data origins a passkey join accepts: the
-// rp's, which is what macOS AuthenticationServices and Desktop's Windows
-// webauthn.dll client data both carry.
+// PasskeyOrigins are the client data origins a team passkey's assertion may
+// carry: the rp's alone, which is what macOS AuthenticationServices and
+// Desktop's Windows webauthn.dll client data both carry. No other origin, and
+// no related origin (/.well-known/webauthn), is accepted.
 var PasskeyOrigins = []string{"https://" + PasskeyRPID}
 
 // PasskeyJoinChallenge is what the member's passkey signs for a new device:
@@ -109,7 +118,7 @@ type PasskeyChallenge struct {
 
 var (
 	// ErrNoPasskey is a member the list names no passkey for.
-	ErrNoPasskey = errors.New("no passkey is set up for you on this team; ask an admin to invite you again")
+	ErrNoPasskey = errors.New("no passkey is set up for you on this team, or it was turned off when a computer it added was removed; ask an admin to set one up under Members or to invite you again")
 	// ErrPasskeyChallenge is a join with no live challenge: never asked,
 	// used, or past its time.
 	ErrPasskeyChallenge = errors.New("the passkey challenge is used or expired; try again")

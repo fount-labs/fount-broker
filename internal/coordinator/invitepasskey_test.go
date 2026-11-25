@@ -230,12 +230,13 @@ func TestAnExistingMemberInvitedAgainGetsBackInWithANewPasskey(t *testing.T) {
 	if err := r.accept(t, r.ann, lost.invitePasskey(t, "acme", "m_ann", "i_ann", r.ann, ceremony{})); err != nil {
 		t.Fatal(err)
 	}
-	// The admin removes her lost computer and invites her again.
+	// The admin removes her lost computer, and the lost passkey that added
+	// it (M4), and invites her again.
 	secret := make([]byte, InviteSecretSize)
 	copy(secret, "a new secret for ann, 32 bytes!!")
 	commit, _ := InviteCommit("acme", "m_ann", "i_again", secret)
 	f.tt.update("m_ann", func(m *ListMember) {
-		m.Account, m.Rec = "ann", lost.rec(t)
+		m.Account, m.Rec = "ann", nil
 		m.Invite = &ListInvite{ID: "i_again", Commit: commit, Exp: time.Now().Add(time.Hour).Unix()}
 	})
 	if err := f.tt.push(f.owner, "acme", nil); err != nil {

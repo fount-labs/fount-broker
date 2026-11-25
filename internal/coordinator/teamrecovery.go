@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 )
@@ -18,10 +19,22 @@ import (
 // only such devices are lost, the new one starts a recovery: a
 // recovery-start record, its proof the device's own signature over
 // RecoveryChallenge for the log's head. Every admin is emailed at once.
-// RecoveryDelay after the record, by the coordinator's clock and by the
-// list's iat against the record's at (which Desktop checks too), the device
-// signs lists like a listed one, so it can sign the list that drops the lost
-// computers and includes it.
+// RecoveryDelay after the record the device signs lists like a listed one,
+// so it can sign the list that drops the lost computers and includes it.
+//
+// The delay is counted three ways, and all three must have passed: the
+// list's iat against the record's at (which Desktop checks too), the
+// coordinator's clock against at, and the coordinator's own count of the
+// time since it took the record (RecoveryWait). Only the count holds up
+// against the host: at and the clock are the guest's wall time, which the
+// host sets, so a clock set back for the one request that writes the record
+// would date it a week ago on a quiet team, and one set forward would end the
+// wait at once (security review 2026-11-24, M3). The count adds up the
+// process's monotonic clock between ticks of Run, at most maxRecoveryTick a
+// tick, and is kept in the state: time the coordinator is down, or a state
+// restored from before, only makes the wait longer. Desktop counts it again
+// from when its listed devices first saw the log without the record
+// (team_log.rs).
 //
 // A list ends every open recovery, as it ends what records admitted since
 // the last one: it includes the device, which then signs as any listed one,
@@ -44,7 +57,22 @@ const (
 	// times of the entries before it: a list's iat may be a device's clock,
 	// up to grantSkew ahead of the coordinator's.
 	recoverySkew = grantSkew
+
+	// recoveryTickEvery is how often Run counts the open recoveries' waits,
+	// maxRecoveryTick the most one tick adds, so a stalled process or a
+	// clock that leaps doesn't end a wait, and recoverySaveEvery how much
+	// counted time goes unsaved before the state is.
+	recoveryTickEvery = 30 * time.Second
+	maxRecoveryTick   = 2 * time.Minute
+	recoverySaveEvery = 10 * time.Minute
 )
+
+// RecoveryWait is an open recovery's wait as the coordinator counted it: the
+// recovery-start's entry and the time counted since it took it.
+type RecoveryWait struct {
+	Seq    uint64        `json:"seq"`
+	Waited time.Duration `json:"waited"`
+}
 
 // RecoveryChallenge is what a recovering device signs, Ed25519: the context,
 // then the coordinator, team, member, the log's head (the record's prev) and
@@ -113,11 +141,80 @@ func checkRecoveryStart(st *teamState, aud, team string, r TeamRecord, m *Member
 }
 
 // recovered says whether device d of member m waited out a recovery for a
-// list signed at iat, now.
-func (s *teamState) recovered(m *Member, d string, iat int64, now time.Time) bool {
+// list signed at iat, now, with w the wait the coordinator counted for it.
+func (s *teamState) recovered(m *Member, d string, iat int64, now time.Time, w *RecoveryWait) bool {
 	r, ok := s.recoveries[m.ID]
 	delay := int64(RecoveryDelay / time.Second)
-	return ok && r.Device == d && iat-r.At >= delay && now.Unix()-r.At >= delay
+	return ok && r.Device == d && iat-r.At >= delay && now.Unix()-r.At >= delay &&
+		w != nil && w.Seq == r.Seq && w.Waited >= RecoveryDelay
+}
+
+// tickRecoveryWaits counts the time since the last tick, by the process's
+// monotonic clock (mono, time.Now in Run), into every open recovery's wait.
+func (c *Coordinator) tickRecoveryWaits(mono time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.recoveryTick.IsZero() {
+		c.recoveryTick = mono
+		return
+	}
+	elapsed := mono.Sub(c.recoveryTick)
+	if elapsed < recoveryTickEvery {
+		return
+	}
+	c.recoveryTick = mono
+	c.countRecoveryWaits(elapsed)
+}
+
+// countRecoveryWaits adds elapsed, at most maxRecoveryTick, to the wait of
+// every recovery open on a team, starts a wait for a recovery that has none,
+// and forgets the waits of recoveries a list ended. The state is saved once
+// recoverySaveEvery is counted unsaved; a retired coordinator counts nothing.
+// Called with c.mu held.
+func (c *Coordinator) countRecoveryWaits(elapsed time.Duration) {
+	if c.Retired() {
+		return
+	}
+	elapsed = min(max(elapsed, 0), maxRecoveryTick)
+	counted := false
+	for id, t := range c.state.Teams {
+		if len(t.RecoveryWaits) == 0 && t.state != nil && len(t.state.recoveries) == 0 {
+			continue
+		}
+		st, err := c.teamState(id)
+		if err != nil {
+			continue
+		}
+		for member, w := range t.RecoveryWaits {
+			if r, ok := st.recoveries[member]; !ok || r.Seq != w.Seq {
+				delete(t.RecoveryWaits, member)
+			}
+		}
+		for member, r := range st.recoveries {
+			w := t.RecoveryWaits[member]
+			if w == nil {
+				if t.RecoveryWaits == nil {
+					t.RecoveryWaits = map[string]*RecoveryWait{}
+				}
+				w = &RecoveryWait{Seq: r.Seq}
+				t.RecoveryWaits[member] = w
+			}
+			w.Waited += elapsed
+			counted = true
+		}
+	}
+	if !counted {
+		return
+	}
+	c.recoveryUnsaved += elapsed
+	if c.recoveryUnsaved < recoverySaveEvery {
+		return
+	}
+	if err := c.state.Save(c.cfg.StateDir); err != nil {
+		log.Printf("coordinator: saving the recoveries' waits: %v", err)
+		return
+	}
+	c.recoveryUnsaved = 0
 }
 
 // RecoveryRequest is POST /v1/teams/{team}/recovery-start: the head the device

@@ -176,7 +176,7 @@ their proof checks**, and call `appendRecord` (§9) once a proof checks out.
 | Kind | Proof | Checked by the coordinator | Admits | Built in |
 |---|---|---|---|---|
 | `invite` | `{invite, secret, email, rec: {cred, pub}, authenticatorData, clientDataJSON, signature}`: the invite's secret, revealed once used, and the member's passkey with a WebAuthn assertion by it over `SHA-256(lp("fount-team-invite-passkey-v1\0", aud, team, member, invite, key, enc))`, `key`, `enc` the admitted device's | an open invite on the member, `commit == base64url(SHA-256(lp("fount-team-invite-v1\0", team, member, invite, secret)))`, before `exp`, not used before (a record for it exists = used), the channel credential's **verified email** is the member's, the channel's account isn't another member's and, for a member invited again, is theirs. The passkey: `rec` of a list's shape, ES256 by `rec.pub`, the assertion checked as a `passkey-join`'s (rp, flags, origin, flat client data, sign count). Binds `account`; `rec` becomes the member's passkey. A record with no passkey is refused, appended or replayed. For a member invited again, the record removes every device the member had: the admitted one is their only one (role and workers stay). | a device | T, invites; J, the passkey |
-| `passkey-join` | `{nonce, cred, authenticatorData, clientDataJSON, signature}`, base64url: a WebAuthn assertion by the member's `rec` passkey over `SHA-256(lp("fount-team-passkey-join-v1\0", aud, team, member, prev, nonce, key, enc))`, where `prev` is the record's own and `key`, `enc` the admitted device's | `cred` is the member's `rec`; ES256 by `rec.pub`; authenticator data for rp `fount.sh` with user present and verified; client data a `webauthn.get` over that challenge, origin `https://fount.sh`, not `crossOrigin`, one flat object of strings, booleans and nulls, valid UTF-8 without escapes; the sign count 0 throughout, or above the last nonzero count a `passkey-join` record carried for that passkey; the channel's account is the member's. The nonce is the coordinator's, single-use, for 5 minutes. | a device, at once | P2, a member's new device (`passkeyjoin.go`) |
+| `passkey-join` | `{nonce, cred, authenticatorData, clientDataJSON, signature}`, base64url: a WebAuthn assertion by the member's `rec` passkey over `SHA-256(lp("fount-team-passkey-join-v1\0", aud, team, member, prev, nonce, key, enc))`, where `prev` is the record's own and `key`, `enc` the admitted device's | `cred` is the member's `rec`; ES256 by `rec.pub`; authenticator data for rp `id.fount.sh` ([passkey-rp-host.md](passkey-rp-host.md)) with user present and verified; client data a `webauthn.get` over that challenge, origin `https://id.fount.sh`, not `crossOrigin`, one flat object of strings, booleans and nulls, valid UTF-8 without escapes; the sign count 0 throughout, or above the last nonzero count a `passkey-join` record carried for that passkey; the channel's account is the member's. The nonce is the coordinator's, single-use, for 5 minutes. | a device, at once | P2, a member's new device (`passkeyjoin.go`) |
 | `passkey-vouch` | `{cred, authenticatorData, clientDataJSON, signature}`, base64url: a WebAuthn assertion by the member's `rec` passkey over `SHA-256(lp("fount-team-vouch-v1\0", aud, team, member, start))`, where `start` is the hash of the team's first entry | the team is the member's own (`team == account`); the caller is a device of the member the team admits; `cred` is the member's `rec`; the assertion checks as a `passkey-join`'s, sign count included; no earlier vouch by the same passkey; no device | nothing: says the account's own team is the member's (M3) | S2 (`passkeyvouch.go`) |
 | `recovery-start` | `{device, sig}`: the recovering device's id and its Ed25519 signature over `lp("fount-team-recovery-start-v1\0", aud, team, member, prev, device)`, `prev` the record's own | the caller is the device, under the member, of the member's account; the member is an admin; the device was admitted by a record with the member's passkey since the last list; some admin has a device a list included; the member has no open recovery; the record's `at` isn't more than 5 minutes before the latest `iat` or `at` in the log before it | nothing: starts the device's 7-day wait to sign lists (§2.3.1) | `teamrecovery.go` |
 
@@ -201,7 +201,16 @@ Each admission notifies the team's admins (decision 26 step 5): the owner is ema
 (`member_joined`, `device_added` for a passkey join, or `member_back` for a member invited again,
 which says their old computers were removed; the last two also go to the member's own address), and Desktop shows recent admissions with Remove in the members dialog and, on the
 member's other devices, as "New computer added". The window to cancel is any admin's next list,
-which removes the device by omitting it. The log is the used-token store for
+which removes the device by omitting it.
+
+That list also revokes the passkey that added the device (security review 2026-11-24, M4). The
+coordinator refuses a list that leaves out a device a record added with its member's passkey since
+the last list while it still names that passkey for the member (`revokesRemovedPasskey`,
+`teamlog.go`). Desktop's Remove and Cancel clear the member's `rec` in the list. Otherwise the
+passkey, the way the device came in, would add it straight back, with wraps of the DEK epoch made
+to cut it off, and start another recovery. Until an admin's list names a passkey again
+(Desktop's "Set up your passkey") or the member takes an invite again, no passkey join is
+possible for the member. The log is the used-token store for
 invite secrets, so a restore can't make a secret usable again (§4.2).
 
 #### 2.3.1 Delayed recovery (2026-11-23)
@@ -211,26 +220,38 @@ A device an admin's passkey added signs no list while any admin has a device a l
 owner's stolen laptop say, would sign nothing again. They recover as Apple's and Google's accounts
 do, with a wait. The passkey-added device posts `POST /v1/teams/{team}/recovery-start
 {"prev", "sig"}`, signing over the head it read; the coordinator appends a `recovery-start` record
-and emails the owner and every admin (`recovery_started`). `RecoveryDelay` (7 days) later, by the
-coordinator's clock and by the list's `iat` against the record's `at`, the device signs lists like
-a listed one, so it signs the list that drops the lost computers and includes itself.
+and emails the owner and every admin (`recovery_started`). `RecoveryDelay` (7 days) later, counted as
+below, the device signs lists like a listed one, so it signs the list that drops the lost computers and includes itself.
 
 A list ends every open recovery, as it ends what records admitted since the last one: it includes
 the device, which then signs as a listed one, or leaves it out, which removes it. During the wait
 only a listed admin device can sign a list, so any list shows an admin who could include the device
-is there. Cancel is removing the device (Desktop's Cancel signs that list); there is no cancel
+is there. Cancel is removing the device, and with it the member's passkey (§2.3; Desktop's
+Cancel signs that list); there is no cancel
 record. A member invited again loses their devices and their recovery with them. One recovery is
 open per member, the signature is good for one append (its `prev`), and a recovery a list ended
 can't be used again: the next waits its 7 days from its own start. A passkey-added device whose
 member has no listed admin beside it signs at once, so a recovery then is refused.
 
-The wait rests on time in the log. Desktop checks `iat - at >= 7 days` between the record and the
-list the device signs, and that the record's `at` isn't more than 5 minutes before the latest time
-an entry before it carries. So a coordinator can't backdate a recovery past the entry before it,
-and a list signed early shows. What stays trusted is the coordinator's clock: it writes `at`, and
-it takes a list only within an hour of its `iat`. A coordinator lying about time could shorten the
-wait to the time since the log's last entry; the attested enclave runs the code that doesn't, and
-the admins are emailed at the start either way.
+The wait doesn't rest on the guest's wall clock, which the host sets: set back for the one request
+that writes the record, it would date the record a week ago on a quiet team; set forward, it would
+end the wait at once (security review 2026-11-24, M3). Three counts must each reach 7 days:
+
+- The coordinator's own count (`RecoveryWait`, kept in the team's state): the process's monotonic
+  clock between ticks of its scheduler, at most 2 minutes a tick. Time the coordinator is down,
+  and a state restored from before, only make the wait longer.
+- The list's `iat` against the record's `at`, and the coordinator's clock against `at`. The
+  record's `at` may not be more than 5 minutes before the latest time an entry before it carries.
+- Each Desktop's own count (`team_log.rs`). A device records when it read each point of the log.
+  A recovery-start it reads past a point it read at local time `T` was appended after `T`, so the
+  list its device signs must reach that Desktop no sooner than `T` + 7 days, by the local clock.
+  A record whose `at` falls more than an hour before `T` is a backdated one. Either is a
+  broken log. A device that reads the record and the list together, with no point before, has
+  only the `iat - at` check.
+
+The admins are emailed at the start either way. A coordinator enclave that is itself compromised
+(threat 17) can still withhold the record from devices until the list, which the local count
+then can't bound.
 
 ### 2.4 The state, as code reads it
 
@@ -520,12 +541,12 @@ The review in `launch-plan.md` T and `teams.md` §11 should take each of these.
 | 10 | A demoted admin's admin-only write (a file, a raw job) in flight when the list lands | Its route check passed before the list; the tree path rechecks the device, not the role, so the write can finish. Narrow: they were admin a moment before. A removed member's can't. |
 | 11 | A removed member keeps the DEK they opened | It opens only what the worker stored before the removal: the removal starts a new DEK epoch, and after it the manifest opens only under the current epoch (or, until the reseal is recorded, the one before), so a forged old-epoch manifest is refused too. Address keys rotate when an admin is lost (§5). |
 | 12 | An invite link forwarded or intercepted | Single use, expiring, and only for an account whose verified email is the invite's. Whoever controls that mailbox can accept it, as with every email invite; admins are notified and can remove the device. |
-| 12a | A member's passkey phished or synced to an attacker's device | The attacker also needs a sign-in to the member's account. The assertion's rp, origin and user verification are checked; the device is admitted at once, the owner and member are emailed and the member's other devices show it with Remove; an admin's list removes it, and removing `rec` stops another. A copied authenticator that counts shows as a sign count that doesn't rise. A device a record admits signs no list until a list includes it (H3, `teamsigner.go`), except that a device an admin's passkey added (a passkey join, or the invite record of an admin invited again) signs at once when no admin, that one included, has a device a list included: else an admin whose every device was removed could never sign again. While the owner keeps a listed device, a phished passkey's device reaches the workers but can't drop the owner's devices; the listed device includes it, or Remove drops it. An admin who lost every computer while the log still lists one starts a recovery: their passkey's device signs 7 days later unless a list ends it first, and every admin is emailed at the start (§2.3.1). A phished passkey is then a takeover only if no admin removes the device for 7 days. |
+| 12a | A member's passkey phished or synced to an attacker's device | The attacker also needs a sign-in to the member's account. The assertion's rp, origin and user verification are checked; the device is admitted at once, the owner and member are emailed and the member's other devices show it with Remove; an admin's list removes it and, in the same list, the member's `rec`, so the passkey can't add another (M4). A copied authenticator that counts shows as a sign count that doesn't rise. A device a record admits signs no list until a list includes it (H3, `teamsigner.go`), except that a device an admin's passkey added (a passkey join, or the invite record of an admin invited again) signs at once when no admin, that one included, has a device a list included: else an admin whose every device was removed could never sign again. While the owner keeps a listed device, a phished passkey's device reaches the workers but can't drop the owner's devices; the listed device includes it, or Remove drops it. An admin who lost every computer while the log still lists one starts a recovery: their passkey's device signs 7 days later unless a list ends it first, and every admin is emailed at the start (§2.3.1). A phished passkey is then a takeover only if no admin removes the device for 7 days. |
 | 13 | Parser differential between Desktop (serde) and the coordinator (Go) on a signed list | Strict decoding with unknown fields and duplicate keys refused on both sides; the stored bytes are what is hashed; shared test vectors (`testdata/team-vectors.json`, `team-passkey-join-vectors.json` (with the invite's passkey), `team-passkey-vouch-vectors.json`). A passkey's client data is one flat object read by exact key with no escapes, so both read the same fields; the vectors carry a high-S signature, nested, numeric, repeated and case-varied keys. |
 | 14 | A list that leaves no admin | Refused. |
 | 15 | One device under two members, one account as two members, or a worker in two teams | Refused. |
 | 16 | Someone claims a team id first | The first list of a team must be for the signer's own account id, or a firm id the coordinator minted at random for that account. An organisation's id, or another account's mint, is refused. |
-| 17 | A compromised coordinator enclave | Out of scope: it holds the DEKs. The chain still lets a client see a list no admin signed and a rollback; it doesn't stop a forged invite record, since the coordinator sees invite secrets. It could shorten a recovery's wait to the time since the log's entry before it, by its clock (§2.3.1). |
+| 17 | A compromised coordinator enclave | Out of scope: it holds the DEKs. The chain still lets a client see a list no admin signed and a rollback; it doesn't stop a forged invite record, since the coordinator sees invite secrets. It could shorten a recovery's wait on its own count, and on Desktops that never read the log between the record and the list (§2.3.1). |
 | 18 | A list or log used to exhaust memory | `MaxMembers`, `MaxMemberDevices`, `MaxTeamWorkers`, a body cap on the route, one open invite per member. |
 
 ---

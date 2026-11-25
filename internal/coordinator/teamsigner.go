@@ -39,8 +39,9 @@ import (
 // maySignLists refuses caller as a list's signer in s: it must be a device
 // of an admin of the caller's account, and one a list included or, when no
 // admin has such a device, one their passkey added, or one whose recovery
-// waited RecoveryDelay by the list's iat and now.
-func (s *teamState) maySignLists(caller Caller, iat int64, now time.Time) error {
+// waited RecoveryDelay by the list's iat, now and this coordinator's own count
+// (waits, the team's RecoveryWaits).
+func (s *teamState) maySignLists(caller Caller, iat int64, now time.Time, waits map[string]*RecoveryWait) error {
 	d, m := s.device(caller.Device)
 	switch {
 	case m == nil || m.Role != RoleAdmin || m.Account != caller.Account:
@@ -49,7 +50,7 @@ func (s *teamState) maySignLists(caller Caller, iat int64, now time.Time) error 
 		return nil
 	case s.passkeyAdmitted[d.ID] && !s.listedAdmin():
 		return nil
-	case s.passkeyAdmitted[d.ID] && s.recovered(m, d.ID, iat, now):
+	case s.passkeyAdmitted[d.ID] && s.recovered(m, d.ID, iat, now, waits[m.ID]):
 		return nil
 	}
 	return fmt.Errorf("%w: a device a record admitted signs no list until a list includes it", ErrNotAdmin)
