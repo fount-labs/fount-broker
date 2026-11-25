@@ -12,6 +12,11 @@
 // peer proved it holds. The exporter ties the document to this session, so it
 // can't be replayed or relayed into another.
 //
+// Until the peer's document checks, the peer is anyone with a key: the
+// accepting end reads its document first, at most MaxAttestation of it within
+// PeerTimeout, and asks its own enclave for a document only once that one
+// checked. gate.go bounds how many such peers an end holds at once.
+//
 // Once both have, each end pings the other while the link is up (keepalive.go).
 //
 // Which end dials is separate from which end sends jobs. A runner may open the
@@ -43,6 +48,15 @@ const KeyID = "fount-link"
 // HandshakeTimeout bounds TLS and both documents. The attestation socket can
 // take a while to answer after boot.
 const HandshakeTimeout = time.Minute
+
+// PeerTimeout bounds, on the accepting end, TLS and the peer's document: what
+// an unproven peer can hold a handshake for. The peer asks its own socket
+// before it sends, which retries for about 20 s after boot.
+const PeerTimeout = 30 * time.Second
+
+// MaxAttestation bounds the peer's document. Tinfoil's, its collateral
+// included, is far smaller; frame.MaxBody is for jobs, from a proven peer.
+const MaxAttestation = 4 << 20
 
 // An Attester produces this enclave's attestation document for a nonce.
 type Attester interface {
@@ -152,6 +166,9 @@ func (s *Side) handshake(ctx context.Context, conn net.Conn, client bool) (net.C
 	}
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
+	if !client {
+		conn.SetDeadline(time.Now().Add(PeerTimeout))
+	}
 	if err := tc.HandshakeContext(ctx); err != nil {
 		return nil, Endorsement{}, fmt.Errorf("link TLS: %w", err)
 	}
@@ -168,42 +185,68 @@ func (s *Side) handshake(ctx context.Context, conn net.Conn, client bool) (net.C
 	if err != nil {
 		return nil, Endorsement{}, err
 	}
-	doc, err := s.Attester.Attest(ctx, myNonce)
-	if err != nil {
-		return nil, Endorsement{}, fmt.Errorf("attesting this end: %w", err)
-	}
-	// Both ends write before they read, so the write can't wait on the read.
-	sent := make(chan error, 1)
-	go func() { sent <- frame.NewWriter(tc).Write(frame.Frame{Header: attestationHeader, Body: doc}) }()
-	f, err := frame.Read(tc)
-	if err != nil {
-		return nil, Endorsement{}, fmt.Errorf("the peer's attestation: %w", err)
-	}
-	if err := <-sent; err != nil {
-		return nil, Endorsement{}, fmt.Errorf("sending the attestation: %w", err)
-	}
-	var h struct {
-		Kind string `json:"kind"`
-	}
-	if json.Unmarshal(f.Header, &h) != nil || h.Kind != "attestation" {
-		return nil, Endorsement{}, fmt.Errorf("%w: it sent %q first", ErrPeer, f.Header)
-	}
 	var endorsed Endorsement
-	if s.Endorse != nil {
-		endorsed, err = s.Endorse(f.Body, peerNonce)
+	if client {
+		// Both write before they read, so the write can't wait on the read.
+		doc, err := s.Attester.Attest(ctx, myNonce)
+		if err != nil {
+			return nil, Endorsement{}, fmt.Errorf("attesting this end: %w", err)
+		}
+		sent := make(chan error, 1)
+		go func() { sent <- frame.NewWriter(tc).Write(frame.Frame{Header: attestationHeader, Body: doc}) }()
+		if endorsed, err = s.readPeer(tc, peer, peerNonce); err != nil {
+			return nil, Endorsement{}, err
+		}
+		if err := <-sent; err != nil {
+			return nil, Endorsement{}, fmt.Errorf("sending the attestation: %w", err)
+		}
 	} else {
-		endorsed.Key, err = s.Check(f.Body, peerNonce)
-	}
-	if err != nil {
-		return nil, Endorsement{}, fmt.Errorf("%w: %v", ErrPeer, err)
-	}
-	if !endorsed.Key.Equal(peer) {
-		return nil, Endorsement{}, fmt.Errorf("%w: its attestation endorses another key than its TLS one", ErrPeer)
+		// The client sent first: this end attests only for a peer that
+		// proved itself.
+		if endorsed, err = s.readPeer(tc, peer, peerNonce); err != nil {
+			return nil, Endorsement{}, err
+		}
+		conn.SetDeadline(time.Time{})
+		doc, err := s.Attester.Attest(ctx, myNonce)
+		if err != nil {
+			return nil, Endorsement{}, fmt.Errorf("attesting this end: %w", err)
+		}
+		if err := frame.NewWriter(tc).Write(frame.Frame{Header: attestationHeader, Body: doc}); err != nil {
+			return nil, Endorsement{}, fmt.Errorf("sending the attestation: %w", err)
+		}
 	}
 	if ctx.Err() != nil {
 		return nil, Endorsement{}, ctx.Err()
 	}
 	return keepalive(tc, PingInterval, IdleTimeout), endorsed, nil
+}
+
+// readPeer reads and checks the peer's document for nonce, which must endorse
+// peer, the key its TLS proved.
+func (s *Side) readPeer(tc *tls.Conn, peer ed25519.PublicKey, nonce []byte) (Endorsement, error) {
+	f, err := frame.ReadMax(tc, MaxAttestation)
+	if err != nil {
+		return Endorsement{}, fmt.Errorf("the peer's attestation: %w", err)
+	}
+	var h struct {
+		Kind string `json:"kind"`
+	}
+	if json.Unmarshal(f.Header, &h) != nil || h.Kind != "attestation" {
+		return Endorsement{}, fmt.Errorf("%w: it sent %.64q first", ErrPeer, f.Header)
+	}
+	var endorsed Endorsement
+	if s.Endorse != nil {
+		endorsed, err = s.Endorse(f.Body, nonce)
+	} else {
+		endorsed.Key, err = s.Check(f.Body, nonce)
+	}
+	if err != nil {
+		return Endorsement{}, fmt.Errorf("%w: %v", ErrPeer, err)
+	}
+	if !endorsed.Key.Equal(peer) {
+		return Endorsement{}, fmt.Errorf("%w: its attestation endorses another key than its TLS one", ErrPeer)
+	}
+	return endorsed, nil
 }
 
 var attestationHeader = []byte(`{"kind":"attestation"}`)

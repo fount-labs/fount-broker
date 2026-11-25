@@ -37,11 +37,17 @@ type Frame struct {
 // Read reads one frame. It returns io.EOF only when the stream ends cleanly
 // between frames.
 func Read(r io.Reader) (Frame, error) {
+	return ReadMax(r, MaxBody)
+}
+
+// ReadMax is Read with a smaller bound on the body, for a peer not yet
+// trusted with MaxBody.
+func ReadMax(r io.Reader, maxBody uint32) (Frame, error) {
 	header, err := readPart(r, MaxHeader)
 	if err != nil {
 		return Frame{}, err
 	}
-	body, err := readPart(r, MaxBody)
+	body, err := readPart(r, min(maxBody, MaxBody))
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			err = io.ErrUnexpectedEOF
@@ -60,15 +66,29 @@ func readPart(r io.Reader, limit uint32) ([]byte, error) {
 	if n > limit {
 		return nil, fmt.Errorf("%w: %d > %d bytes", ErrTooLarge, n, limit)
 	}
-	buf := make([]byte, n)
-	if _, err := io.ReadFull(r, buf); err != nil {
-		if errors.Is(err, io.EOF) {
-			err = io.ErrUnexpectedEOF
+	// The buffer grows with the bytes that came, not with the length the
+	// peer declared, so a length alone costs nothing.
+	buf := make([]byte, 0, min(n, firstChunk))
+	for {
+		k, err := io.ReadFull(r, buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+k]
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				err = io.ErrUnexpectedEOF
+			}
+			return nil, err
 		}
-		return nil, err
+		if len(buf) == int(n) {
+			return buf, nil
+		}
+		next := make([]byte, len(buf), min(int(n), 2*cap(buf)))
+		copy(next, buf)
+		buf = next
 	}
-	return buf, nil
 }
+
+// firstChunk is the most a part's buffer holds before any of it came.
+const firstChunk = 64 << 10
 
 // Writer writes whole frames, safe for concurrent use.
 type Writer struct {
