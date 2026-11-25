@@ -475,3 +475,69 @@ func TestARetriedTakeAwayIsCountedBeforeItIsAcknowledged(t *testing.T) {
 		t.Fatal("the counted take-away is still owed")
 	}
 }
+
+// rootBlocker is a bucket whose root fetches fail while block is set, as a
+// host that drops them would make them.
+type rootBlocker struct {
+	BackupBucket
+	block atomic.Bool
+}
+
+func (b *rootBlocker) Get(ctx context.Context, key string) ([]byte, error) {
+	if b.block.Load() && strings.HasPrefix(key, backupRootPrefix) {
+		return nil, errors.New("connection reset")
+	}
+	return b.BackupBucket.Get(ctx, key)
+}
+
+// A replayed volume whose newest backup can't be fetched doesn't boot as
+// current: the boot fails with ErrBackupUnreachable, to be tried again, and
+// once the root comes it runs as a restore. A newer root that was fetched
+// and doesn't open is passed over (2026-11-25 re-check, R3-3).
+func TestAReplayedVolumeDoesntBootWhileItsBackupsCantBeFetched(t *testing.T) {
+	r := newCountedRig(t)
+	w, _ := r.worker()
+	snap := r.snapshot()
+	if err := r.c.PutFile(w.ID, "files/after.md", []byte("a plain change")); err != nil {
+		t.Fatal(err)
+	}
+	if newest, err := r.c.Backup(t.Context()); err != nil || newest == "" {
+		t.Fatalf("backup: %q %v", newest, err)
+	}
+	// Junk under a higher root name, as a bucket writer could plant.
+	junk := rootKey(1<<40, 1, time.Now())
+	if err := r.v.bucket.Put(t.Context(), junk, []byte(`{"v":1}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	r.cancel()
+	r.c.running.Wait()
+	r.cancel = nil
+	for _, sub := range []string{"state", "objects"} {
+		if err := os.RemoveAll(filepath.Join(r.dir, sub)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.CopyFS(filepath.Join(r.dir, sub), os.DirFS(filepath.Join(snap, sub))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blocker := &rootBlocker{BackupBucket: r.v.bucket}
+	blocker.block.Store(true)
+	r.backup = r.v.backups(r.v.next())
+	r.backup.Bucket = blocker
+	if err := r.startErr(); !errors.Is(err, ErrBackupUnreachable) {
+		t.Fatalf("a replayed volume whose roots didn't come booted: %v", err)
+	}
+	blocker.block.Store(false)
+	r.backup = r.v.backups(r.v.next())
+	r.backup.Bucket = blocker
+	if err := r.startErr(); err != nil {
+		t.Fatal(err)
+	}
+	r.c.mu.Lock()
+	mark := r.c.state.Restored
+	r.c.mu.Unlock()
+	if mark == nil || mark.Root == junk {
+		t.Fatalf("the replayed volume is marked %+v", mark)
+	}
+}

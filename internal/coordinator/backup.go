@@ -96,6 +96,14 @@ var (
 	ErrNotDurable = errors.New("the change couldn't be made durable")
 	// ErrVolumeRolledBack is a volume older than the vault's counter.
 	ErrVolumeRolledBack = errors.New("the volume is older than the vault's security counter; restore from a backup")
+	// ErrBackupUnreadable is a root that was fetched and doesn't
+	// authenticate or decode under the backup key: junk a bucket writer
+	// put there, or a root of another key.
+	ErrBackupUnreadable = errors.New("the backup doesn't open under this coordinator's key")
+	// ErrBackupUnreachable is a boot that couldn't reach the vault's
+	// counter or the bucket to check the volume. New fails with it before
+	// changing anything, and the caller tries again.
+	ErrBackupUnreachable = errors.New("the vault or the backup bucket couldn't be reached to check the volume")
 )
 
 // durability is the coordinator's backups and its place in the vault's
@@ -159,7 +167,7 @@ func (c *Coordinator) openDurability() error {
 	}
 	count, err := b.Counter.Load(ctx)
 	if err != nil {
-		return fmt.Errorf("the vault's counter: %w", err)
+		return fmt.Errorf("%w: the vault's counter: %w", ErrBackupUnreachable, err)
 	}
 	if count.Generation != g.Number {
 		return fmt.Errorf("%w: the vault is at generation %d and this coordinator has %d", ErrStaleCoordinator, count.Generation, g.Number)
@@ -170,14 +178,14 @@ func (c *Coordinator) openDurability() error {
 	d.counted.Store(count.Count)
 	objects, err := b.Bucket.List(ctx, backupObjectPrefix)
 	if err != nil {
-		return fmt.Errorf("listing the backups: %w", err)
+		return fmt.Errorf("%w: listing the backups: %w", ErrBackupUnreachable, err)
 	}
 	for _, k := range objects {
 		d.uploaded[k] = true
 	}
 	roots, err := listRoots(ctx, b.Bucket)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrBackupUnreachable, err)
 	}
 	for _, r := range roots {
 		if r.gen == d.gen {
@@ -370,6 +378,9 @@ type backupRoot struct {
 	body        rootBody
 }
 
+// openRoot fetches and opens ref. A root that was fetched but doesn't
+// authenticate or decode is ErrBackupUnreadable, which a bucket writer can
+// plant; any other error is the bucket's, which may pass.
 func openRoot(ctx context.Context, b BackupBucket, key [KeySize]byte, ref rootRef) (*backupRoot, error) {
 	data, err := b.Get(ctx, ref.key)
 	if err != nil {
@@ -377,18 +388,18 @@ func openRoot(ctx context.Context, b BackupBucket, key [KeySize]byte, ref rootRe
 	}
 	var f rootFile
 	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, fmt.Errorf("backup %s: %w", ref.key, err)
+		return nil, fmt.Errorf("%w: %s: %v", ErrBackupUnreadable, ref.key, err)
 	}
 	if f.V != backupRootVersion || f.Generation != ref.gen || f.Seq != ref.seq {
-		return nil, fmt.Errorf("backup %s: its header isn't its name's", ref.key)
+		return nil, fmt.Errorf("%w: %s: its header isn't its name's", ErrBackupUnreadable, ref.key)
 	}
 	plain, err := open(key[:], f.Body, f.aad())
 	if err != nil {
-		return nil, fmt.Errorf("backup %s: %w", ref.key, err)
+		return nil, fmt.Errorf("%w: %s: %v", ErrBackupUnreadable, ref.key, err)
 	}
 	r := &backupRoot{ref: ref, securitySeq: f.SecuritySeq, taken: time.UnixMilli(f.TakenAt)}
 	if err := json.Unmarshal(plain, &r.body); err != nil {
-		return nil, fmt.Errorf("backup %s: %w", ref.key, err)
+		return nil, fmt.Errorf("%w: %s: %v", ErrBackupUnreadable, ref.key, err)
 	}
 	return r, nil
 }

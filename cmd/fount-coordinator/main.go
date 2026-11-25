@@ -417,7 +417,7 @@ func run() error {
 			log.Printf("team runners on, stage %s; /control/runners served: %t", *teamStage, control != nil)
 		}
 	}
-	c, err := coordinator.New(coordinator.Config{
+	cfg := coordinator.Config{
 		StateDir: filepath.Join(*dir, "state"),
 		WorkDir:  filepath.Join(*dir, "work"),
 		Store:    coordinator.DirStore{Root: filepath.Join(*dir, "objects")},
@@ -433,8 +433,9 @@ func run() error {
 		Mail:        mailCfg,
 		Backup:      backups.config(dur),
 		TeamBilling: biller,
-	})
-	if err != nil {
+	}
+	c, err := newCoordinator(ctx, cfg, status)
+	if err != nil || ctx.Err() != nil {
 		return err
 	}
 	jobs.Store(c)

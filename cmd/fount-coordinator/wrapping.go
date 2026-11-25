@@ -369,6 +369,30 @@ func bootAllowed(ctx context.Context, counter coordinator.VaultCounter, b backup
 	return nil
 }
 
+// newCoordinator is coordinator.New, tried again with the vault backoff
+// while the boot can't reach the vault's counter or the bucket to check the
+// volume against its backups (2026-11-25 re-check, R3-3): a host that drops
+// those calls holds the boot, rather than boot a replayed disk as current.
+// Each failure shows on /status as the key's failed_rounds and last_error.
+// Its error is nil when ctx ends.
+func newCoordinator(ctx context.Context, cfg coordinator.Config, status *keyStatus) (*coordinator.Coordinator, error) {
+	wait := vaultkey.DefaultBackoff.First
+	for {
+		c, err := coordinator.New(cfg)
+		if !errors.Is(err, coordinator.ErrBackupUnreachable) {
+			return c, err
+		}
+		status.failed(err)
+		log.Printf("boot: %v; trying again in %s", err, wait)
+		select {
+		case <-ctx.Done():
+			return nil, nil
+		case <-time.After(wait):
+		}
+		wait = min(2*wait, vaultkey.DefaultBackoff.Most)
+	}
+}
+
 // retryVault runs f until it succeeds, is refused, or ctx ends, backing off
 // on the errors a vault or bucket that is down returns.
 func retryVault(ctx context.Context, what string, f func(context.Context) error) error {

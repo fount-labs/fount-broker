@@ -3,6 +3,7 @@ package coordinator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -198,14 +199,22 @@ func (c *Coordinator) foldOwed() (undo func()) {
 // replayedVolume is the backup root that shows this volume is behind it, or
 // nil: the newest root that opens, when it was taken from a later save than
 // the volume's, so the disk was replayed to an earlier point (or lost its
-// last writes) after it was taken. A root that doesn't open is passed over:
-// a bucket writer can plant one, not forge one. Called with c.mu held.
+// last writes) after it was taken. A root that was fetched and doesn't open
+// is passed over: a bucket writer can plant one, not forge one. A root that
+// couldn't be fetched isn't: the host that replays the disk also carries
+// the network, and could drop the root fetches to boot the replay as
+// current (2026-11-25 re-check, R3-3). That fails the boot with
+// ErrBackupUnreachable, before anything changed, and the boot tries again.
+// Called with c.mu held.
 func (c *Coordinator) replayedVolume(ctx context.Context, roots []rootRef) (*backupRoot, error) {
 	for i := len(roots) - 1; i >= 0; i-- {
 		root, err := openRoot(ctx, c.durable.cfg.Bucket, c.durable.key, roots[i])
-		if err != nil {
+		if errors.Is(err, ErrBackupUnreadable) {
 			log.Printf("backup: %v; checking the volume against the one before", err)
 			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("%w: checking the volume against the newest backup: %w", ErrBackupUnreachable, err)
 		}
 		st, err := rootState(root)
 		if err != nil {
