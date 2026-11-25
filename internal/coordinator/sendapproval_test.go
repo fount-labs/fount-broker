@@ -3,6 +3,7 @@ package coordinator
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"mime/quotedprintable"
 	"net/mail"
@@ -289,5 +290,54 @@ func TestAYesToAnOlderApprovalWithANewerDraftSendsNothing(t *testing.T) {
 	}
 	if why := r.refusals(th.ID); len(why) != 1 || why[0] != "a newer draft is waiting on this thread" {
 		t.Fatalf("refusals %v", why)
+	}
+}
+
+// The 11-24 review's M2 probe, flipped: once A1 approved draft 1, a later
+// approval email A2 on the conversation carries A1 in its References, and
+// the owner's yes to A2 sends draft 2, whether its In-Reply-To names A2 or
+// it has only References.
+func TestASpentApprovalInReferencesDoesntBlockALaterOne(t *testing.T) {
+	for _, direct := range []bool{true, false} {
+		t.Run(fmt.Sprintf("in-reply-to %v", direct), func(t *testing.T) {
+			r := newSendRig(t, modeFull)
+			const request = "<q3-close@example.com>"
+			id := r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Q3 close", messageID: request})
+			r.pass()
+			waitJob(t, r.c, mailJobID(id))
+			th := r.waitStatus(r.w.ID, onlyThread(t, r.threads(r.w.ID)).ID, StatusReview)
+			d1 := draftOn(t, th)
+			r.pass()
+			a1 := r.askMessageID(th, d1)
+			r.intake.set(func(f *fakeIntake) { f.instruction, f.source, f.reply = "Yes.", "owner", true })
+			r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close",
+				messageID: "<yes1@example.com>", inReplyTo: a1, references: request + " " + a1})
+			r.pass()
+			if d := r.draft(th.ID, d1.ID); d.State != draftSent {
+				t.Fatalf("draft 1 is %s: %v", d.State, r.refusals(th.ID))
+			}
+
+			r.intake.set(func(f *fakeIntake) { f.instruction, f.source, f.reply = "Now do Q4.", "owner", true })
+			r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close",
+				messageID: "<q4@example.com>", inReplyTo: "<yes1@example.com>", references: request + " " + a1 + " <yes1@example.com>"})
+			th, ds := r.drafts(th.ID, 2)
+			d2 := ds[1]
+			r.pass()
+			a2 := r.askMessageID(th, d2)
+			r.intake.set(func(f *fakeIntake) { f.instruction, f.source, f.reply = "Yes.", "owner", true })
+			yes := email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close",
+				references: request + " " + a1 + " <yes1@example.com> <q4@example.com> " + a2}
+			if direct {
+				yes.inReplyTo = a2
+			}
+			r.edge.deliver(r.mb, yes)
+			r.pass()
+			if d := r.draft(th.ID, d2.ID); d.State != draftSent || d.Approval.Via != viaEmail {
+				t.Fatalf("draft 2 is %s: %v", d.State, r.refusals(th.ID))
+			}
+			if why := r.refusals(th.ID); len(why) != 0 {
+				t.Fatalf("refusals %v", why)
+			}
+		})
 	}
 }
