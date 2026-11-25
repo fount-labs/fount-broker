@@ -101,7 +101,7 @@ func makePasskeyVouchVectors(t *testing.T) passkeyVouchVectors {
 		raw, _ := json.Marshal(TeamRecord{Kind: RecordPasskeyVouch, Seq: a.seq, Prev: a.prev, Member: v.Member, Account: v.Team, Device: a.device, At: 1798762000 + int64(a.seq), Proof: proof})
 		return TeamEntry{Seq: a.seq, Record: raw, Hash: entryHash(TeamRecordContext, raw)}
 	}
-	good := assertion{key: pk, cred: v.PasskeyCred, flags: 0x1d, client: clientOf(challenge, "https://fount.sh"), count: 0, seq: 2, prev: first.Hash}
+	good := assertion{key: pk, cred: v.PasskeyCred, flags: 0x1d, client: clientOf(challenge, PasskeyOrigins[0]), count: 0, seq: 2, prev: first.Hash}
 	second := entry(good)
 	v.Log = TeamLogView{Team: v.Team, Seq: 2, Head: second.Hash, Entries: []TeamEntry{first, second}}
 
@@ -122,14 +122,14 @@ func makePasskeyVouchVectors(t *testing.T) passkeyVouchVectors {
 		"unlisted_passkey": entry(with(func(a *assertion) { a.key = unlisted })),
 		"another_cred":     entry(with(func(a *assertion) { a.cred = b64.EncodeToString(seq(0xf2)[:16]) })),
 		"wrong_origin":     entry(with(func(a *assertion) { a.client = clientOf(challenge, "https://evil.example") })),
-		"another_start":    entry(with(func(a *assertion) { a.client = clientOf(otherStart, "https://fount.sh") })),
-		"another_member":   entry(with(func(a *assertion) { a.client = clientOf(otherMember, "https://fount.sh") })),
-		"another_team":     entry(with(func(a *assertion) { a.client = clientOf(otherTeam, "https://fount.sh") })),
-		"a_join_challenge": entry(with(func(a *assertion) { a.client = clientOf(joinShaped, "https://fount.sh") })),
+		"another_start":    entry(with(func(a *assertion) { a.client = clientOf(otherStart, PasskeyOrigins[0]) })),
+		"another_member":   entry(with(func(a *assertion) { a.client = clientOf(otherMember, PasskeyOrigins[0]) })),
+		"another_team":     entry(with(func(a *assertion) { a.client = clientOf(otherTeam, PasskeyOrigins[0]) })),
+		"a_join_challenge": entry(with(func(a *assertion) { a.client = clientOf(joinShaped, PasskeyOrigins[0]) })),
 		"not_verified":     entry(with(func(a *assertion) { a.flags = 0x01 })),
 		"with_a_device":    entry(with(func(a *assertion) { a.device = ownerIncl })),
 	}
-	v.Again = entry(assertion{key: pk, cred: v.PasskeyCred, flags: 0x1d, client: clientOf(challenge, "https://fount.sh"), seq: 3, prev: second.Hash})
+	v.Again = entry(assertion{key: pk, cred: v.PasskeyCred, flags: 0x1d, client: clientOf(challenge, PasskeyOrigins[0]), seq: 3, prev: second.Hash})
 	return v
 }
 

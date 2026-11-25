@@ -25,8 +25,12 @@ import (
 // must refuse. ECDSA signatures are random, so the file is written once and
 // then only checked; the challenge and the list are deterministic.
 type passkeyJoinVectors struct {
-	Comment   string `json:"comment"`
-	Audience  string `json:"audience"`
+	Comment  string `json:"comment"`
+	Audience string `json:"audience"`
+	// RPID and Origin are the passkey's relying party and client data
+	// origin (PasskeyRPID): Desktop's constants must equal them.
+	RPID      string `json:"rp_id"`
+	Origin    string `json:"origin"`
 	Team      string `json:"team"`
 	OwnerSeed string `json:"owner_ed25519_seed"`
 	NewSeed   string `json:"new_ed25519_seed"`
@@ -91,7 +95,7 @@ func makePasskeyJoinVectors(t *testing.T) passkeyJoinVectors {
 	pkPub, _ := pk.PublicKey.Bytes()
 	v := passkeyJoinVectors{
 		Comment:  "A passkey-join record (internal/coordinator/passkeyjoin.go) as a client replays it. Bytes are hex unless named base64url. Test keys only. Rewrite (new signatures): PASSKEY_JOIN_VECTORS_WRITE=1 go test -run TestPasskeyJoinVectors ./internal/coordinator",
-		Audience: "https://coordinator.example", Team: "acct_passkey",
+		Audience: "https://coordinator.example", Team: "acct_passkey", RPID: PasskeyRPID, Origin: PasskeyOrigins[0],
 		OwnerSeed: hex.EncodeToString(seq(0x01)), NewSeed: hex.EncodeToString(seq(0x61)), NewX25519: hex.EncodeToString(newEnc.Bytes()),
 		NewDevice: deviceID(newKey.Public().(ed25519.PublicKey)), Member: "m_owner",
 		PasskeyPrivate: hex.EncodeToString(seq(0x41)), PasskeyCred: b64.EncodeToString(seq(0xe1)[:16]), PasskeyPub: b64.EncodeToString(pkPub),
@@ -131,12 +135,16 @@ func makePasskeyJoinVectors(t *testing.T) passkeyJoinVectors {
 		count     uint32
 		seq       uint64
 		prev      string
+		rp        string
 	}
 	clientOf := func(challenge []byte, origin, extra string) string {
 		return `{"type":"webauthn.get","challenge":"` + base64.RawURLEncoding.EncodeToString(challenge) + `","origin":"` + origin + `"` + extra + `}`
 	}
 	entry := func(a assertion, device string) TeamEntry {
-		rp := sha256.Sum256([]byte(PasskeyRPID))
+		if a.rp == "" {
+			a.rp = PasskeyRPID
+		}
+		rp := sha256.Sum256([]byte(a.rp))
 		auth := binary.BigEndian.AppendUint32(append(rp[:], a.flags), a.count)
 		ch := sha256.Sum256([]byte(a.client))
 		digest := sha256.Sum256(append(append([]byte{}, auth...), ch[:]...))
@@ -150,7 +158,7 @@ func makePasskeyJoinVectors(t *testing.T) passkeyJoinVectors {
 		raw, _ := json.Marshal(TeamRecord{Kind: RecordPasskeyJoin, Seq: a.seq, Prev: a.prev, Member: v.Member, Account: v.Team, Device: device, At: 1798762000 + int64(a.seq), Proof: proof})
 		return TeamEntry{Seq: a.seq, Record: raw, Hash: entryHash(TeamRecordContext, raw)}
 	}
-	good := assertion{key: pk, cred: v.PasskeyCred, challenge: challenge, flags: 0x1d, client: clientOf(challenge, "https://fount.sh", ""), count: 7, seq: 2, prev: first.Hash}
+	good := assertion{key: pk, cred: v.PasskeyCred, challenge: challenge, flags: 0x1d, client: clientOf(challenge, PasskeyOrigins[0], ""), count: 7, seq: 2, prev: first.Hash}
 	second := entry(good, newIncl)
 	v.Log = TeamLogView{Team: v.Team, Seq: 2, Head: second.Hash, Entries: []TeamEntry{first, second}}
 
@@ -174,19 +182,22 @@ func makePasskeyJoinVectors(t *testing.T) passkeyJoinVectors {
 		"unlisted_passkey": entry(with(func(a *assertion) { a.key = unlisted }), newIncl),
 		"another_cred":     entry(with(func(a *assertion) { a.cred = b64.EncodeToString(seq(0xf1)[:16]) }), newIncl),
 		"wrong_origin":     entry(with(func(a *assertion) { a.client = clientOf(challenge, "https://evil.example", "") }), newIncl),
-		"cross_origin":     entry(with(func(a *assertion) { a.client = clientOf(challenge, "https://fount.sh", `,"crossOrigin":true`) }), newIncl),
-		"another_head":     entry(with(func(a *assertion) { a.client = clientOf(otherHead, "https://fount.sh", "") }), newIncl),
+		"cross_origin":     entry(with(func(a *assertion) { a.client = clientOf(challenge, PasskeyOrigins[0], `,"crossOrigin":true`) }), newIncl),
+		"another_head":     entry(with(func(a *assertion) { a.client = clientOf(otherHead, PasskeyOrigins[0], "") }), newIncl),
 		"not_verified":     entry(with(func(a *assertion) { a.flags = 0x01 }), newIncl),
-		"escaped":          entry(with(func(a *assertion) { a.client = clientOf(challenge, "https://fount.sh", `,"x":"a\/b"`) }), newIncl),
+		"escaped":          entry(with(func(a *assertion) { a.client = clientOf(challenge, PasskeyOrigins[0], `,"x":"a\/b"`) }), newIncl),
 		"origin_key_case": entry(with(func(a *assertion) {
-			a.client = `{"type":"webauthn.get","challenge":"` + base64.RawURLEncoding.EncodeToString(challenge) + `","Origin":"https://fount.sh"}`
+			a.client = `{"type":"webauthn.get","challenge":"` + base64.RawURLEncoding.EncodeToString(challenge) + `","Origin":"` + PasskeyOrigins[0] + `"}`
 		}), newIncl),
 		"nested": entry(with(func(a *assertion) {
-			a.client = clientOf(challenge, "https://fount.sh", `,"tokenBinding":{"status":"present"}`)
+			a.client = clientOf(challenge, PasskeyOrigins[0], `,"tokenBinding":{"status":"present"}`)
 		}), newIncl),
-		"number": entry(with(func(a *assertion) { a.client = clientOf(challenge, "https://fount.sh", `,"n":1e400`) }), newIncl),
+		"number": entry(with(func(a *assertion) { a.client = clientOf(challenge, PasskeyOrigins[0], `,"n":1e400`) }), newIncl),
+		// A passkey for the marketing site, the relying party before
+		// id.fount.sh (security review 2026-11-24, H1).
+		"former_rp": entry(with(func(a *assertion) { a.rp, a.client = "fount.sh", clientOf(challenge, "https://fount.sh", "") }), newIncl),
 		"origin_repeated": entry(with(func(a *assertion) {
-			a.client = clientOf(challenge, "https://fount.sh", `,"origin":"https://evil.example"`)
+			a.client = clientOf(challenge, PasskeyOrigins[0], `,"origin":"https://evil.example"`)
 		}), newIncl),
 	}
 	thirdKey := ed25519.NewKeyFromSeed(seq(0xa1))
@@ -196,7 +207,7 @@ func makePasskeyJoinVectors(t *testing.T) passkeyJoinVectors {
 		t.Fatal(err)
 	}
 	thirdCh, _ := PasskeyJoinChallenge(v.Audience, v.Team, v.Member, second.Hash, seq(0xc1), thirdKey.Public().(ed25519.PublicKey), thirdEnc)
-	third := assertion{key: pk, cred: v.PasskeyCred, flags: 0x1d, client: clientOf(thirdCh, "https://fount.sh", ""), count: 8, seq: 3, prev: second.Hash}
+	third := assertion{key: pk, cred: v.PasskeyCred, flags: 0x1d, client: clientOf(thirdCh, PasskeyOrigins[0], ""), count: 8, seq: 3, prev: second.Hash}
 	v.Third = entry(third, thirdIncl)
 	third.count = 7
 	v.SameCount = entry(third, thirdIncl)
@@ -271,7 +282,7 @@ func makeInvitePasskeyVectors(t *testing.T, v *passkeyJoinVectors, owner ed25519
 		raw, _ := json.Marshal(TeamRecord{Kind: RecordInvite, Seq: 2, Prev: first.Hash, Member: v.InviteMember, Account: v.InviteAccount, Device: device, At: 1798762002, Proof: proof})
 		return TeamEntry{Seq: 2, Record: raw, Hash: entryHash(TeamRecordContext, raw)}
 	}
-	good := accept{key: pk, rec: rec, challenge: challenge, client: clientOf(challenge, "https://fount.sh", ""), flags: 0x1d, count: 3}
+	good := accept{key: pk, rec: rec, challenge: challenge, client: clientOf(challenge, PasskeyOrigins[0], ""), flags: 0x1d, count: 3}
 	with := func(f func(*accept)) *accept {
 		a := good
 		f(&a)
@@ -286,7 +297,7 @@ func makeInvitePasskeyVectors(t *testing.T, v *passkeyJoinVectors, owner ed25519
 		t.Fatal(err)
 	}
 	joinCh, _ := PasskeyJoinChallenge(v.Audience, v.Team, v.InviteMember, second.Hash, seq(0xc1), thirdKey.Public().(ed25519.PublicKey), thirdEnc)
-	auth, client, sig := sign(accept{key: pk, client: clientOf(joinCh, "https://fount.sh", ""), flags: 0x1d, count: 4})
+	auth, client, sig := sign(accept{key: pk, client: clientOf(joinCh, PasskeyOrigins[0], ""), flags: 0x1d, count: 4})
 	jp, _ := json.Marshal(PasskeyJoinProof{Nonce: b64.EncodeToString(seq(0xc1)), Cred: v.PasskeyCred, AuthenticatorData: auth, ClientDataJSON: client, Signature: sig})
 	raw, _ := json.Marshal(TeamRecord{Kind: RecordPasskeyJoin, Seq: 3, Prev: second.Hash, Member: v.InviteMember, Account: v.InviteAccount, Device: thirdIncl, At: 1798762003, Proof: jp})
 	third := TeamEntry{Seq: 3, Record: raw, Hash: entryHash(TeamRecordContext, raw)}
@@ -300,13 +311,13 @@ func makeInvitePasskeyVectors(t *testing.T, v *passkeyJoinVectors, owner ed25519
 	anotherInvite, _ := InvitePasskeyChallenge(v.Audience, v.Team, v.InviteMember, "i_fedcba9876543210", newPub, newEncPub)
 	v.InviteRefused = map[string]TeamEntry{
 		"another_device":        inviteEntry(&good, otherIncl),
-		"another_invite":        inviteEntry(with(func(a *accept) { a.client = clientOf(anotherInvite, "https://fount.sh", "") }), newIncl),
+		"another_invite":        inviteEntry(with(func(a *accept) { a.client = clientOf(anotherInvite, PasskeyOrigins[0], "") }), newIncl),
 		"unlisted_key":          inviteEntry(with(func(a *accept) { a.rec = &ListRec{Cred: v.PasskeyCred, Pub: pubOf(unlisted)} }), newIncl),
 		"signed_by_unlisted":    inviteEntry(with(func(a *accept) { a.key = unlisted }), newIncl),
 		"wrong_origin":          inviteEntry(with(func(a *accept) { a.client = clientOf(challenge, "https://evil.example", "") }), newIncl),
-		"cross_origin":          inviteEntry(with(func(a *accept) { a.client = clientOf(challenge, "https://fount.sh", `,"crossOrigin":true`) }), newIncl),
+		"cross_origin":          inviteEntry(with(func(a *accept) { a.client = clientOf(challenge, PasskeyOrigins[0], `,"crossOrigin":true`) }), newIncl),
 		"not_verified":          inviteEntry(with(func(a *accept) { a.flags = 0x01 }), newIncl),
-		"escaped":               inviteEntry(with(func(a *accept) { a.client = clientOf(challenge, "https://fount.sh", `,"x":"a\/b"`) }), newIncl),
+		"escaped":               inviteEntry(with(func(a *accept) { a.client = clientOf(challenge, PasskeyOrigins[0], `,"x":"a\/b"`) }), newIncl),
 		"no_signature":          inviteEntry(with(func(a *accept) { a.noSig = true }), newIncl),
 		"assertion_without_rec": inviteEntry(with(func(a *accept) { a.rec = nil }), newIncl),
 		"malformed_rec":         inviteEntry(with(func(a *accept) { a.rec = &ListRec{Cred: v.PasskeyCred, Pub: b64.EncodeToString([]byte{4, 1, 2})} }), newIncl),
@@ -342,7 +353,7 @@ func makeInvitePasskeyVectors(t *testing.T, v *passkeyJoinVectors, owner ed25519
 	}
 	backCh, _ := InvitePasskeyChallenge(v.Audience, v.Team, v.InviteMember, "i_again0123456789", backKey.Public().(ed25519.PublicKey), backEnc)
 	backRec := &ListRec{Cred: b64.EncodeToString(seq(0x42)[:16]), Pub: pubOf(backPk)}
-	bauth, bclient, bsig := sign(accept{key: backPk, client: clientOf(backCh, "https://fount.sh", ""), flags: 0x1d, count: 1})
+	bauth, bclient, bsig := sign(accept{key: backPk, client: clientOf(backCh, PasskeyOrigins[0], ""), flags: 0x1d, count: 1})
 	bp, _ := json.Marshal(InviteProof{Invite: "i_again0123456789", Secret: b64.EncodeToString(againSecret), Email: v.InviteEmail,
 		InvitePasskey: InvitePasskey{Rec: backRec, AuthenticatorData: bauth, ClientDataJSON: bclient, Signature: bsig}})
 	raw, _ = json.Marshal(TeamRecord{Kind: RecordInvite, Seq: 5, Prev: v.InviteAgain.Hash, Member: v.InviteMember, Account: v.InviteAccount, Device: backIncl, At: 1798762005, Proof: bp})
@@ -386,6 +397,9 @@ func TestPasskeyJoinVectors(t *testing.T) {
 	}
 	made := makePasskeyJoinVectors(t)
 	// What is deterministic is unchanged.
+	if v.RPID != PasskeyRPID || v.Origin != PasskeyOrigins[0] {
+		t.Fatalf("the vectors are for rp %q, origin %q", v.RPID, v.Origin)
+	}
 	if v.Challenge != made.Challenge || v.ChallengeMsg != made.ChallengeMsg || v.Log.Entries[0].Hash != made.Log.Entries[0].Hash || v.PasskeyPub != made.PasskeyPub || v.NewDevice != made.NewDevice {
 		t.Fatal("the vectors' deterministic values changed")
 	}

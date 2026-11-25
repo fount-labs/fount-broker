@@ -35,7 +35,7 @@ import (
 //
 // Accepting also lists the member's passkey (decided 2026-11-19: every new
 // computer joins with the member's passkey; there is no code join). The
-// invitee's device makes a passkey for fount.sh, or uses one the account
+// invitee's device makes a passkey for PasskeyRPID, or uses one the account
 // already has, and it signs InvitePasskeyChallenge, over the invite and the
 // accepting device's keys. The record's proof carries the passkey (rec) and
 // the assertion, checked as a passkey join's is (verifyAssertion), here and
@@ -259,8 +259,8 @@ func checkInviteProof(st *teamState, aud, team string, r TeamRecord, m *Member) 
 // checkInvitePasskey checks the passkey an invite record lists: a passkey of
 // the shape a list allows, whose assertion is over InvitePasskeyChallenge for
 // the record's member and invite and the admitted device's keys, with the
-// strict checks of a passkey join (rp fount.sh, user present and verified,
-// origin https://fount.sh, flat client data) and a sign count that rises past
+// strict checks of a passkey join (rp PasskeyRPID, user present and verified,
+// origin PasskeyOrigins, flat client data) and a sign count that rises past
 // any this passkey carried in the log before.
 //
 // A record with no passkey is refused, on append and on replay.
