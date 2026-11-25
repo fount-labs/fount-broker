@@ -415,7 +415,8 @@ func retryVault(ctx context.Context, what string, f func(context.Context) error)
 // refusedRestore is whether err is a restore's refusal, not a vault or
 // bucket that couldn't be reached.
 func refusedRestore(err error) bool {
-	return errors.Is(err, coordinator.ErrNoBackup) || errors.Is(err, coordinator.ErrBackupTooOld) || errors.Is(err, coordinator.ErrBackupRolledBack)
+	return errors.Is(err, coordinator.ErrNoBackup) || errors.Is(err, coordinator.ErrBackupTooOld) || errors.Is(err, coordinator.ErrBackupRolledBack) ||
+		errors.Is(err, coordinator.ErrBackupUnreadable)
 }
 
 // refusal says what this process refused, "" when nothing: the error's

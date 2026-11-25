@@ -248,7 +248,7 @@ func TestBootOnlyWhenTheVolumeHasReachedTheCount(t *testing.T) {
 func TestARefusedRestoreTakesNoGeneration(t *testing.T) {
 	b := backupFlags{dir: t.TempDir(), restore: restoreLatest}
 	count := fixedCount{coordinator.VaultCount{Generation: 4, Count: 3}}
-	for _, refusal := range []error{coordinator.ErrNoBackup, coordinator.ErrBackupTooOld, coordinator.ErrBackupRolledBack} {
+	for _, refusal := range []error{coordinator.ErrNoBackup, coordinator.ErrBackupTooOld, coordinator.ErrBackupRolledBack, coordinator.ErrBackupUnreadable} {
 		err := bootAllowed(context.Background(), count, b, func(context.Context) error { return fmt.Errorf("roots/x: %w", refusal) })
 		if !errors.Is(err, errBootRefused) || !errors.Is(err, refusal) {
 			t.Fatalf("a restore refused with %v: %v", refusal, err)

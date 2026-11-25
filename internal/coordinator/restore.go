@@ -308,31 +308,52 @@ func (d *dryStore) Get(workerID, objectID string) ([]byte, error) {
 
 func (*dryStore) Delete(string, string) error { return errors.New("a dry run writes nothing") }
 
-// restorable is the root name names, newest when empty, if a restore may
-// take it at the vault's count: it opens under key, is no older than
-// MaxRestoreAge, isn't below the count, and at the count is the state the
-// vault counted.
+// restorable is the root name names, or with name empty the newest root
+// that opens, if a restore may take it at the vault's count: it opens under
+// key, is no older than MaxRestoreAge, isn't below the count, and at the
+// count is the state the vault counted. A newer root that was fetched and
+// doesn't open is passed over, as replayedVolume does: a bucket writer can
+// plant one under a higher name, and taking the newest name alone would
+// refuse every restore (2026-11-25 re-check, R3-6). No root that opens, or
+// a named one that doesn't, is ErrBackupUnreadable, a refusal; a root that
+// couldn't be fetched is the bucket's error, to try again.
 func restorable(ctx context.Context, bucket BackupBucket, key WrappingKey, name string, count VaultCount) (rootRef, *backupRoot, *State, error) {
 	roots, err := listRoots(ctx, bucket)
 	if err != nil {
 		return rootRef{}, nil, nil, err
 	}
-	var ref rootRef
+	bk := backupKey(&key)
+	var (
+		ref  rootRef
+		root *backupRoot
+	)
 	switch {
 	case len(roots) == 0:
 		return rootRef{}, nil, nil, ErrNoBackup
 	case name == "":
-		ref = roots[len(roots)-1]
+		for i := len(roots) - 1; i >= 0 && root == nil; i-- {
+			root, err = openRoot(ctx, bucket, bk, roots[i])
+			switch {
+			case errors.Is(err, ErrBackupUnreadable):
+				log.Printf("restore: %v; taking the one before", err)
+			case err != nil:
+				return rootRef{}, nil, nil, err
+			default:
+				ref = roots[i]
+			}
+		}
+		if root == nil {
+			return rootRef{}, nil, nil, fmt.Errorf("%w: none of the %d roots opens", ErrBackupUnreadable, len(roots))
+		}
 	default:
 		i := slices.IndexFunc(roots, func(r rootRef) bool { return r.key == name })
 		if i < 0 {
 			return rootRef{}, nil, nil, fmt.Errorf("%w: %.80q", ErrNoBackup, name)
 		}
 		ref = roots[i]
-	}
-	root, err := openRoot(ctx, bucket, backupKey(&key), ref)
-	if err != nil {
-		return rootRef{}, nil, nil, err
+		if root, err = openRoot(ctx, bucket, bk, ref); err != nil {
+			return rootRef{}, nil, nil, err
+		}
 	}
 	if age := time.Since(root.taken); age > MaxRestoreAge {
 		return rootRef{}, nil, nil, fmt.Errorf("%w: %s was taken %s ago, and the most is %s", ErrBackupTooOld, ref.key, age.Round(time.Hour), MaxRestoreAge)
@@ -342,7 +363,7 @@ func restorable(ctx context.Context, bucket BackupBucket, key WrappingKey, name 
 	}
 	st, err := rootState(root)
 	if err != nil {
-		return rootRef{}, nil, nil, err
+		return rootRef{}, nil, nil, fmt.Errorf("%w: %v", ErrBackupUnreadable, err)
 	}
 	if root.securitySeq == count.Count && !sameState(count, st) {
 		return rootRef{}, nil, nil, fmt.Errorf("%w: %s is at the vault's count %d with another security state than generation %d counted; it is a fork's", ErrBackupRolledBack, ref.key, count.Count, count.Writer)

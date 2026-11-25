@@ -464,3 +464,34 @@ func TestAForkAtTheCountIsRefused(t *testing.T) {
 		t.Fatalf("an uncounted change older than the last writer: %v", err)
 	}
 }
+
+// --restore latest takes the newest root that opens, past junk planted
+// under a higher name; a named root that doesn't open, or a bucket where
+// none does, is refused as ErrBackupUnreadable, not tried again
+// (2026-11-25 re-check, R3-6).
+func TestRestoreLatestPassesOverARootThatDoesntOpen(t *testing.T) {
+	v := newVaultRig(t, nil)
+	c := v.boot(t.TempDir())
+	soloTeam(t, c, "acme", newTestDevice(t))
+	newest := v.newest()
+	junk := rootKey(1<<40, 1, time.Now())
+	if err := v.bucket.Put(context.Background(), junk, []byte("not a root")); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckRestore(context.Background(), v.bucket, v.vault, v.key, junk); !errors.Is(err, ErrBackupUnreadable) {
+		t.Fatalf("restoring the junk by name: %v", err)
+	}
+	if err := CheckRestore(context.Background(), v.bucket, v.vault, v.key, ""); err != nil {
+		t.Fatalf("checking latest: %v", err)
+	}
+	_, res, err := v.restore("")
+	if err != nil || res.Root != newest {
+		t.Fatalf("restoring latest took %q (%v), not %q", res.Root, err, newest)
+	}
+
+	other := newVaultRig(t, nil)
+	other.bucket = v.bucket
+	if err := CheckRestore(context.Background(), v.bucket, v.vault, other.key, ""); !errors.Is(err, ErrBackupUnreadable) {
+		t.Fatalf("no root opens under another key: %v", err)
+	}
+}
