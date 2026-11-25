@@ -140,7 +140,7 @@ func approvalText(d *draftEntry, names []string, firm, reviewer string, requeste
 	var b strings.Builder
 	fmt.Fprintf(&b, "The email agent drafted a reply to %s, with the subject \"%s\".", strings.Join(to, ", "), d.Subject)
 	if len(names) > 0 {
-		fmt.Fprintf(&b, "\nIt attaches %s.", strings.Join(names, ", "))
+		fmt.Fprintf(&b, "\nIt attaches %s, which aren't in this email: \"yes\" sends them as they are now. To look at them first, open Fount.", strings.Join(names, ", "))
 	}
 	b.WriteString("\nHere it is, exactly as it will be sent:\n\n")
 	for line := range strings.SplitSeq(strings.TrimRight(renderBody(d.Text, names, footer(firm, true)), "\n"), "\n") {

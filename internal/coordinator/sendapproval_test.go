@@ -458,3 +458,16 @@ func TestTheApprovalEmailThreadsOnlyUnderSignedMail(t *testing.T) {
 		t.Fatalf("threads under %+v", m)
 	}
 }
+
+// The 11-24 review's L12: an approval email for a draft with files says
+// they aren't in it, and that "yes" sends them unseen.
+func TestAnApprovalEmailSaysItsFilesArentInIt(t *testing.T) {
+	d := &draftEntry{To: []string{"carol@example.com"}, Subject: "Re: Q3 close", Text: "Attached."}
+	text := approvalText(d, []string{"q3.pdf"}, "Acme", "dana@example.com", true, time.Now())
+	if !strings.Contains(text, "It attaches q3.pdf, which aren't in this email") || !strings.Contains(text, "To look at them first, open Fount.") {
+		t.Fatalf("the email:\n%s", text)
+	}
+	if strings.Contains(strings.ToLower(text), "approve") {
+		t.Fatalf("the email says approve:\n%s", text)
+	}
+}
