@@ -43,12 +43,16 @@ type Gate struct {
 
 // A Pass is one handshake's place in a Gate.
 type Pass struct {
-	g       *Gate
-	source  string
-	at      time.Time
-	evict   func()
-	began   atomic.Bool
-	release sync.Once
+	g      *Gate
+	source string
+	at     time.Time
+	evict  func()
+	began  atomic.Bool
+	// left is whether the place was given back, by Done or by eviction.
+	// Guarded by g.mu: a sync.Once here, taken under g.mu by Admit and
+	// taking g.mu inside by Done, deadlocked the two (2026-11-25 re-check,
+	// R3-1).
+	left bool
 }
 
 // Enter takes a place for a handshake from source, "" when it can't be told,
@@ -96,7 +100,7 @@ func (g *Gate) Admit(source string, evict func()) (*Pass, bool) {
 			g.mu.Unlock()
 			return nil, false
 		}
-		victim.release.Do(func() { g.leave(victim) })
+		g.leave(victim)
 	}
 	if g.bySource == nil {
 		g.bySource = map[string]int{}
@@ -115,8 +119,12 @@ func (g *Gate) Admit(source string, evict func()) (*Pass, bool) {
 	return p, true
 }
 
-// leave gives p's place back. Called with g.mu held, once.
+// leave gives p's place back, once. Called with g.mu held.
 func (g *Gate) leave(p *Pass) {
+	if p.left {
+		return
+	}
+	p.left = true
 	g.total--
 	delete(g.passes, p)
 	if p.source != "" {
@@ -136,11 +144,9 @@ func (p *Pass) Begin() {
 
 // Done gives the place back; later calls do nothing.
 func (p *Pass) Done() {
-	p.release.Do(func() {
-		p.g.mu.Lock()
-		defer p.g.mu.Unlock()
-		p.g.leave(p)
-	})
+	p.g.mu.Lock()
+	defer p.g.mu.Unlock()
+	p.g.leave(p)
 }
 
 // Evictable is a connection a Pass's evict closes, which may come only after

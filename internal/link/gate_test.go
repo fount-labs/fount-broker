@@ -2,6 +2,8 @@ package link
 
 import (
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -83,5 +85,46 @@ func TestAFullGateEvictsTheOldestStalledHandshake(t *testing.T) {
 	a.Done()
 	if g.total != 0 || len(g.passes) != 0 {
 		t.Fatalf("%d places left", g.total)
+	}
+}
+
+// Done racing an Admit that evicts the same handshake gave the place back
+// under a sync.Once each took in the other's order around g.mu, and every
+// later Admit hung (2026-11-25 re-check, R3-1). Every handshake here is
+// stalled, so a full gate always evicts, while the evicted ones end at once.
+func TestDoneRacingAnEvictionNeverDeadlocks(t *testing.T) {
+	var ticks atomic.Int64
+	g := &Gate{Max: 4, now: func() time.Time {
+		return time.Unix(0, 0).Add(time.Duration(ticks.Add(1)) * EvictAfter)
+	}}
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		var wg sync.WaitGroup
+		for range 16 {
+			wg.Go(func() {
+				for range 2000 {
+					gone := make(chan struct{})
+					p, ok := g.Admit("", func() { close(gone) })
+					if !ok {
+						continue
+					}
+					select {
+					case <-gone:
+					default:
+					}
+					p.Done()
+				}
+			})
+		}
+		wg.Wait()
+	}()
+	select {
+	case <-finished:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the gate deadlocked: Done and an eviction hold each other")
+	}
+	if g.total != 0 || len(g.passes) != 0 {
+		t.Fatalf("%d places left, %d passes", g.total, len(g.passes))
 	}
 }
