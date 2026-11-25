@@ -3,3 +3,5 @@ dist/
 !/cmd/*/fount-*.go
 /cmd/*/mail-*
 !/cmd/*/mail-*.go
+/fount-*
+/mail-*
