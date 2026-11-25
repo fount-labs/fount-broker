@@ -145,6 +145,23 @@ type Warmer interface {
 	Warm(ctx context.Context) error
 }
 
+// Warm makes sure, when s's Attester is a Warmer, that its next document
+// comes at once. A dialler calls it before dialling, not after: the
+// accepting end's clock (EvictAfter, then HandshakeTimeout) starts at the
+// dial, and a cold attester can take longer than either (2026-11-25
+// re-check, R3-5). Safe on a nil Side.
+func (s *Side) Warm(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	if w, ok := s.Attester.(Warmer); ok {
+		if err := w.Warm(ctx); err != nil {
+			return fmt.Errorf("attesting this end: %w", err)
+		}
+	}
+	return nil
+}
+
 const (
 	labelClient = "EXPORTER-fount-link client"
 	labelServer = "EXPORTER-fount-link server"
@@ -157,9 +174,10 @@ func (s *Side) handshake(ctx context.Context, conn net.Conn, client bool) (net.C
 func (s *Side) handshakeGated(ctx context.Context, conn net.Conn, client bool, pass *Pass) (net.Conn, Endorsement, error) {
 	ctx, cancel := context.WithTimeout(ctx, HandshakeTimeout)
 	defer cancel()
-	if w, ok := s.Attester.(Warmer); ok && client {
-		if err := w.Warm(ctx); err != nil {
-			return nil, Endorsement{}, fmt.Errorf("attesting this end: %w", err)
+	if client {
+		// Normally a no-op: the dialler warmed before dialling.
+		if err := s.Warm(ctx); err != nil {
+			return nil, Endorsement{}, err
 		}
 	}
 	cert, err := Certificate(s.Key)

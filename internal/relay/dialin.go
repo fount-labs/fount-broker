@@ -135,6 +135,9 @@ func (r *Relay) dialLoop(ctx context.Context, d DialIn, started func()) {
 
 // dialOne dials, parks and, if a job comes, runs it. ran reports a job came.
 func (r *Relay) dialOne(ctx context.Context, d DialIn, started func()) (ran bool, err error) {
+	if err := r.Link.Warm(ctx); err != nil {
+		return false, err
+	}
 	conn, err := d.Dial(ctx)
 	if err != nil {
 		return false, err

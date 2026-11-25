@@ -269,3 +269,37 @@ func TestALinkPastItsFreshnessIsntHandedOut(t *testing.T) {
 	default:
 	}
 }
+
+// warmer is an Attester that records whether it was warmed.
+type warmer struct {
+	link.Attester
+	warmed atomic.Bool
+}
+
+func (w *warmer) Warm(context.Context) error {
+	w.warmed.Store(true)
+	return nil
+}
+
+// A runner warms its attester before it dials, not in the handshake after:
+// the coordinator's clock starts at the dial (2026-11-25 re-check, R3-5).
+func TestARunnerWarmsBeforeItDials(t *testing.T) {
+	side, err := link.Unattested()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &warmer{Attester: side.Attester}
+	side.Attester = w
+	r := &Relay{Link: side}
+	var warmedAtDial bool
+	d := DialIn{Dial: func(context.Context) (net.Conn, error) {
+		warmedAtDial = w.warmed.Load()
+		return nil, errors.New("no coordinator")
+	}}
+	if _, err := r.dialOne(t.Context(), d, func() {}); err == nil {
+		t.Fatal("dialled nothing, yet no error")
+	}
+	if !warmedAtDial {
+		t.Fatal("dialled before warming the attester")
+	}
+}

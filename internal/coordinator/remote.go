@@ -115,6 +115,11 @@ func (r RemoteRunner) run(ctx context.Context, job wireJob) (RunResult, error) {
 		ctx, cancel = context.WithTimeout(ctx, r.Timeout)
 		defer cancel()
 	}
+	if r.Hub == nil {
+		if err := r.Link.Warm(ctx); err != nil {
+			return RunResult{}, fmt.Errorf("the runner's link: %w", err)
+		}
+	}
 	var conn net.Conn
 	var err error
 	switch {
