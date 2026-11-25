@@ -67,6 +67,9 @@ type Team struct {
 	// firm team's id was minted for. teamOwner fills it in for a team made
 	// before it was kept.
 	Owner string `json:"owner,omitempty"`
+	// RecoveryWaits are the open recoveries' waits by member, as this
+	// coordinator counted them (teamrecovery.go).
+	RecoveryWaits map[string]*RecoveryWait `json:"recoveryWaits,omitempty"`
 
 	state *teamState
 }
@@ -455,7 +458,7 @@ func (c *Coordinator) checkListSigner(prior *teamState, l TeamList, caller Calle
 		}
 		return nil
 	}
-	return prior.maySignLists(caller, l.Iat, now)
+	return prior.maySignLists(caller, l.Iat, now, c.state.Teams[l.Team].RecoveryWaits)
 }
 
 // checkList is every check on a list against its team's state before it

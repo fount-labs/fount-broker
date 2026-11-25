@@ -211,9 +211,8 @@ A device an admin's passkey added signs no list while any admin has a device a l
 owner's stolen laptop say, would sign nothing again. They recover as Apple's and Google's accounts
 do, with a wait. The passkey-added device posts `POST /v1/teams/{team}/recovery-start
 {"prev", "sig"}`, signing over the head it read; the coordinator appends a `recovery-start` record
-and emails the owner and every admin (`recovery_started`). `RecoveryDelay` (7 days) later, by the
-coordinator's clock and by the list's `iat` against the record's `at`, the device signs lists like
-a listed one, so it signs the list that drops the lost computers and includes itself.
+and emails the owner and every admin (`recovery_started`). `RecoveryDelay` (7 days) later, counted as
+below, the device signs lists like a listed one, so it signs the list that drops the lost computers and includes itself.
 
 A list ends every open recovery, as it ends what records admitted since the last one: it includes
 the device, which then signs as a listed one, or leaves it out, which removes it. During the wait
@@ -224,13 +223,25 @@ open per member, the signature is good for one append (its `prev`), and a recove
 can't be used again: the next waits its 7 days from its own start. A passkey-added device whose
 member has no listed admin beside it signs at once, so a recovery then is refused.
 
-The wait rests on time in the log. Desktop checks `iat - at >= 7 days` between the record and the
-list the device signs, and that the record's `at` isn't more than 5 minutes before the latest time
-an entry before it carries. So a coordinator can't backdate a recovery past the entry before it,
-and a list signed early shows. What stays trusted is the coordinator's clock: it writes `at`, and
-it takes a list only within an hour of its `iat`. A coordinator lying about time could shorten the
-wait to the time since the log's last entry; the attested enclave runs the code that doesn't, and
-the admins are emailed at the start either way.
+The wait doesn't rest on the guest's wall clock, which the host sets: set back for the one request
+that writes the record, it would date the record a week ago on a quiet team; set forward, it would
+end the wait at once (security review 2026-11-24, M3). Three counts must each reach 7 days:
+
+- The coordinator's own count (`RecoveryWait`, kept in the team's state): the process's monotonic
+  clock between ticks of its scheduler, at most 2 minutes a tick. Time the coordinator is down,
+  and a state restored from before, only make the wait longer.
+- The list's `iat` against the record's `at`, and the coordinator's clock against `at`. The
+  record's `at` may not be more than 5 minutes before the latest time an entry before it carries.
+- Each Desktop's own count (`team_log.rs`). A device records when it read each point of the log.
+  A recovery-start it reads past a point it read at local time `T` was appended after `T`, so the
+  list its device signs must reach that Desktop no sooner than `T` + 7 days, by the local clock.
+  A record whose `at` falls more than an hour before `T` is a backdated one. Either is a
+  broken log. A device that reads the record and the list together, with no point before, has
+  only the `iat - at` check.
+
+The admins are emailed at the start either way. A coordinator enclave that is itself compromised
+(threat 17) can still withhold the record from devices until the list, which the local count
+then can't bound.
 
 ### 2.4 The state, as code reads it
 
@@ -525,7 +536,7 @@ The review in `launch-plan.md` T and `teams.md` §11 should take each of these.
 | 14 | A list that leaves no admin | Refused. |
 | 15 | One device under two members, one account as two members, or a worker in two teams | Refused. |
 | 16 | Someone claims a team id first | The first list of a team must be for the signer's own account id, or a firm id the coordinator minted at random for that account. An organisation's id, or another account's mint, is refused. |
-| 17 | A compromised coordinator enclave | Out of scope: it holds the DEKs. The chain still lets a client see a list no admin signed and a rollback; it doesn't stop a forged invite record, since the coordinator sees invite secrets. It could shorten a recovery's wait to the time since the log's entry before it, by its clock (§2.3.1). |
+| 17 | A compromised coordinator enclave | Out of scope: it holds the DEKs. The chain still lets a client see a list no admin signed and a rollback; it doesn't stop a forged invite record, since the coordinator sees invite secrets. It could shorten a recovery's wait on its own count, and on Desktops that never read the log between the record and the list (§2.3.1). |
 | 18 | A list or log used to exhaust memory | `MaxMembers`, `MaxMemberDevices`, `MaxTeamWorkers`, a body cap on the route, one open invite per member. |
 
 ---

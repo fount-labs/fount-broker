@@ -40,6 +40,17 @@ func newRecoveryFixture(t *testing.T) recoveryFixture {
 	return r
 }
 
+// wait moves the coordinator's clock by d and counts d into the open
+// recoveries' waits, as Run's ticks do while d passes.
+func (r recoveryFixture) wait(d time.Duration) {
+	*r.at = r.at.Add(d)
+	r.c.mu.Lock()
+	defer r.c.mu.Unlock()
+	for ; d > 0; d -= maxRecoveryTick {
+		r.c.countRecoveryWaits(min(d, maxRecoveryTick))
+	}
+}
+
 // start has d start a recovery for its member over the log's head.
 func (r recoveryFixture) start(t *testing.T, d testDevice, account, member string) error {
 	t.Helper()
@@ -83,11 +94,11 @@ func TestARecoveringDeviceSignsAfterTheDelayAndDropsTheLostOne(t *testing.T) {
 	if err := r.start(t, r.laptop, "acme", "m_owner"); err != nil {
 		t.Fatalf("starting a recovery: %v", err)
 	}
-	*r.at = r.at.Add(RecoveryDelay - time.Minute)
+	r.wait(RecoveryDelay - time.Minute)
 	if err := r.pushAs(r.laptop, "acme", []testDevice{r.laptop}); !errors.Is(err, ErrNotAdmin) {
 		t.Fatalf("before the delay: %v", err)
 	}
-	*r.at = r.at.Add(2 * time.Minute)
+	r.wait(2 * time.Minute)
 	if err := r.pushAs(r.laptop, "acme", []testDevice{r.laptop}); err != nil {
 		t.Fatalf("after the delay, dropping the lost device: %v", err)
 	}
@@ -99,6 +110,77 @@ func TestARecoveringDeviceSignsAfterTheDelayAndDropsTheLostOne(t *testing.T) {
 	}
 }
 
+// Security review 2026-11-24, M3 (TestProbeRecoveryClockRollbackSkipsDelay,
+// flipped): on a team quiet for 8 days, the coordinator's clock is set back
+// for the one request that writes the recovery-start, so its at is the last
+// entry's time. By at, iat and the clock the wait is over a minute later; by
+// the coordinator's own count it has just begun.
+func TestABackdatedClockDoesntShortenARecovery(t *testing.T) {
+	r := newRecoveryFixture(t)
+	quiet := *r.at
+	r.wait(8 * 24 * time.Hour)
+	real := *r.at
+	*r.at = quiet
+	if err := r.start(t, r.laptop, "acme", "m_owner"); err != nil {
+		t.Fatalf("starting a recovery under a clock set back: %v", err)
+	}
+	*r.at = real
+	r.wait(time.Minute)
+	if err := r.pushAs(r.laptop, "acme", []testDevice{r.laptop}); !errors.Is(err, ErrNotAdmin) {
+		t.Fatalf("a minute after a backdated recovery-start: %v", err)
+	}
+	r.wait(RecoveryDelay - 2*time.Minute)
+	if err := r.pushAs(r.laptop, "acme", []testDevice{r.laptop}); !errors.Is(err, ErrNotAdmin) {
+		t.Fatalf("a minute short of the counted wait: %v", err)
+	}
+	r.wait(2 * time.Minute)
+	if err := r.pushAs(r.laptop, "acme", []testDevice{r.laptop}); err != nil {
+		t.Fatalf("after the counted wait: %v", err)
+	}
+}
+
+// A clock set forward ends no wait either, and one tick counts at most
+// maxRecoveryTick however far the monotonic clock leapt.
+func TestAClockSetForwardDoesntEndARecovery(t *testing.T) {
+	r := newRecoveryFixture(t)
+	if err := r.start(t, r.laptop, "acme", "m_owner"); err != nil {
+		t.Fatal(err)
+	}
+	*r.at = r.at.Add(RecoveryDelay + time.Hour)
+	r.c.tickRecoveryWaits(time.Now())
+	r.c.tickRecoveryWaits(time.Now().Add(RecoveryDelay + time.Hour))
+	if err := r.pushAs(r.laptop, "acme", []testDevice{r.laptop}); !errors.Is(err, ErrNotAdmin) {
+		t.Fatalf("a clock and a monotonic clock that leapt a week: %v", err)
+	}
+	if w := r.team(t).RecoveryWaits["m_owner"]; w == nil || w.Waited != maxRecoveryTick {
+		t.Fatalf("the counted wait after one leap: %+v", w)
+	}
+}
+
+// The counted wait is kept in the state, so a restart doesn't reset it, and
+// it is forgotten once a list ends its recovery.
+func TestARecoveryWaitIsKeptAndForgotten(t *testing.T) {
+	r := newRecoveryFixture(t)
+	if err := r.start(t, r.laptop, "acme", "m_owner"); err != nil {
+		t.Fatal(err)
+	}
+	r.wait(recoverySaveEvery)
+	loaded, err := LoadState(r.c.cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := loaded.Teams["acme"].RecoveryWaits["m_owner"]; w == nil || w.Waited != recoverySaveEvery {
+		t.Fatalf("the saved wait: %+v", w)
+	}
+	if err := r.pushAs(r.owner, "acme", []testDevice{r.owner}); err != nil {
+		t.Fatal(err)
+	}
+	r.wait(time.Minute)
+	if w := r.team(t).RecoveryWaits; len(w) != 0 {
+		t.Fatalf("waits after a list ended the recovery: %v", w)
+	}
+}
+
 // The list's iat counts as well as the coordinator's clock: a list signed
 // before the delay is refused even if it arrives after.
 func TestARecoveringDevicesListMustBeSignedAfterTheDelay(t *testing.T) {
@@ -106,7 +188,7 @@ func TestARecoveringDevicesListMustBeSignedAfterTheDelay(t *testing.T) {
 	if err := r.start(t, r.laptop, "acme", "m_owner"); err != nil {
 		t.Fatal(err)
 	}
-	*r.at = r.at.Add(RecoveryDelay + time.Minute)
+	r.wait(RecoveryDelay + time.Minute)
 	r.tt.devices["m_owner"] = []testDevice{r.laptop}
 	r.tt.since[r.laptop.id()] = r.laptopSeq(0)
 	l := r.tt.list()
@@ -121,11 +203,11 @@ func TestAListedDeviceCancelsARecoveryByRemovingTheDevice(t *testing.T) {
 	if err := r.start(t, r.laptop, "acme", "m_owner"); err != nil {
 		t.Fatal(err)
 	}
-	*r.at = r.at.Add(time.Hour)
+	r.wait(time.Hour)
 	if err := r.pushAs(r.owner, "acme", []testDevice{r.owner}); err != nil {
 		t.Fatalf("the owner's listed device removing the recovering one: %v", err)
 	}
-	*r.at = r.at.Add(RecoveryDelay)
+	r.wait(RecoveryDelay)
 	if err := r.pushAs(r.laptop, "acme", []testDevice{r.laptop}); !errors.Is(err, ErrNotAdmin) {
 		t.Fatalf("a removed recovering device: %v", err)
 	}
@@ -142,7 +224,7 @@ func TestAListedDeviceCancelsARecoveryByRemovingTheDevice(t *testing.T) {
 	if err := r.start(t, again, "acme", "m_owner"); err != nil {
 		t.Fatal(err)
 	}
-	*r.at = r.at.Add(RecoveryDelay / 2)
+	r.wait(RecoveryDelay / 2)
 	if err := r.pushAs(again, "acme", []testDevice{again}); !errors.Is(err, ErrNotAdmin) {
 		t.Fatalf("a new recovery half way: %v", err)
 	}
@@ -266,7 +348,7 @@ func TestARecoveryStartCantBeReplayedOrForged(t *testing.T) {
 // refused: the coordinator can't backdate one past the log.
 func TestABackdatedRecoveryStartBreaksTheLog(t *testing.T) {
 	r := newRecoveryFixture(t)
-	*r.at = r.at.Add(time.Hour)
+	r.wait(time.Hour)
 	if err := r.start(t, r.laptop, "acme", "m_owner"); err != nil {
 		t.Fatal(err)
 	}
