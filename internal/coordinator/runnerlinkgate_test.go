@@ -147,9 +147,41 @@ func TestUnprovenLinkPeersHoldTheCoordinatorToABound(t *testing.T) {
 	}
 }
 
-// Behind the shim, one forwarded source holds at most
-// link.MaxHandshakesPerSource handshakes; another source still gets one.
-func TestOneSourceHoldsFewLinkHandshakes(t *testing.T) {
+// stalledPeer finishes TLS on /fount-link with a throwaway key and sends
+// nothing.
+func stalledPeer(t *testing.T, base string) (net.Conn, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	raw, err := link.DialUpgradeHeader(ctx, base, link.Path, link.DialInProtocol, nil)
+	if err != nil {
+		return nil, err
+	}
+	_, key, _ := ed25519.GenerateKey(rand.Reader)
+	cert, err := link.Certificate(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tc := tls.Client(raw, &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{cert}, InsecureSkipVerify: true})
+	if err := tc.HandshakeContext(ctx); err != nil {
+		raw.Close()
+		return nil, err
+	}
+	return tc, nil
+}
+
+// closedWithin is whether the coordinator closes c within d.
+func closedWithin(c net.Conn, d time.Duration) bool {
+	c.SetReadDeadline(time.Now().Add(d))
+	_, err := c.Read(make([]byte, 1))
+	return err != nil && !errors.Is(err, os.ErrDeadlineExceeded)
+}
+
+// The 2026-11-25 re-review's N1 probe, flipped: link.MaxHandshakes peers
+// that finish TLS and stall, the whole gate, no longer keep a runner out. A
+// newcomer takes a stalled one's place once it is link.EvictAfter old, and
+// a stalled peer is dropped by link.PeerFirstBytes anyway.
+func TestStalledLinkHandshakesDontKeepARunnerOut(t *testing.T) {
 	side, err := link.Unattested()
 	if err != nil {
 		t.Fatal(err)
@@ -158,23 +190,85 @@ func TestOneSourceHoldsFewLinkHandshakes(t *testing.T) {
 	defer h.Close()
 	web := httptest.NewServer(h)
 	defer web.Close()
-	from := func(ip string) http.Header { return http.Header{"X-Forwarded-For": {"198.51.100.9, " + ip}} }
-	for i := range link.MaxHandshakesPerSource + 1 {
-		c, err := junkPeer(t, web.URL, from("203.0.113.7"), link.MaxAttestation)
-		if i < link.MaxHandshakesPerSource {
-			if err != nil {
-				t.Fatalf("handshake %d: %v", i, err)
-			}
-			defer c.Close()
-			continue
+
+	var held []net.Conn
+	for range link.MaxHandshakes {
+		c, err := stalledPeer(t, web.URL)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if err == nil || !strings.Contains(err.Error(), "503") {
-			t.Fatalf("handshake %d from one source: %v", i, err)
-		}
+		held = append(held, c)
 	}
-	c, err := junkPeer(t, web.URL, from("203.0.113.8"), link.MaxAttestation)
+	defer func() {
+		for _, c := range held {
+			c.Close()
+		}
+	}()
+	if _, err := stalledPeer(t, web.URL); err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("a newcomer before any handshake is %s old: %v", link.EvictAfter, err)
+	}
+	time.Sleep(link.EvictAfter + 100*time.Millisecond)
+
+	runner, err := link.Unattested()
 	if err != nil {
-		t.Fatalf("another source: %v", err)
+		t.Fatal(err)
 	}
-	c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	raw, err := link.DialUpgradeHeader(ctx, web.URL, link.Path, link.DialInProtocol, nil)
+	if err != nil {
+		t.Fatalf("a runner against a gate full of stalled peers: %v", err)
+	}
+	if _, err := runner.Client(ctx, raw); err != nil {
+		t.Fatalf("the runner's handshake: %v", err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); !h.Ready(); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the runner didn't park")
+		}
+	}
+	// The one whose place it took was closed; the rest go by
+	// link.PeerFirstBytes after their TLS.
+	closed := 0
+	for _, c := range held {
+		if closedWithin(c, link.PeerFirstBytes+time.Second) {
+			closed++
+		}
+	}
+	if closed != len(held) {
+		t.Fatalf("%d of %d stalled peers were closed", closed, len(held))
+	}
+}
+
+// A peer that sends its document slower than link.MinAttestationRate is
+// dropped after link.PeerRateGrace, well before link.PeerTimeout.
+func TestATricklingLinkPeerIsDropped(t *testing.T) {
+	side, err := link.Unattested()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewRunnerHub(side)
+	defer h.Close()
+	web := httptest.NewServer(h)
+	defer web.Close()
+	c, err := junkPeer(t, web.URL, nil, link.MaxAttestation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	start := time.Now()
+	go func() {
+		for range 20 {
+			if _, err := c.Write(make([]byte, 1024)); err != nil {
+				return
+			}
+			time.Sleep(time.Second)
+		}
+	}()
+	if !closedWithin(c, link.PeerRateGrace+3*time.Second) {
+		t.Fatal("a peer at 1 KiB/s is still held")
+	}
+	if took := time.Since(start); took > link.PeerRateGrace+2*time.Second {
+		t.Fatalf("it was dropped after %s", took)
+	}
 }

@@ -34,6 +34,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"time"
@@ -49,10 +50,19 @@ const KeyID = "fount-link"
 // take a while to answer after boot.
 const HandshakeTimeout = time.Minute
 
-// PeerTimeout bounds, on the accepting end, TLS and the peer's document: what
-// an unproven peer can hold a handshake for. The peer asks its own socket
-// before it sends, which retries for about 20 s after boot.
-const PeerTimeout = 30 * time.Second
+// On the accepting end, before the peer has proved anything (2026-11-25
+// re-review, N1): TLS must be done within PeerTLSTimeout, the peer's
+// document must begin within PeerFirstBytes after it, the dialling end's
+// attestation socket being warm (Warmer), and then come at MinAttestationRate
+// at least, after PeerRateGrace. PeerTimeout bounds it all: a document of
+// MaxAttestation at the slowest rate fits in it.
+const (
+	PeerTLSTimeout     = 5 * time.Second
+	PeerFirstBytes     = 5 * time.Second
+	PeerRateGrace      = 2 * time.Second
+	MinAttestationRate = 256 << 10
+	PeerTimeout        = 30 * time.Second
+)
 
 // MaxAttestation bounds the peer's document. Tinfoil's, its collateral
 // included, is far smaller; frame.MaxBody is for jobs, from a proven peer.
@@ -122,14 +132,36 @@ func (s *Side) ServerEndorsed(ctx context.Context, conn net.Conn) (net.Conn, End
 	return s.handshake(ctx, conn, false)
 }
 
+// ServerGated is ServerEndorsed for a handshake holding pass, which it tells
+// once the peer has begun its document.
+func (s *Side) ServerGated(ctx context.Context, conn net.Conn, pass *Pass) (net.Conn, Endorsement, error) {
+	return s.handshakeGated(ctx, conn, false, pass)
+}
+
+// A Warmer is an Attester that can make sure, before a link is dialled, that
+// its next document comes at once: the accepting end gives the dialler only
+// PeerFirstBytes for it.
+type Warmer interface {
+	Warm(ctx context.Context) error
+}
+
 const (
 	labelClient = "EXPORTER-fount-link client"
 	labelServer = "EXPORTER-fount-link server"
 )
 
 func (s *Side) handshake(ctx context.Context, conn net.Conn, client bool) (net.Conn, Endorsement, error) {
+	return s.handshakeGated(ctx, conn, client, nil)
+}
+
+func (s *Side) handshakeGated(ctx context.Context, conn net.Conn, client bool, pass *Pass) (net.Conn, Endorsement, error) {
 	ctx, cancel := context.WithTimeout(ctx, HandshakeTimeout)
 	defer cancel()
+	if w, ok := s.Attester.(Warmer); ok && client {
+		if err := w.Warm(ctx); err != nil {
+			return nil, Endorsement{}, fmt.Errorf("attesting this end: %w", err)
+		}
+	}
 	cert, err := Certificate(s.Key)
 	if err != nil {
 		return nil, Endorsement{}, err
@@ -166,8 +198,9 @@ func (s *Side) handshake(ctx context.Context, conn net.Conn, client bool) (net.C
 	}
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
+	start := time.Now()
 	if !client {
-		conn.SetDeadline(time.Now().Add(PeerTimeout))
+		conn.SetDeadline(start.Add(PeerTLSTimeout))
 	}
 	if err := tc.HandshakeContext(ctx); err != nil {
 		return nil, Endorsement{}, fmt.Errorf("link TLS: %w", err)
@@ -203,7 +236,9 @@ func (s *Side) handshake(ctx context.Context, conn net.Conn, client bool) (net.C
 	} else {
 		// The client sent first: this end attests only for a peer that
 		// proved itself.
-		if endorsed, err = s.readPeer(tc, peer, peerNonce); err != nil {
+		conn.SetWriteDeadline(start.Add(PeerTimeout))
+		paced := &pacedReader{conn: tc, began: pass.Begin, start: time.Now(), until: start.Add(PeerTimeout)}
+		if endorsed, err = s.readPeerFrom(paced, peer, peerNonce); err != nil {
 			return nil, Endorsement{}, err
 		}
 		conn.SetDeadline(time.Time{})
@@ -224,7 +259,11 @@ func (s *Side) handshake(ctx context.Context, conn net.Conn, client bool) (net.C
 // readPeer reads and checks the peer's document for nonce, which must endorse
 // peer, the key its TLS proved.
 func (s *Side) readPeer(tc *tls.Conn, peer ed25519.PublicKey, nonce []byte) (Endorsement, error) {
-	f, err := frame.ReadMax(tc, MaxAttestation)
+	return s.readPeerFrom(tc, peer, nonce)
+}
+
+func (s *Side) readPeerFrom(r io.Reader, peer ed25519.PublicKey, nonce []byte) (Endorsement, error) {
+	f, err := frame.ReadMax(r, MaxAttestation)
 	if err != nil {
 		return Endorsement{}, fmt.Errorf("the peer's attestation: %w", err)
 	}
@@ -250,6 +289,35 @@ func (s *Side) readPeer(tc *tls.Conn, peer ed25519.PublicKey, nonce []byte) (End
 }
 
 var attestationHeader = []byte(`{"kind":"attestation"}`)
+
+// pacedReader reads an unproven peer's document: its first byte within
+// PeerFirstBytes of start, the rest at MinAttestationRate after
+// PeerRateGrace, and all of it before until.
+type pacedReader struct {
+	conn         net.Conn
+	began        func()
+	start, until time.Time
+	first        time.Time
+	n            int64
+}
+
+func (r *pacedReader) Read(p []byte) (int, error) {
+	deadline := r.start.Add(PeerFirstBytes)
+	if !r.first.IsZero() {
+		deadline = r.first.Add(PeerRateGrace + time.Duration(r.n)*time.Second/MinAttestationRate)
+	}
+	if deadline.After(r.until) {
+		deadline = r.until
+	}
+	r.conn.SetReadDeadline(deadline)
+	k, err := r.conn.Read(p)
+	if k > 0 && r.first.IsZero() {
+		r.first = time.Now()
+		r.began()
+	}
+	r.n += int64(k)
+	return k, err
+}
 
 // Certificate is a self-signed certificate over an attested key: only a
 // carrier for the key, which the attestation vouches for.

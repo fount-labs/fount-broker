@@ -224,26 +224,27 @@ func (h *RunnerHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(name) > 253 {
 		name = name[:253]
 	}
-	done, ok := h.Handshakes.Enter(link.Source(r))
+	var victim link.Evictable
+	pass, ok := h.Handshakes.Admit(link.Source(r), victim.Evict)
 	if !ok {
 		w.Header().Set("Retry-After", "5")
 		http.Error(w, "too many runner links being set up; try again", http.StatusServiceUnavailable)
 		return
 	}
 	conn, ok := link.Upgrade(w, r, link.DialInProtocol)
-	if !ok {
-		done()
+	if !ok || !victim.Set(conn) {
+		pass.Done()
 		return
 	}
-	go h.admit(conn, name, done)
+	go h.admit(conn, name, pass)
 }
 
-// admit runs the handshake on a runner's connection and parks it. done
-// gives back its handshake's place.
-func (h *RunnerHub) admit(raw net.Conn, name string, done func()) {
+// admit runs the handshake on a runner's connection and parks it. pass is
+// its handshake's place.
+func (h *RunnerHub) admit(raw net.Conn, name string, pass *link.Pass) {
 	start := time.Now()
-	conn, e, err := h.Side.ServerEndorsed(h.ctx, raw)
-	done()
+	conn, e, err := h.Side.ServerGated(h.ctx, raw, pass)
+	pass.Done()
 	if err != nil {
 		raw.Close()
 		log.Printf("runner link from %s (%q): %v", raw.RemoteAddr(), name, err)

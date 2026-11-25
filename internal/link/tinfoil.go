@@ -3,6 +3,7 @@ package link
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/fount-labs/fount-broker/internal/attested"
@@ -29,7 +31,11 @@ const KeyDir = attested.Dir
 func LoadKey(dir string) (ed25519.PrivateKey, error) { return attested.LoadEd25519(dir, KeyID) }
 
 // SocketAttester asks the enclave's attestation socket for documents.
-type SocketAttester struct{ client *http.Client }
+type SocketAttester struct {
+	client *http.Client
+	// warm is set while the socket answered the last call.
+	warm atomic.Bool
+}
 
 func NewSocketAttester(path string) *SocketAttester {
 	return &SocketAttester{client: &http.Client{
@@ -44,9 +50,24 @@ func NewSocketAttester(path string) *SocketAttester {
 
 const maxDocument = 32 << 20
 
+// Warm asks for a throwaway document unless the last call was answered, so
+// that the handshake's own comes at once (Warmer): after boot, and while the
+// release has no current freshness witness, the socket answers 503 for a
+// while, which the accepting end won't wait out.
+func (a *SocketAttester) Warm(ctx context.Context) error {
+	if a.warm.Load() {
+		return nil
+	}
+	nonce := make([]byte, 32)
+	rand.Read(nonce)
+	_, err := a.Attest(ctx, nonce)
+	return err
+}
+
 // Attest retries a 503, which the socket answers until it's ready and while
 // the release has no current freshness witness.
-func (a *SocketAttester) Attest(ctx context.Context, nonce []byte) ([]byte, error) {
+func (a *SocketAttester) Attest(ctx context.Context, nonce []byte) (doc []byte, err error) {
+	defer func() { a.warm.Store(err == nil) }()
 	url := "http://localhost/.well-known/tinfoil-attestation?nonce=" + hex.EncodeToString(nonce)
 	var last error
 	for range 10 {

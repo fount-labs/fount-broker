@@ -102,13 +102,13 @@ func (r *Relay) Serve(ctx context.Context, l net.Listener) error {
 			defer conn.Close()
 			if r.Link != nil {
 				// The shim is every peer's source here: only the total counts.
-				done, ok := r.Handshakes.Enter("")
+				pass, ok := r.Handshakes.Admit("", func() { conn.Close() })
 				if !ok {
 					log.Printf("link from %s: too many links being set up", conn.RemoteAddr())
 					return
 				}
-				tc, err := r.Link.Server(ctx, conn)
-				done()
+				tc, _, err := r.Link.ServerGated(ctx, conn, pass)
+				pass.Done()
 				if err != nil {
 					log.Printf("link from %s: %v", conn.RemoteAddr(), err)
 					return
