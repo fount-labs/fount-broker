@@ -353,6 +353,9 @@ func run() error {
 	if *mailLoop && intake == nil {
 		return errors.New("--mail needs a runner that runs intake")
 	}
+	if err := bootGeneration(ctx, keys, backups, side, status); err != nil || ctx.Err() != nil {
+		return err
+	}
 	backups.vault = side
 	dur, err := backups.openDurable(*mailAuthority)
 	if err != nil {

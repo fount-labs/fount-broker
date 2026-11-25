@@ -99,7 +99,7 @@ func (f keyFlags) boots() bool { return f.mode == keyVault && f.authority != "" 
 type keyStatus struct {
 	mu         sync.Mutex
 	Mode       string    `json:"mode"`
-	State      string    `json:"state"` // waiting, then held
+	State      string    `json:"state"` // waiting, then held; refused when the volume may not boot
 	KeyID      string    `json:"key_id,omitempty"`
 	Commitment string    `json:"keyset_commitment,omitempty"`
 	Vault      string    `json:"vault,omitempty"`
@@ -149,7 +149,15 @@ func (s *keyStatus) failed(err error) {
 // runners, if set, is the runner enclaves linked in, by hostname and key.
 func statusAPI(s *keyStatus, jobs *atomic.Pointer[coordinator.Coordinator], runners func() any) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok\n") })
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		// A coordinator another generation retired serves nothing that
+		// counts, so it says so (broker review H3).
+		if c := jobs.Load(); c != nil && c.Retired() {
+			http.Error(w, "retired: another coordinator generation took over", http.StatusServiceUnavailable)
+			return
+		}
+		io.WriteString(w, "ok\n")
+	})
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
 		out := map[string]any{"wrapping_key": s, "volume": &s.vol}
 		if c := jobs.Load(); c != nil {
@@ -179,7 +187,8 @@ func statusAPI(s *keyStatus, jobs *atomic.Pointer[coordinator.Coordinator], runn
 // wrappingKey gets the key by f.mode: the dev key from its file, or the
 // vaults' keyset, waiting for a vault as long as it takes. With the vaults'
 // key and an authority it also returns what else the vault gave: the
-// generation, the counter and the bucket's credentials.
+// counter and the bucket's credentials. It takes no generation: that waits
+// for bootGeneration, once the volume is open.
 func wrappingKey(ctx context.Context, f keyFlags, status *keyStatus) (coordinator.WrappingKey, *vaultSide, error) {
 	if f.mode == keyDev {
 		key, err := devWrappingKey(filepath.Join(f.dir, "wrapping.key"))
@@ -198,9 +207,8 @@ func wrappingKey(ctx context.Context, f keyFlags, status *keyStatus) (coordinato
 	}
 	if f.authority != "" {
 		src.Authority, _ = wire.ParseAuthorityKey(f.authority)
-		src.Boot = f.boots()
 	}
-	log.Printf("waiting for the wrapping key from %s (releases of %s, keyset %s, generation %t)", f.vaults, f.vaultRepo, f.commitment, src.Boot)
+	log.Printf("waiting for the wrapping key from %s (releases of %s, keyset %s, generation after the volume opens %t)", f.vaults, f.vaultRepo, f.commitment, f.boots())
 	got, err := src.Wait(ctx, vaultkey.DefaultBackoff, func(err error) {
 		status.failed(err)
 		log.Printf("no vault gave the wrapping key: %v", err)
@@ -214,11 +222,116 @@ func wrappingKey(ctx context.Context, f keyFlags, status *keyStatus) (coordinato
 	if err != nil {
 		return coordinator.WrappingKey{}, nil, err
 	}
-	if side != nil && side.gen != nil {
-		status.generation(side.gen.G.Number)
-		log.Printf("coordinator generation %d from %s", side.gen.G.Number, got.Vault)
+	if side != nil {
+		side.src = src
 	}
 	return got.Key, side, nil
+}
+
+// errBootRefused is a volume whose state is behind the vault's count: a
+// blank disk, a copy of an old one, or a create with no disk. Taking a
+// generation for it would fence the coordinator that is ahead, so it takes
+// none (fount-mail-vault review H2, broker review H3).
+var errBootRefused = errors.New("refusing to take a generation")
+
+// bootGeneration takes this process's generation, after the volume opened:
+// only when the volume's security sequence has reached the vault's count,
+// when the vault has counted nothing yet, or when --restore is about to put
+// a backup onto an empty volume. Otherwise it serves /status alone until
+// stopped, saying why; exiting would only restart into the same refusal.
+// Its error is nil when ctx ends.
+func bootGeneration(ctx context.Context, f keyFlags, b backupFlags, side *vaultSide, status *keyStatus) error {
+	if !f.boots() || side == nil || side.src == nil {
+		return nil
+	}
+	err := bootAllowed(ctx, side.counter, b)
+	switch {
+	case ctx.Err() != nil:
+		return nil
+	case errors.Is(err, errBootRefused):
+		status.refused(err)
+		log.Printf("%v; serving /status alone until stopped", err)
+		<-ctx.Done()
+		return nil
+	case err != nil:
+		return err
+	}
+	src := *side.src
+	src.Boot = true
+	got, err := src.Wait(ctx, vaultkey.DefaultBackoff, func(err error) {
+		status.failed(err)
+		log.Printf("no vault booted a generation: %v", err)
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
+	}
+	side.gen = &coordinator.FixedGeneration{G: *got.Generation}
+	counter, err := vaultkey.NewCounter(src.Vaults, src.Authority, side.gen)
+	if err != nil {
+		return err
+	}
+	side.counter = counter
+	if got.S3 != nil {
+		side.s3 = got.S3
+	}
+	status.generation(side.gen.G.Number)
+	log.Printf("coordinator generation %d from %s", side.gen.G.Number, got.Vault)
+	return nil
+}
+
+// bootAllowed is nil when this volume may take a generation, errBootRefused
+// when it may not, and another error when it can't tell.
+func bootAllowed(ctx context.Context, counter coordinator.VaultCounter, b backupFlags) error {
+	has, mark, err := b.volume()
+	if err != nil {
+		return fmt.Errorf("reading the volume's state: %w", err)
+	}
+	if b.restore != "" && !b.dryRun && !has {
+		log.Printf("boot: --restore %s onto an empty volume takes a generation", b.restore)
+		return nil
+	}
+	var seq uint64
+	if has {
+		st, err := coordinator.LoadState(filepath.Join(b.dir, "state"))
+		if err != nil {
+			return fmt.Errorf("reading the volume's state: %w", err)
+		}
+		seq = st.SecuritySeq
+	}
+	var count coordinator.VaultCount
+	wait := vaultkey.DefaultBackoff.First
+	for {
+		if count, err = counter.Load(ctx); err == nil {
+			break
+		}
+		log.Printf("boot: the vault's count: %v; trying again in %s", err, wait)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+		wait = min(2*wait, vaultkey.DefaultBackoff.Most)
+	}
+	if seq < count.Count {
+		what := "a blank volume"
+		if has {
+			what = fmt.Sprintf("a volume at security change %d", seq)
+			if mark != nil {
+				what += fmt.Sprintf(" (restored from %s)", mark.Root)
+			}
+		}
+		return fmt.Errorf("%w: %s, and the vault counted %d under generation %d; a generation now would fence the coordinator that holds it. Attach that coordinator's volume, or --restore onto an empty one", errBootRefused, what, count.Count, count.Generation)
+	}
+	return nil
+}
+
+func (s *keyStatus) refused(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.State, s.LastError = "refused", fmt.Sprintf("%.400v", err)
 }
 
 // vaultSide is what the Cloud vaults give a coordinator beyond its key.
@@ -228,6 +341,8 @@ type vaultSide struct {
 	gen *coordinator.FixedGeneration
 	// s3 is the backup bucket's credentials, nil when the vault holds none.
 	s3 *wire.S3Credentials
+	// src is where the generation comes from, once the volume is open.
+	src *vaultkey.Source
 }
 
 // newVaultSide is nil without an authority: no generation, no counter.
