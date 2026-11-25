@@ -1,1 +1,5 @@
 dist/
+/cmd/*/fount-*
+!/cmd/*/fount-*.go
+/cmd/*/mail-*
+!/cmd/*/mail-*.go
