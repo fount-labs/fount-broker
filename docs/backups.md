@@ -37,6 +37,21 @@ nobody. `--restore-dry-run` never boots. A coordinator a newer generation
 retired answers `/health` with 503. `--mail` with the vault's key needs the
 authority key too.
 
+**A refusal fails the Tinfoil deploy.** A refused boot or volume answers
+`/health` with 503, and the body is the reason: `refused: this volume may
+not take a generation: <why>` or `refused: the volume didn't open: <why>`,
+the same text as `/status`'s `last_error`, which holds no user data. The
+container's healthcheck (`fount-coordinator health`) prints that body. On
+Tinfoil a container that is unhealthy at boot fails its deploy, and the
+instance is left Failed (for one with a volume, a failed update too), with
+its DNS gone, so `/status` and `--status-listen` can't be reached. Read
+why in the dashboard: a Failed instance's Deploy dialog shows the last
+error, which is that healthcheck output. `tinfoil container list -o json`
+lists the Failed instances. Fix what it names (attach the coordinator's
+own volume, or `--restore` onto an empty one) and deploy again. Container
+logs (`tindbg logs`) need a debug-mode build, so don't rely on them in
+production.
+
 With `--counter-states` (`FOUNT_COORDINATOR_COUNTER_STATES=1`) every count
 is bound to the state it counts (counter version 2): a digest of the
 security sequence, the generation that made it, and each team's log head and

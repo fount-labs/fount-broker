@@ -279,7 +279,9 @@ func TestARefusedCoordinatorIsUnhealthy(t *testing.T) {
 		refuse(s)
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest("GET", "/health", nil))
-		if w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), "blank") || strings.Contains(w.Body.String(), "another key") {
+		// The reason is the body: a refusal fails the deploy, whose error
+		// is the healthcheck's output (2026-11-25 re-check, R3-7).
+		if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "blank") && !strings.Contains(w.Body.String(), "another key") {
 			t.Fatalf("/health with the %s refused: %d %q", name, w.Code, w.Body)
 		}
 	}

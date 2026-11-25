@@ -419,16 +419,20 @@ func refusedRestore(err error) bool {
 		errors.Is(err, coordinator.ErrBackupUnreadable)
 }
 
-// refusal says what this process refused, "" when nothing: the error's
-// text stays behind /status.
+// refusal says what this process refused and why, "" when nothing. It is
+// /health's 503 body, which the healthcheck prints: a refused boot fails
+// its Tinfoil deploy, and the deploy's error is the last healthcheck's
+// output, so that is where the operator reads why, with the instance and
+// its /status gone (2026-11-25 re-check, R3-7). The reason is /status's
+// last_error, already served beyond loopback: no user data.
 func (s *keyStatus) refusal() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch {
 	case s.State == "refused":
-		return "refused: this volume may not take a generation; see /status"
+		return "refused: this volume may not take a generation: " + s.LastError
 	case s.vol.State == "refused":
-		return "refused: the volume didn't open; see /status"
+		return "refused: the volume didn't open: " + s.vol.LastError
 	}
 	return ""
 }

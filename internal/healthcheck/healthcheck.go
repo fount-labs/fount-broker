@@ -4,11 +4,16 @@ package healthcheck
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	neturl "net/url"
+	"strings"
 	"time"
 )
+
+// maxBody bounds the reason a failed check prints.
+const maxBody = 1 << 10
 
 // Check gets url, which must be http on loopback, and fails unless it answers
 // 200.
@@ -25,9 +30,16 @@ func Check(url string) error {
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s: %s", url, resp.Status)
+		// The body says why: on Tinfoil a failed healthcheck's output is a
+		// failed deploy's error.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+		why := strings.TrimSpace(strings.ToValidUTF8(string(body), "?"))
+		if why == "" {
+			return fmt.Errorf("%s: %s", url, resp.Status)
+		}
+		return fmt.Errorf("%s: %s: %s", url, resp.Status, why)
 	}
 	return nil
 }
