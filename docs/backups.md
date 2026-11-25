@@ -52,6 +52,13 @@ own volume, or `--restore` onto an empty one) and deploy again. Container
 logs (`tindbg logs`) need a debug-mode build, so don't rely on them in
 production.
 
+A boot that can't reach the vault's counter or the bucket to check the
+volume against its newest backup, including a root that lists but won't
+download, isn't refused and doesn't boot: it tries again with the vault
+backoff, each failure on `/status` as `failed_rounds` and `last_error`, and
+`/health` stays ok. A root that downloads and doesn't open (junk a bucket
+writer put there) is passed over for the one before.
+
 With `--counter-states` (`FOUNT_COORDINATOR_COUNTER_STATES=1`) every count
 is bound to the state it counts (counter version 2): a digest of the
 security sequence, the generation that made it, and each team's log head and
@@ -138,6 +145,16 @@ without them is the thing to catch. With them:
   bucket didn't have yet and the bytes of those and the root.
 - `stopped`: why this coordinator stopped backing up, once a newer generation
   took over.
+- `counting_failing_since`, `count_error`, `count_retry_at`: counting changes
+  in the vault (a security change, a change that takes something away, the
+  mail ledger's progress every 30 s) has failed since then, with the latest
+  error, and the ledger's next try. After a failure the ledger waits 30 s,
+  doubling to 5 minutes, each wait drawn from its upper half. `/status`
+  shows `counting.failing_since` and `retry_at`, without the error. After 10
+  minutes of failing (`CountUnhealthyAfter`) `/health` answers 503 too: the
+  coordinator still serves, and a running Tinfoil instance stays up, but a
+  replay of its disk would bring back what was taken away since, and mail
+  could run again.
 
 The status is in memory: a restart starts empty and fills in with the backup
 it takes at boot. The bucket name, credentials and contents are never in it.
@@ -153,15 +170,25 @@ it takes at boot. The bucket name, credentials and contents are never in it.
 - a generation the vault has moved past;
 - a backup that doesn't open under the wrapping key, or has any object missing.
 
+Only the newest root restores while mail flows. The vault counts the mail
+ledger's progress at most every 30 s, and each count writes a root first,
+so the count moves past every root but the newest within seconds of new
+mail. A root below the count is refused as rolled back, so naming an older
+root works only when nothing was counted since it, which in practice means
+it is the newest. `--restore latest` takes the newest root that opens: it
+is always at the count or one past it. A newer root that downloads and
+won't open is passed over; a named one is refused, and so is a bucket where
+none opens.
+
 1. **Dry run.** Start the coordinator on an empty `--dir` with
-   `--restore latest --restore-dry-run`, or name a root. It opens the root and
+   `--restore latest --restore-dry-run` (or the newest root by name). It opens the root and
    every worker's tree, and reads every file from the bucket. It doesn't move
    the vault's generation, so the coordinator running now keeps running. It
    logs `restore: {"root":…,"takenAt":…,"securitySeq":…,"workers":…,"objects":…,"stoppedJobs":…,"dryRun":true}`,
    then serves nothing until stopped. In an enclave, a restart doesn't repeat
    the check.
 2. **Restore.** Start it on an empty volume with `--restore latest`, or the
-   root the dry run named. It restores under a new generation, which fences
+   root the dry run named, if the count hasn't moved past it since. It restores under a new generation, which fences
    the old coordinator at the vault and at the edge, then serves. Jobs queued
    or running at the backup are failed. Mail the restored ledgers lack is held
    for a person. A send in flight resumes by asking the edge first.
