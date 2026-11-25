@@ -33,7 +33,8 @@ import (
 //     team who reaches it (reviewers.go), as a device's approval must be;
 //   - intake read the owner's words above the quote as "yes" (or the like);
 //   - the token wasn't used, hasn't expired, and the draft is still pending at
-//     that draft_rev with the same binding.
+//     that draft_rev with the same binding, with no newer draft, no email
+//     from the thread's people and no change of them since the email went.
 //
 // The coordinator parses no email: the edge's check gives the signed headers
 // and DKIM, and intake (C) the owner's reply text. A reply that matches a
@@ -56,6 +57,11 @@ type approvalAsk struct {
 	To        string    `json:"to"`
 	ExpiresAt time.Time `json:"expiresAt"`
 	SendID    string    `json:"sendId"`
+	// Since is the thread's revision before the email went: an email or
+	// change of people on it after that refuses a reply to this one, as
+	// NEW_MAIL_SINCE and PARTICIPANTS_CHANGED refuse a device's approval.
+	// Zero, from before it was kept, is before everything.
+	Since uint64 `json:"since,omitempty"`
 	// ThreadMode is the thread's reply mode when the email went. Empty, from
 	// before it was kept, is Full.
 	ThreadMode string `json:"threadMode,omitempty"`
@@ -91,7 +97,7 @@ func (c *Coordinator) askApproval(t *Tree, th *threadRecord, mb *Mailbox, rs *re
 	if err != nil {
 		return err
 	}
-	ask := &approvalAsk{DraftRev: d.DraftRev, Binding: d.Binding, To: strings.ToLower(to), ExpiresAt: now.Add(approvalLifetime).Truncate(time.Second), SendID: id, ThreadMode: th.replyMode()}
+	ask := &approvalAsk{DraftRev: d.DraftRev, Binding: d.Binding, To: strings.ToLower(to), ExpiresAt: now.Add(approvalLifetime).Truncate(time.Second), SendID: id, Since: th.Revision, ThreadMode: th.replyMode()}
 	var names []string
 	for _, p := range d.Files {
 		names = append(names, path.Base(p))
@@ -380,6 +386,10 @@ func emailApprovalRefused(th *threadRecord, e *threadEntry, ask *approvalAsk, rs
 		return "intake didn't read it as a reply"
 	case th.newerDraft(e):
 		return "a newer draft is waiting on this thread"
+	case th.participantMailSince(ask.Since):
+		return "an email came on the thread after the approval email; approve in Fount"
+	case th.peopleSince(ask.Since):
+		return "the thread's people or mode changed after the approval email; approve in Fount"
 	}
 	for _, to := range d.To {
 		if s.requester(to) == nil {
@@ -429,4 +439,13 @@ func (th *threadRecord) newerDraft(e *threadEntry) bool {
 		}
 	}
 	return false
+}
+
+// participantMailSince says one of th's participants wrote on it after
+// base, other than to answer an approval email: what the owner's "yes" didn't
+// see, such as a client's "wait, the amounts changed".
+func (th *threadRecord) participantMailSince(base uint64) bool {
+	return slices.ContainsFunc(th.Entries, func(e threadEntry) bool {
+		return e.Kind == entryMail && e.Rev > base && e.Mail != nil && e.Mail.Verdict != verdictApproval && th.hasParticipant(e.Mail.Sender)
+	})
 }

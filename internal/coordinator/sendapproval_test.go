@@ -412,3 +412,36 @@ func TestAFullForTheOwnerThreadApprovesByEmailUntilLowered(t *testing.T) {
 		})
 	}
 }
+
+// The 11-24 review's L9 probe, flipped: an email from the thread's people
+// after the approval email went refuses its "yes", as NEW_MAIL_SINCE refuses
+// a device's approval; the owner's refused replies to approval emails, and
+// a stranger's email, don't.
+func TestAnEmailAfterTheApprovalEmailRefusesItsYes(t *testing.T) {
+	r := newSendRig(t, modeFull)
+	th, e := r.drafted()
+	r.pass()
+	a1 := r.askMessageID(th, e)
+	r.intake.set(func(f *fakeIntake) { f.instruction, f.source, f.reply = "Yes.", "owner", true })
+	r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close", inReplyTo: a1, unsigned: true})
+	r.edge.deliver(r.mb, email{from: "eve@else.example", to: testWorkerAddr, subject: "Re: Q3 close", inReplyTo: a1})
+	r.pass()
+	// With automatic runs off, it waits on the thread instead of starting a
+	// turn, whose draft would be newer.
+	if res := r.workerOp(r.w.ID, "op_auto_off", "setAutoRun", switchArgs{On: false, BaseRevision: r.settings(r.w.ID).AutoRunRev}); !res.OK {
+		t.Fatalf("setAutoRun: %+v", res)
+	}
+	r.intake.set(func(f *fakeIntake) { f.instruction = "Wait, the amounts changed." })
+	r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close", inReplyTo: a1})
+	r.pass()
+	r.intake.set(func(f *fakeIntake) { f.instruction = "Yes." })
+	r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close", inReplyTo: a1})
+	r.pass()
+	if d := r.draft(th.ID, e.ID); d.State != draftPending {
+		t.Fatalf("the draft is %s", d.State)
+	}
+	why := r.refusals(th.ID)
+	if len(why) == 0 || !strings.HasPrefix(why[len(why)-1], "an email came on the thread after the approval email") {
+		t.Fatalf("refusals %v", why)
+	}
+}
