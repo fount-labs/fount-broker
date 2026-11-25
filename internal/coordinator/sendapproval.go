@@ -255,7 +255,7 @@ func (c *Coordinator) asksNamed(th *threadRecord, ids []string) []askOnThread {
 func (a askOnThread) live(sender string, now time.Time) bool {
 	d := a.e.Draft
 	return a.ask.To == sender && a.ask.UsedBy == "" && now.Before(a.ask.ExpiresAt) &&
-		d.State == draftPending && d.DraftRev == a.ask.DraftRev && d.Binding == a.ask.Binding
+		d.State == draftPending && d.SupersededBy == "" && d.DraftRev == a.ask.DraftRev && d.Binding == a.ask.Binding
 }
 
 // answeredAsk is the approval email a reply answers. It is the one its
@@ -267,11 +267,13 @@ func (a askOnThread) live(sender string, now time.Time) bool {
 // is no answer.
 func (c *Coordinator) answeredAsk(th *threadRecord, check *mail.EdgeCheck, domain, sender string, now time.Time) (a askOnThread, ambiguous, ok bool) {
 	if strings.TrimSpace(check.Headers.InReplyTo) != "" {
+		// In-Reply-To names one message; one that names two approval
+		// emails answers neither (2026-11-25 re-review, N6).
 		named := c.asksNamed(th, approvalIDs(check.Headers.InReplyTo, domain))
 		if len(named) == 0 {
 			return askOnThread{}, false, false
 		}
-		return named[len(named)-1], false, true
+		return named[len(named)-1], len(named) > 1, true
 	}
 	named := c.asksNamed(th, approvalIDs(check.Headers.References, domain))
 	var live []askOnThread
@@ -381,6 +383,8 @@ func emailApprovalRefused(th *threadRecord, e *threadEntry, ask *approvalAsk, rs
 		return "approval by email needs Full"
 	case d.State != draftPending:
 		return "the draft was already sent or discarded"
+	case d.SupersededBy != "":
+		return "a newer draft was made on this thread since the approval email; approve in Fount"
 	case d.DraftRev != ask.DraftRev || d.Binding != ask.Binding:
 		return "the draft changed since the approval email"
 	case editingElsewhere(d, "", now) != nil:

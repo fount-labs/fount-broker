@@ -40,6 +40,7 @@ func (c *Coordinator) questionDraft(t *Tree, th *threadRecord, q *threadEntry, t
 	if err := c.buildDraft(t, th, mb, rs, id, d, 1, now); err != nil {
 		return "", err
 	}
+	th.supersede(t, id)
 	return id, nil
 }
 

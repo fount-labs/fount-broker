@@ -260,20 +260,19 @@ func TestAYesToTheNewerApprovalSendsOnlyItsDraft(t *testing.T) {
 	}
 }
 
-// A reply with no In-Reply-To whose References name two live approval
-// emails approves neither, and says why.
-func TestAYesThatNamesTwoLiveApprovalsSendsNeither(t *testing.T) {
+// A reply with no In-Reply-To whose References name two approval emails
+// answers the one still live: draft 2 superseded draft 1 when it was made,
+// so draft 1's approval email is no longer live (2026-11-25 re-review, N6).
+func TestAYesWhoseReferencesNameASupersededApprovalSendsOnlyTheLiveOne(t *testing.T) {
 	r, th, d1, d2, a1, a2 := twoDrafts(t)
 	r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close",
 		references: "<q3-close@example.com> " + a1 + " <note@example.com> " + a2})
 	r.pass()
-	for _, e := range []*threadEntry{d1, d2} {
-		if d := r.draft(th.ID, e.ID); d.State != draftPending {
-			t.Fatalf("draft %s is %s", e.ID, d.State)
-		}
+	if d := r.draft(th.ID, d1.ID); d.State != draftPending {
+		t.Fatalf("the superseded draft is %s", d.State)
 	}
-	if why := r.refusals(th.ID); len(why) != 1 || !strings.Contains(why[0], "more than one approval email") {
-		t.Fatalf("refusals %v", why)
+	if d := r.draft(th.ID, d2.ID); d.State != draftSent || d.Approval.Via != viaEmail {
+		t.Fatalf("the live draft is %s: %v", d.State, r.refusals(th.ID))
 	}
 }
 
@@ -289,7 +288,7 @@ func TestAYesToAnOlderApprovalWithANewerDraftSendsNothing(t *testing.T) {
 			t.Fatalf("draft %s is %s", e.ID, d.State)
 		}
 	}
-	if why := r.refusals(th.ID); len(why) != 1 || why[0] != "a newer draft is waiting on this thread" {
+	if why := r.refusals(th.ID); len(why) != 1 || !strings.HasPrefix(why[0], "a newer draft was made on this thread") {
 		t.Fatalf("refusals %v", why)
 	}
 }
@@ -524,5 +523,45 @@ func TestADraftCarriesNoApprovalMessageID(t *testing.T) {
 	d2 := r.draft(th.ID, ds[1].ID)
 	if d2.InReplyTo != "<q4@example.com>" || slices.Contains(d2.References, a1) {
 		t.Fatalf("draft 2 answers %s with References %v; A1 is %s", d2.InReplyTo, d2.References, a1)
+	}
+}
+
+// The 2026-11-25 re-review's N6 probe, flipped: draft 1 waits, draft 2 is
+// made and goes no further (discarded here; sent from Fount is the same),
+// and a "yes" to draft 1's approval email used to send it, since no newer
+// draft was pending. Draft 2 superseded it when it was made.
+func TestAYesToASupersededDraftSendsNothing(t *testing.T) {
+	r, th, d1, d2, a1, _ := twoDrafts(t)
+	if got := r.draft(th.ID, d1.ID).SupersededBy; got != d2.ID {
+		t.Fatalf("draft 1 is superseded by %q, not draft 2 %s", got, d2.ID)
+	}
+	if res := r.threadOp(r.w.ID, th.ID, "op_discard", "discardDraft", map[string]string{"draftId": d2.ID}); !res.OK {
+		t.Fatalf("discardDraft: %+v", res)
+	}
+	r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close",
+		inReplyTo: a1, references: "<q3-close@example.com> " + a1})
+	r.pass()
+	if d := r.draft(th.ID, d1.ID); d.State != draftPending {
+		t.Fatalf("the superseded draft is %s", d.State)
+	}
+	if why := r.refusals(th.ID); len(why) != 1 || !strings.Contains(why[0], "a newer draft was made") {
+		t.Fatalf("refusals %v", why)
+	}
+}
+
+// An In-Reply-To that names two approval emails answers neither: it used to
+// pick the newer.
+func TestAnInReplyToNamingTwoApprovalsSendsNeither(t *testing.T) {
+	r, th, d1, d2, a1, a2 := twoDrafts(t)
+	r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close",
+		inReplyTo: a1 + " " + a2, references: "<q3-close@example.com> " + a1 + " " + a2})
+	r.pass()
+	for _, e := range []*threadEntry{d1, d2} {
+		if d := r.draft(th.ID, e.ID); d.State != draftPending {
+			t.Fatalf("draft %s is %s", e.ID, d.State)
+		}
+	}
+	if why := r.refusals(th.ID); len(why) != 1 || !strings.Contains(why[0], "more than one approval email") {
+		t.Fatalf("refusals %v", why)
 	}
 }

@@ -92,6 +92,10 @@ type draftEntry struct {
 	Asks []approvalAsk `json:"asks,omitempty"`
 	// Send mirrors the journal record once it is sending.
 	Send *sendView `json:"send,omitempty"`
+	// SupersededBy is the newer draft made on the thread while this one
+	// was pending: its approval emails no longer send it (2026-11-25
+	// re-review, N6). It can still be approved in Fount.
+	SupersededBy string `json:"supersededBy,omitempty"`
 }
 
 type decidedBy struct {
@@ -176,6 +180,26 @@ func (th *threadRecord) pendingDraft() bool {
 	return slices.ContainsFunc(th.Entries, func(e threadEntry) bool {
 		return e.Kind == entryDraft && e.Draft.State == draftPending
 	})
+}
+
+// supersede marks every draft pending on th before draft id as superseded
+// by it, so a "yes" to one of their approval emails is refused, whatever
+// becomes of id: sent from Fount, discarded or still waiting (2026-11-25
+// re-review, N6). Their approval emails no longer send anything, which the
+// vault counts.
+func (th *threadRecord) supersede(t *Tree, id string) {
+	for i := range th.Entries {
+		e := &th.Entries[i]
+		if e.ID == id {
+			return
+		}
+		if e.Kind == entryDraft && e.Draft.State == draftPending && e.Draft.SupersededBy == "" {
+			e.Draft.SupersededBy = id
+			if e.Draft.Ask != nil || len(e.Draft.Asks) > 0 {
+				t.countChange()
+			}
+		}
+	}
 }
 
 // draftFor is the draft a job's turn made, or nil.
@@ -353,6 +377,7 @@ func (c *Coordinator) makeDraft(t *Tree, th *threadRecord, mb *Mailbox, rs *repl
 	if err != nil {
 		return false, err
 	}
+	th.supersede(t, id)
 	if th.ReplyMode == modeOff {
 		return true, nil
 	}
