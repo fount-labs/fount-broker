@@ -125,7 +125,7 @@ func (s *keyStatus) volume(state string, err error) {
 	defer s.mu.Unlock()
 	s.vol.State, s.vol.LastError = state, ""
 	if err != nil {
-		s.vol.LastError = fmt.Sprintf("%.400v", err)
+		s.vol.LastError = coordinator.ScrubError(err)
 	}
 }
 
@@ -139,7 +139,7 @@ func (s *keyStatus) failed(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.Failures++
-	s.LastError = fmt.Sprintf("%.400v", err)
+	s.LastError = coordinator.ScrubError(err)
 }
 
 // statusAPI is /health and /status, safe beyond loopback: neither carries user
@@ -440,7 +440,7 @@ func (s *keyStatus) refusal() string {
 func (s *keyStatus) refused(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.State, s.LastError = "refused", fmt.Sprintf("%.400v", err)
+	s.State, s.LastError = "refused", coordinator.ScrubError(err)
 }
 
 // vaultSide is what the Cloud vaults give a coordinator beyond its key.

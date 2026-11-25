@@ -286,3 +286,28 @@ func TestARefusedCoordinatorIsUnhealthy(t *testing.T) {
 		}
 	}
 }
+
+// A refusal's text reaches /health's body, which Tinfoil shows as the
+// deploy's error, and /status: anything in it that looks like a credential
+// is scrubbed, as backups' errors are (round-4 check R4-4).
+func TestARefusalsTextIsScrubbed(t *testing.T) {
+	keyID := "AKIA" + strings.Repeat("EXAMPLE7", 2)
+	token := strings.Repeat("c2VjcmV0", 8)
+	var jobs atomic.Pointer[coordinator.Coordinator]
+	for name, refuse := range map[string]func(*keyStatus){
+		"boot":   func(s *keyStatus) { s.refused(fmt.Errorf("%w: a bucket said %s %s", errBootRefused, keyID, token)) },
+		"volume": func(s *keyStatus) { s.volume("refused", fmt.Errorf("a bucket said %s %s", keyID, token)) },
+	} {
+		s := &keyStatus{Mode: keyVault, State: "held"}
+		h := statusAPI(s, &jobs, nil)
+		refuse(s)
+		for _, path := range []string{"/health", "/status"} {
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+			body := w.Body.String()
+			if !strings.Contains(body, "a bucket said") || strings.Contains(body, keyID) || strings.Contains(body, token) {
+				t.Fatalf("%s with the %s refused: %q", path, name, body)
+			}
+		}
+	}
+}

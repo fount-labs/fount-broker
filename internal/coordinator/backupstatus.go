@@ -179,6 +179,12 @@ func scrubBackupError(s string) string {
 	return s
 }
 
+// ScrubError is scrubBackupError for the process's own status: err's text
+// with nothing that looks like a credential, cut to 400 bytes.
+func ScrubError(err error) string {
+	return scrubBackupError(err.Error())
+}
+
 // BackupStatus is backups' status; Configured false without Config.Backup.
 func (c *Coordinator) BackupStatus() BackupStatus {
 	d := c.durable
