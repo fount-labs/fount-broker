@@ -32,10 +32,7 @@ func (c *Coordinator) questionDraft(t *Tree, th *threadRecord, q *threadEntry, t
 		Content: draftContentQuestion, DraftRev: 1, State: draftPending, To: []string{strings.ToLower(to)},
 		Subject: replySubject(th.Subject), AgentText: text, Text: text, QuestionID: q.ID,
 	}
-	if m := th.newestMail(); m != nil {
-		d.Subject = replySubject(cmp.Or(m.Subject, th.Subject))
-		d.InReplyTo, d.References = m.MessageID, m.references()
-	}
+	th.replyTo(d, domainOf(mb.Address))
 	id, err := th.push(rev, now, threadEntry{Kind: entryDraft, JobID: q.JobID, Draft: d})
 	if err != nil {
 		return "", err

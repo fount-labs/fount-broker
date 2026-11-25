@@ -189,14 +189,40 @@ func (th *threadRecord) draftFor(jobID string) *threadEntry {
 }
 
 // newestMail is the newest received email on th from one of its
-// participants, which a reply answers.
+// participants, which a reply answers: not an approval of a draft, which
+// answers an email only its reviewer got (broker review L10).
 func (th *threadRecord) newestMail() *mailEntry {
 	for _, e := range slices.Backward(th.Entries) {
-		if e.Kind == entryMail && th.hasParticipant(e.Mail.Sender) {
+		if e.Kind == entryMail && e.Mail != nil && e.Mail.Verdict != verdictApproval && th.hasParticipant(e.Mail.Sender) {
 			return e.Mail
 		}
 	}
 	return nil
+}
+
+// replyTo sets d's subject and threading to answer th's newest email, if
+// any. Its References keep none of the worker's own Message-IDs but the
+// replies sent on th: the rest are approval emails and notices, which only
+// the owner and reviewers got, and whose IDs carry a live approval's token
+// (broker review L10).
+func (th *threadRecord) replyTo(d *draftEntry, domain string) {
+	m := th.newestMail()
+	if m == nil {
+		return
+	}
+	sent := map[string]bool{}
+	for _, e := range th.Entries {
+		if e.Kind == entryDraft && e.Draft != nil && e.Draft.MessageID != "" && (e.Draft.State == draftSent || e.Draft.Approval != nil) {
+			sent[strings.ToLower(e.Draft.MessageID)] = true
+		}
+	}
+	d.Subject = replySubject(cmp.Or(m.Subject, th.Subject))
+	d.InReplyTo, d.References = m.MessageID, nil
+	for _, ref := range m.references() {
+		if len(approvalIDs(ref, domain)) == 0 || sent[strings.ToLower(ref)] {
+			d.References = append(d.References, ref)
+		}
+	}
 }
 
 // afterFollow is what the coordinator does once a thread is up to its jobs:
@@ -292,10 +318,7 @@ func (c *Coordinator) makeDraft(t *Tree, th *threadRecord, mb *Mailbox, rs *repl
 		Content: draftContentResult, DraftRev: 1, State: draftPending, To: to, Subject: replySubject(th.Subject),
 		AgentText: strings.TrimSpace(turn.Text), Text: strings.TrimSpace(turn.Text),
 	}
-	if m := th.newestMail(); m != nil {
-		d.Subject = replySubject(cmp.Or(m.Subject, th.Subject))
-		d.InReplyTo, d.References = m.MessageID, m.references()
-	}
+	th.replyTo(d, domainOf(mb.Address))
 	d.Files = slices.Clone(turn.Outputs)
 	if len(d.Files) > 0 {
 		sources := map[string]outboxSource{}

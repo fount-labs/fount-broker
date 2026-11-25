@@ -471,3 +471,58 @@ func TestAnApprovalEmailSaysItsFilesArentInIt(t *testing.T) {
 		t.Fatalf("the email says approve:\n%s", text)
 	}
 }
+
+// The 11-24 broker review's L10: a client's reply threads under none of the
+// owner's approval emails, nor under the owner's "yes", which answered an
+// email the client never got. The replies the worker sent stay in its
+// References.
+func TestAClientsReplyDoesntThreadUnderAnApproval(t *testing.T) {
+	domain := domainOf(testWorkerAddr)
+	approval := "<fm." + strings.Repeat("a", 26) + ".tok@" + domain + ">"
+	sent := "<fm." + strings.Repeat("b", 26) + ".tok@" + domain + ">"
+	th := &threadRecord{Subject: "Q3 close", Participants: []string{"dana@example.com", "lee@client.com"}, Entries: []threadEntry{
+		{Kind: entryMail, Mail: &mailEntry{Sender: "lee@client.com", MessageID: "<q3@client.com>"}},
+		{Kind: entryDraft, Draft: &draftEntry{State: draftSent, MessageID: sent}},
+		{Kind: entryMail, Mail: &mailEntry{Sender: "dana@example.com", MessageID: "<note@example.com>", Subject: "Re: Q3 close",
+			References: "<q3@client.com> " + sent + " " + approval}},
+		{Kind: entryMail, Mail: &mailEntry{Sender: "dana@example.com", MessageID: "<yes@example.com>", Verdict: verdictApproval,
+			References: "<q3@client.com> " + approval}},
+	}}
+	d := &draftEntry{}
+	th.replyTo(d, domain)
+	if d.InReplyTo != "<note@example.com>" {
+		t.Fatalf("the reply answers %s, not the newest mail but the yes", d.InReplyTo)
+	}
+	if want := []string{"<q3@client.com>", sent, "<note@example.com>"}; !slices.Equal(d.References, want) {
+		t.Fatalf("References %v, want %v", d.References, want)
+	}
+	if d.Subject != "Re: Q3 close" {
+		t.Fatalf("subject %q", d.Subject)
+	}
+}
+
+// End to end: once the owner's yes sent draft 1 and their next note made
+// draft 2, draft 2 carries none of the approval emails' Message-IDs.
+func TestADraftCarriesNoApprovalMessageID(t *testing.T) {
+	r := newSendRig(t, modeFull)
+	const request = "<q3-close@example.com>"
+	id := r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Q3 close", messageID: request})
+	r.pass()
+	waitJob(t, r.c, mailJobID(id))
+	th := r.waitStatus(r.w.ID, onlyThread(t, r.threads(r.w.ID)).ID, StatusReview)
+	d1 := draftOn(t, th)
+	r.pass()
+	a1 := r.askMessageID(th, d1)
+	r.intake.set(func(f *fakeIntake) { f.instruction, f.source, f.reply = "Yes.", "owner", true })
+	r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close",
+		messageID: "<yes1@example.com>", inReplyTo: a1, references: request + " " + a1})
+	r.pass()
+	r.intake.set(func(f *fakeIntake) { f.instruction, f.source, f.reply = "Now do Q4.", "owner", true })
+	r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close",
+		messageID: "<q4@example.com>", inReplyTo: "<yes1@example.com>", references: request + " " + a1 + " <yes1@example.com>"})
+	_, ds := r.drafts(th.ID, 2)
+	d2 := r.draft(th.ID, ds[1].ID)
+	if d2.InReplyTo != "<q4@example.com>" || slices.Contains(d2.References, a1) {
+		t.Fatalf("draft 2 answers %s with References %v; A1 is %s", d2.InReplyTo, d2.References, a1)
+	}
+}
