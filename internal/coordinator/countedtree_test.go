@@ -665,3 +665,46 @@ func TestAHungBucketCallGivesTheBackupsLockBack(t *testing.T) {
 		t.Fatalf("a team change after the hang: %v", err)
 	}
 }
+
+// crowdedVault lands another count of the same generation just before each
+// of the next n swaps, as counts in flight beside it would.
+type crowdedVault struct {
+	StateCounter
+	n atomic.Int32
+}
+
+func (v *crowdedVault) CompareAndSwapState(ctx context.Context, generation, prev, next uint64, digest string) error {
+	if v.n.Add(-1) >= 0 {
+		count, err := v.StateCounter.Load(ctx)
+		if err != nil {
+			return err
+		}
+		if err := v.StateCounter.CompareAndSwapState(ctx, generation, count.Count, count.Count+1, "beside"); err != nil {
+			return err
+		}
+	}
+	return v.StateCounter.CompareAndSwapState(ctx, generation, prev, next, digest)
+}
+
+// A count with more counts landing under it than a fixed number of tries
+// waits them out instead of failing as not durable (round-4 check R4-3).
+func TestACountOutlastsManyCountsInFlight(t *testing.T) {
+	r := newMailRig(t, MailConfig{})
+	v := newVaultRig(t, r.edge.authority)
+	v.key = r.key
+	crowd := &crowdedVault{StateCounter: v.vault}
+	r.backup = v.backups(v.next())
+	r.backup.Counter = crowd
+	r.start()
+	prev := r.c.durable.counted.Load()
+	crowd.n.Store(7)
+	if err := r.c.swapCount(t.Context(), prev, prev+10, "mine"); err != nil {
+		t.Fatalf("a count with 7 landing under it: %v", err)
+	}
+	if got := v.count(); got.Count != prev+10 || got.Digest != "mine" {
+		t.Fatalf("the vault counted %d %q", got.Count, got.Digest)
+	}
+	if r.c.Retired() {
+		t.Fatal("retired")
+	}
+}

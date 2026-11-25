@@ -113,9 +113,6 @@ func (c *Coordinator) noteLoadedCount(count VaultCount) {
 	}
 }
 
-// maxSwapTries bounds swapCount's compare-and-swaps for one count.
-const maxSwapTries = 4
-
 // swapCount moves the vault's count from prev to next, the sequence of the
 // state whose digest is digest. Two counts may be in flight at once, a
 // team's change under c.mu and the workers' changes beside it (countOff),
@@ -123,11 +120,13 @@ const maxSwapTries = 4
 // moved by this generation (only its key moves the count within it) since
 // then is done when the count is already at next or past it, since every
 // count is of a state that holds every change before it, and is tried again
-// from that count when it is below. Anything else is a count this
-// coordinator didn't make: it is retired. Needs no c.mu.
+// from that count when it is below. Each retry is a count that landed, so
+// prev only rises toward next: as many counts as are in flight are
+// waited out, bounded by ctx, not by a number of tries. Anything else is a
+// count this coordinator didn't make: it is retired. Needs no c.mu.
 func (c *Coordinator) swapCount(ctx context.Context, prev, next uint64, digest string) error {
 	d := c.durable
-	for range maxSwapTries {
+	for {
 		err := casCount(ctx, d.cfg.Counter, d.gen, prev, next, digest)
 		if err == nil {
 			d.noteCounted(next)
@@ -158,7 +157,6 @@ func (c *Coordinator) swapCount(ctx context.Context, prev, next uint64, digest s
 		c.retire(err)
 		return fmt.Errorf("%w: %v", ErrStaleCoordinator, err)
 	}
-	return fmt.Errorf("%w: counting it: the count moved under it %d times", ErrNotDurable, maxSwapTries)
 }
 
 // fence is whether this coordinator has been retired: a newer generation
