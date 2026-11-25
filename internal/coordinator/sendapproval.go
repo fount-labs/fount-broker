@@ -25,6 +25,9 @@ import (
 //     In-Reply-To, in References that name no other live approval email of
 //     the thread's (answeredAsk), and a DKIM signature aligned with its From
 //     covers both;
+//   - the thread's mode now is no lower than when the approval email went
+//     (Notify on a Full-for-the-owner thread with others on it): lowering
+//     it stops the email from sending;
 //   - it is from the reviewer the approval email went to, whose own mode is
 //     Full, and who still reviews the worker: the owner, or a member of its
 //     team who reaches it (reviewers.go), as a device's approval must be;
@@ -53,6 +56,9 @@ type approvalAsk struct {
 	To        string    `json:"to"`
 	ExpiresAt time.Time `json:"expiresAt"`
 	SendID    string    `json:"sendId"`
+	// ThreadMode is the thread's reply mode when the email went. Empty, from
+	// before it was kept, is Full.
+	ThreadMode string `json:"threadMode,omitempty"`
 	// UsedBy is the edge id of the reply that used it.
 	UsedBy string `json:"usedBy,omitempty"`
 }
@@ -85,7 +91,7 @@ func (c *Coordinator) askApproval(t *Tree, th *threadRecord, mb *Mailbox, rs *re
 	if err != nil {
 		return err
 	}
-	ask := &approvalAsk{DraftRev: d.DraftRev, Binding: d.Binding, To: strings.ToLower(to), ExpiresAt: now.Add(approvalLifetime).Truncate(time.Second), SendID: id}
+	ask := &approvalAsk{DraftRev: d.DraftRev, Binding: d.Binding, To: strings.ToLower(to), ExpiresAt: now.Add(approvalLifetime).Truncate(time.Second), SendID: id, ThreadMode: th.replyMode()}
 	var names []string
 	for _, p := range d.Files {
 		names = append(names, path.Base(p))
@@ -360,6 +366,8 @@ func emailApprovalRefused(th *threadRecord, e *threadEntry, ask *approvalAsk, rs
 		return "this approval expired"
 	case dkim == "" || !strings.EqualFold(dkim, domainOf(sender)) || !threadHeadersCovered(check):
 		return "the reply isn't signed by its sender's domain"
+	case modeRank(th.replyMode()) < modeRank(cmp.Or(ask.ThreadMode, modeFull)):
+		return "the thread's reply mode was lowered since the approval email"
 	case rs.modeOf(sender) != modeFull:
 		return "approval by email needs Full"
 	case d.State != draftPending:

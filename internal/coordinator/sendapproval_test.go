@@ -3,6 +3,7 @@ package coordinator
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/quotedprintable"
@@ -337,6 +338,76 @@ func TestASpentApprovalInReferencesDoesntBlockALaterOne(t *testing.T) {
 			}
 			if why := r.refusals(th.ID); len(why) != 0 {
 				t.Fatalf("refusals %v", why)
+			}
+		})
+	}
+}
+
+// The 11-24 review's M5 probe, flipped: a thread lowered to Notify or Off
+// after its approval email went refuses that email's "yes". The mode is the
+// thread's at the reply, not when the email went.
+func TestALoweredThreadRefusesItsApprovalEmail(t *testing.T) {
+	for _, mode := range []string{modeNotify, modeOff} {
+		t.Run(mode, func(t *testing.T) {
+			r := newSendRig(t, modeFull)
+			th, e := r.drafted()
+			r.pass()
+			a1 := r.askMessageID(th, e)
+			th, _ = r.c.thread(anyDevice, r.w.ID, th.ID)
+			raw, _ := json.Marshal(map[string]string{"mode": mode})
+			res, err := r.c.applyThreadOp(anyDevice, r.w.ID, th.ID, opEnvelope{OpID: "op_lower", ThreadID: th.ID, BaseRevision: th.Revision, Kind: "setThreadReplyMode", Args: raw})
+			if err != nil || !res.OK {
+				t.Fatalf("lowering: %+v %v", res, err)
+			}
+			r.intake.set(func(f *fakeIntake) { f.instruction, f.source, f.reply = "Yes.", "owner", true })
+			r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close", inReplyTo: a1})
+			r.pass()
+			if d := r.draft(th.ID, e.ID); d.State != draftPending {
+				t.Fatalf("the draft is %s", d.State)
+			}
+			if why := r.refusals(th.ID); len(why) != 1 || why[0] != "the thread's reply mode was lowered since the approval email" {
+				t.Fatalf("refusals %v", why)
+			}
+		})
+	}
+}
+
+// On Full for the owner, a client's thread is on Notify and the owner's
+// approval email still sends its draft; lowered to Off, it doesn't.
+func TestAFullForTheOwnerThreadApprovesByEmailUntilLowered(t *testing.T) {
+	for _, lower := range []bool{false, true} {
+		t.Run(fmt.Sprintf("lowered %v", lower), func(t *testing.T) {
+			r := newSendRig(t, modeFullOwner)
+			if err := r.c.SetMailbox(r.w.ID, r.mb, []Requester{{Address: "carol@example.com", DKIMDomain: "example.com", AutoRun: true}}); err != nil {
+				t.Fatal(err)
+			}
+			id := r.edge.deliver(r.mb, email{from: "carol@example.com", to: testWorkerAddr, subject: "Q3 close"})
+			r.pass()
+			waitJob(t, r.c, mailJobID(id))
+			th := r.waitStatus(r.w.ID, onlyThread(t, r.threads(r.w.ID)).ID, StatusReview)
+			e := draftOn(t, th)
+			r.pass()
+			if th.replyMode() != modeNotify {
+				t.Fatalf("the client's thread is on %s", th.replyMode())
+			}
+			a1 := r.askMessageID(th, e)
+			if lower {
+				th, _ = r.c.thread(anyDevice, r.w.ID, th.ID)
+				raw, _ := json.Marshal(map[string]string{"mode": modeOff})
+				res, err := r.c.applyThreadOp(anyDevice, r.w.ID, th.ID, opEnvelope{OpID: "op_lower", ThreadID: th.ID, BaseRevision: th.Revision, Kind: "setThreadReplyMode", Args: raw})
+				if err != nil || !res.OK {
+					t.Fatalf("lowering: %+v %v", res, err)
+				}
+			}
+			r.intake.set(func(f *fakeIntake) { f.instruction, f.source, f.reply = "Yes.", "owner", true })
+			r.edge.deliver(r.mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Re: Q3 close", inReplyTo: a1})
+			r.pass()
+			want := draftSent
+			if lower {
+				want = draftPending
+			}
+			if d := r.draft(th.ID, e.ID); d.State != want {
+				t.Fatalf("the draft is %s, want %s: %v", d.State, want, r.refusals(th.ID))
 			}
 		})
 	}
