@@ -159,6 +159,7 @@ func (c *Coordinator) openDurability() error {
 	if b.Interval <= 0 {
 		b.Interval = DefaultBackupInterval
 	}
+	b.Bucket = boundedBucket{b.Bucket}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	g, err := b.Generations.Generation(ctx)

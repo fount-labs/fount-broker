@@ -218,3 +218,36 @@ func (v *MemVault) CompareAndSwapState(_ context.Context, generation, prev, next
 type FixedGeneration struct{ G mail.Generation }
 
 func (f *FixedGeneration) Generation(context.Context) (mail.Generation, error) { return f.G, nil }
+
+// bucketCallTimeout bounds each bucket call. The backup loop's Backup and
+// retention pass hold the backups' lock across many calls with no deadline
+// of their own, and a change that counts waits on that lock under c.mu: a
+// hung call must give it back. A variable so tests can shorten it.
+var bucketCallTimeout = time.Minute
+
+// boundedBucket is a bucket whose every call ends by bucketCallTimeout.
+type boundedBucket struct{ b BackupBucket }
+
+func (b boundedBucket) Put(ctx context.Context, key string, data []byte) error {
+	ctx, cancel := context.WithTimeout(ctx, bucketCallTimeout)
+	defer cancel()
+	return b.b.Put(ctx, key, data)
+}
+
+func (b boundedBucket) Get(ctx context.Context, key string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, bucketCallTimeout)
+	defer cancel()
+	return b.b.Get(ctx, key)
+}
+
+func (b boundedBucket) List(ctx context.Context, prefix string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, bucketCallTimeout)
+	defer cancel()
+	return b.b.List(ctx, prefix)
+}
+
+func (b boundedBucket) Delete(ctx context.Context, key string) error {
+	ctx, cancel := context.WithTimeout(ctx, bucketCallTimeout)
+	defer cancel()
+	return b.b.Delete(ctx, key)
+}

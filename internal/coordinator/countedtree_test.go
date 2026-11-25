@@ -593,3 +593,75 @@ func TestALostSwapAnswerIsCountedAgain(t *testing.T) {
 		t.Fatalf("a reboot after a lost answer: %v", err)
 	}
 }
+
+// hungBucket is a bucket whose calls, while hang is set, wait for their
+// ctx.
+type hungBucket struct {
+	BackupBucket
+	hang atomic.Bool
+}
+
+func (b *hungBucket) wait(ctx context.Context) error {
+	if !b.hang.Load() {
+		return nil
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (b *hungBucket) Put(ctx context.Context, key string, data []byte) error {
+	if err := b.wait(ctx); err != nil {
+		return err
+	}
+	return b.BackupBucket.Put(ctx, key, data)
+}
+
+func (b *hungBucket) List(ctx context.Context, prefix string) ([]string, error) {
+	if err := b.wait(ctx); err != nil {
+		return nil, err
+	}
+	return b.BackupBucket.List(ctx, prefix)
+}
+
+// The backup loop's Backup and retention pass run with no deadline of their
+// own; a hung bucket call ends by bucketCallTimeout and gives the backups'
+// lock back, so a team's change that counts doesn't wait on it (round-4
+// check R4-2).
+func TestAHungBucketCallGivesTheBackupsLockBack(t *testing.T) {
+	was := bucketCallTimeout
+	bucketCallTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { bucketCallTimeout = was })
+	r := newMailRig(t, MailConfig{})
+	v := newVaultRig(t, r.edge.authority)
+	v.key = r.key
+	hung := &hungBucket{BackupBucket: v.bucket}
+	r.backup = v.backups(v.next())
+	r.backup.Bucket = hung
+	r.start()
+	w, _ := r.worker()
+	if err := r.c.PutFile(w.ID, "files/after.md", []byte("a change")); err != nil {
+		t.Fatal(err)
+	}
+
+	hung.hang.Store(true)
+	done := make(chan error, 2)
+	go func() {
+		_, err := r.c.Backup(context.Background())
+		done <- err
+	}()
+	go func() { done <- r.c.pruneBackups(context.Background(), time.Now()) }()
+	for range 2 {
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("a hung bucket call: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("a hung bucket call held the backups' lock")
+		}
+	}
+	hung.hang.Store(false)
+	if err := soloTeamErr(t, r.c, "acme", newTestDevice(t)); err != nil {
+		t.Fatalf("a team change after the hang: %v", err)
+	}
+}
