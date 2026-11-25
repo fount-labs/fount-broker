@@ -166,11 +166,14 @@ func approvalSubject(draftSubject string) string {
 	return "Draft reply: " + subject
 }
 
-// newestMailFrom is the newest email on th from address, which an approval
-// email to address answers, or nil.
+// newestMailFrom is the newest email on th from address, signed by its
+// domain, which an approval email to address answers, or nil. An unsigned
+// one may be anyone's, whose Subject and References the approval email
+// would otherwise carry.
 func (th *threadRecord) newestMailFrom(address string) *mailEntry {
 	for _, e := range slices.Backward(th.Entries) {
-		if e.Kind == entryMail && e.Mail != nil && e.Mail.MessageID != "" && strings.EqualFold(strings.TrimSpace(e.Mail.Sender), address) {
+		if e.Kind == entryMail && e.Mail != nil && e.Mail.MessageID != "" && strings.EqualFold(strings.TrimSpace(e.Mail.Sender), address) &&
+			e.Mail.Signed != "" && strings.EqualFold(e.Mail.Signed, domainOf(address)) {
 			return e.Mail
 		}
 	}

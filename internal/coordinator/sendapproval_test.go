@@ -445,3 +445,16 @@ func TestAnEmailAfterTheApprovalEmailRefusesItsYes(t *testing.T) {
 		t.Fatalf("refusals %v", why)
 	}
 }
+
+// The 11-24 review's L11: the approval email threads only under the
+// reviewer's own signed email, never one that merely says it is from them.
+func TestTheApprovalEmailThreadsOnlyUnderSignedMail(t *testing.T) {
+	th := &threadRecord{Entries: []threadEntry{
+		{Kind: entryMail, Mail: &mailEntry{Sender: "dana@example.com", Signed: "example.com", MessageID: "<real@example.com>"}},
+		{Kind: entryMail, Mail: &mailEntry{Sender: "dana@example.com", MessageID: "<spoof@else.example>", Subject: "Invoice overdue"}},
+		{Kind: entryMail, Mail: &mailEntry{Sender: "dana@example.com", Signed: "else.example", MessageID: "<other@else.example>"}},
+	}}
+	if m := th.newestMailFrom("dana@example.com"); m == nil || m.MessageID != "<real@example.com>" {
+		t.Fatalf("threads under %+v", m)
+	}
+}
