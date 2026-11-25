@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -94,6 +95,9 @@ func TestStatusNamesTheKeyButNeverShowsIt(t *testing.T) {
 		t.Fatalf("/health while waiting: %d", code)
 	}
 	s.failed(errors.New("vault-a: connection refused"))
+	if code, _ := get("/health"); code != 200 {
+		t.Fatalf("/health after a failed round: %d", code)
+	}
 	_, body := get("/status")
 	var got struct {
 		Key struct {
@@ -259,5 +263,24 @@ func TestARefusedRestoreTakesNoGeneration(t *testing.T) {
 	})
 	if err != nil || tries != 2 {
 		t.Fatalf("a bucket down once: %v after %d tries", err, tries)
+	}
+}
+
+// The 2026-11-25 re-review's N9 probe, flipped: a coordinator that refused
+// to boot, or whose volume was refused, answered /health ok.
+func TestARefusedCoordinatorIsUnhealthy(t *testing.T) {
+	var jobs atomic.Pointer[coordinator.Coordinator]
+	for name, refuse := range map[string]func(*keyStatus){
+		"boot":   func(s *keyStatus) { s.refused(fmt.Errorf("%w: a blank volume", errBootRefused)) },
+		"volume": func(s *keyStatus) { s.volume("refused", errors.New("another key")) },
+	} {
+		s := &keyStatus{Mode: keyVault, State: "held"}
+		h := statusAPI(s, &jobs, nil)
+		refuse(s)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", "/health", nil))
+		if w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), "blank") || strings.Contains(w.Body.String(), "another key") {
+			t.Fatalf("/health with the %s refused: %d %q", name, w.Code, w.Body)
+		}
 	}
 }

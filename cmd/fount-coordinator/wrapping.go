@@ -158,6 +158,14 @@ func statusAPI(s *keyStatus, jobs *atomic.Pointer[coordinator.Coordinator], runn
 			http.Error(w, "retired: another coordinator generation took over", http.StatusServiceUnavailable)
 			return
 		}
+		// Nor does one that refused to boot or to open its volume: it
+		// serves /status alone, and monitoring that reads only /health
+		// would miss the outage (re-review N9). A restart comes back to
+		// the same refusal, before any generation is taken.
+		if what := s.refusal(); what != "" {
+			http.Error(w, what, http.StatusServiceUnavailable)
+			return
+		}
 		io.WriteString(w, "ok\n")
 	})
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, _ *http.Request) {
@@ -370,6 +378,20 @@ func retryVault(ctx context.Context, what string, f func(context.Context) error)
 // bucket that couldn't be reached.
 func refusedRestore(err error) bool {
 	return errors.Is(err, coordinator.ErrNoBackup) || errors.Is(err, coordinator.ErrBackupTooOld) || errors.Is(err, coordinator.ErrBackupRolledBack)
+}
+
+// refusal says what this process refused, "" when nothing: the error's
+// text stays behind /status.
+func (s *keyStatus) refusal() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case s.State == "refused":
+		return "refused: this volume may not take a generation; see /status"
+	case s.vol.State == "refused":
+		return "refused: the volume didn't open; see /status"
+	}
+	return ""
 }
 
 func (s *keyStatus) refused(err error) {
