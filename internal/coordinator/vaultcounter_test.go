@@ -131,9 +131,11 @@ func TestTheCloudVaultCountsFencesAndRefusesRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.SecuritySeq != counted {
+	// The restore counts itself.
+	if res.SecuritySeq != counted+1 || r.pair.State().Count != counted+1 {
 		t.Fatalf("restored security change %d, counted %d", res.SecuritySeq, counted)
 	}
+	counted++
 	c2 := r.open(dir2, g2)
 	if logSeq(c2, "acme") != 3 {
 		t.Fatalf("the restored log is at %d", logSeq(c2, "acme"))

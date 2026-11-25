@@ -171,7 +171,8 @@ func TestARestoreBelowTheCounterIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.SecuritySeq != 2 || logSeq(restored, "acme") != 2 {
+	// The restore is itself counted, one past the root's change.
+	if res.SecuritySeq != 3 || logSeq(restored, "acme") != 2 || v.count().Count != 3 {
 		t.Fatalf("restored %+v, log at %d", res, logSeq(restored, "acme"))
 	}
 	if !restored.state.Restored.TakenAt.Equal(res.TakenAt.UTC()) {

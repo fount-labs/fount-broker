@@ -200,18 +200,20 @@ func Restore(ctx context.Context, o RestoreOptions) (RestoreResult, error) {
 		return res, nil
 	}
 	st.Restored = &RestoreMark{At: now, Root: ref.key, TakenAt: root.taken.UTC()}
+	// Every restore moves the count one past both the vault's and the
+	// root's, so no other disk or root at the old count, from this lineage
+	// or a fenced one, passes afterwards (broker review H2). A change the
+	// backup saved and never counted is counted with it.
+	st.SecuritySeq = max(count.Count, root.securitySeq) + 1
+	res.SecuritySeq = st.SecuritySeq
 	if err := os.MkdirAll(o.StateDir, 0o700); err != nil {
 		return RestoreResult{}, err
 	}
 	if err := st.Save(o.StateDir); err != nil {
 		return RestoreResult{}, err
 	}
-	if root.securitySeq > count.Count {
-		// The backup has a change saved and never counted: it is the
-		// latest security state, so count it now.
-		if err := o.Counter.CompareAndSwap(ctx, g.Number, count.Count, root.securitySeq); err != nil {
-			return RestoreResult{}, fmt.Errorf("counting the backup's security change %d: %w", root.securitySeq, err)
-		}
+	if err := o.Counter.CompareAndSwap(ctx, g.Number, count.Count, st.SecuritySeq); err != nil {
+		return RestoreResult{}, fmt.Errorf("counting the restore as security change %d: %w", st.SecuritySeq, err)
 	}
 	log.Printf("restore: %s, taken %s, onto a new volume under generation %d: %d workers, %d objects, %d jobs stopped",
 		ref.key, root.taken.UTC().Format(time.RFC3339), g.Number, res.Workers, res.Objects, res.StoppedJobs)

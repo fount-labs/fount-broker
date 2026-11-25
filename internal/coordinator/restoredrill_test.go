@@ -163,7 +163,8 @@ func restoreRunbookDrill(t *testing.T, bucket BackupBucket) {
 	if res, err = restore("", g2, false); err != nil {
 		t.Fatal(err)
 	}
-	if res.Root != newest || res.Generation != 2 || res.SecuritySeq != 2 || res.StoppedJobs != 0 {
+	// The restore is itself counted, one past the root's change.
+	if res.Root != newest || res.Generation != 2 || res.SecuritySeq != 3 || res.StoppedJobs != 0 || pair.State().Count != 3 {
 		t.Fatalf("restored %+v", res)
 	}
 	if _, err := restore("", g2, false); !errors.Is(err, ErrRestoreOverVolume) {
@@ -225,10 +226,10 @@ func restoreRunbookDrill(t *testing.T, bucket BackupBucket) {
 	if err := tt.push(me, "acme", nil); err != nil {
 		t.Fatalf("a security change after the restore: %v", err)
 	}
-	if st := pair.State(); st != (wire.CounterState{Generation: 2, Count: 3}) {
+	if st := pair.State(); st != (wire.CounterState{Generation: 2, Count: 4}) {
 		t.Fatalf("after the restore the vault has %+v", st)
 	}
-	if err := counter(g1).CompareAndSwap(ctx, 1, 3, 4); !errors.Is(err, ErrVaultGeneration) {
+	if err := counter(g1).CompareAndSwap(ctx, 1, 4, 5); !errors.Is(err, ErrVaultGeneration) {
 		t.Fatalf("generation 1 counting after the restore: %v", err)
 	}
 	// Now even the backup it was restored from is a rollback.
@@ -244,7 +245,8 @@ func drillView(t *testing.T, c *Coordinator) map[string]string {
 	t.Helper()
 	c.mu.Lock()
 	st := *c.state
-	st.Restored = nil
+	// The restore marks the volume and counts itself.
+	st.Restored, st.SecuritySeq = nil, 0
 	state, err := json.MarshalIndent(st, "", " ")
 	ids := slices.Sorted(maps.Keys(c.state.Workers))
 	c.mu.Unlock()

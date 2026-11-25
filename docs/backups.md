@@ -164,14 +164,16 @@ It needs no AWS account, vault or mail edge, and it runs two tests:
   - a restore of the backup from before the security change is refused, as
     a dry run and as a restore, and leaves the volume empty;
   - the newest is restored under a new generation. `state.json`, less the
-    restore mark, and every file in every worker's tree are then the same,
-    byte for byte, as before the loss.
+    restore mark and the security sequence, and every file in every
+    worker's tree are then the same, byte for byte, as before the loss.
+    The restore counts itself: the volume and the vault go one past the
+    backup's change, so from then on even the backup it was restored from,
+    and any disk at the old count, is a rollback.
 
   The restored coordinator then works. Mail it had already worked isn't run
   again, the draft is approved and sent once under its Message-ID, and new
   mail runs. Its next security change is counted under the new generation,
-  the old generation's swap is refused, and from then on even the backup it
-  was restored from counts as a rollback.
+  and the old generation's swap is refused.
 - `TestTheRestoreRunbookOnTheBinary` (`cmd/fount-coordinator/drill_test.go`)
   runs the coordinator binary with this page's dev flags (`--wrapping-key
   dev --dev-vault … --backup-bucket … --restore …`) against the same S3
