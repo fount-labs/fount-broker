@@ -277,8 +277,15 @@ func writeJSON(t *Tree, path string, v any) error {
 	if err != nil {
 		return err
 	}
-	if path == mailboxPath {
+	switch path {
+	case mailboxPath:
 		if data, err = t.sealSecret(path, data); err != nil {
+			return err
+		}
+	case mailLedgerPath:
+		t.ledger = true
+	case mailSettingsPath, replySettingsPath:
+		if err := t.noteTakenAway(path, data); err != nil {
 			return err
 		}
 	}

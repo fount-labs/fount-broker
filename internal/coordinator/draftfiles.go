@@ -191,7 +191,7 @@ func (c *Coordinator) saveDraftFile(t *Tree, th *threadRecord, e *threadEntry, d
 	d.Files = slices.Clone(d.Files)
 	d.Files[i] = next
 	d.DraftRev++
-	d.Ask, d.Asks = nil, nil
+	dropAsks(t, d)
 	if err := c.buildDraft(t, th, mb, rs, e.ID, d, 1, now); err != nil {
 		return err
 	}

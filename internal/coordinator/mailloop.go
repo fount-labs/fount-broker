@@ -327,6 +327,7 @@ func (c *Coordinator) mailPass(ctx context.Context, now time.Time) {
 	}
 	c.rotateDue(ctx)
 	c.releaseDue(ctx)
+	c.countLedger(time.Now())
 	m.mu.Lock()
 	m.status.lastPass = time.Now()
 	m.mu.Unlock()

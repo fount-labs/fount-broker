@@ -34,7 +34,16 @@ type Tree struct {
 	dirty    bool
 	// garbage is the objects the next Commit makes unreachable.
 	garbage []string
+	// counted is a change that takes away what someone may do, and ledger
+	// one that moves the mail ledger on: both are counted by the vault
+	// (countedtree.go), the first before it is acknowledged.
+	counted, ledger bool
 }
+
+// countChange marks the change as one that takes something away (a mode
+// lowered, an approval cancelled, a requester removed): the vault counts it
+// before it is acknowledged, so no disk replay brings back what it took.
+func (t *Tree) countChange() { t.counted = true }
 
 type manifest struct {
 	Version uint64           `json:"version"`

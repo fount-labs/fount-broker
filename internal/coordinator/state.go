@@ -36,8 +36,16 @@ type State struct {
 	// Releases are deleted workers' edge mailboxes (hex) still to remove
 	// at the edge (release.go).
 	Releases []string `json:"releases,omitempty"`
-	// Restored is set on a volume a backup was restored onto (restore.go).
+	// Restored is set on a volume a backup was restored onto (restore.go),
+	// or found behind the newest backup at boot (countedtree.go).
 	Restored *RestoreMark `json:"restored,omitempty"`
+	// Counted is each worker's tree version at its last counted change
+	// (countedtree.go), which securityDigest covers: written only by
+	// commitSecurity.
+	Counted map[string]uint64 `json:"counted,omitempty"`
+	// Saves counts the saves of this state, so a volume behind the newest
+	// backup of it is seen at boot (countedtree.go).
+	Saves uint64 `json:"saves,omitempty"`
 }
 
 type Worker struct {
@@ -163,9 +171,13 @@ func LoadState(dir string) (*State, error) {
 }
 
 func (s *State) Save(dir string) error {
+	s.Saves++
 	data, err := json.Marshal(s)
-	if err != nil {
-		return err
+	if err == nil {
+		err = writeFileAtomic(statePath(dir), data)
 	}
-	return writeFileAtomic(statePath(dir), data)
+	if err != nil {
+		s.Saves--
+	}
+	return err
 }

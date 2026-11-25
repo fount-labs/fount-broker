@@ -373,6 +373,11 @@ func TestMailIsDeletedFromTheEdgeOnceEveryRestorableBackupHasActedOnIt(t *testin
 	r.backup.DeleteMail = true
 	r.start()
 	w, mb := r.worker()
+	// The ledger's progress isn't counted yet (countLedger), so the backup
+	// from boot stays restorable.
+	r.c.mu.Lock()
+	r.c.lastOwedCount = time.Now().Add(time.Hour)
+	r.c.mu.Unlock()
 	id := r.edge.deliver(mb, email{from: "dana@example.com", to: testWorkerAddr, subject: "Q3"})
 	r.pass()
 	waitJob(t, r.c, mailJobID(id))

@@ -472,6 +472,14 @@ func newMailRig(t *testing.T, cfg MailConfig) *mailRig {
 // new process has.
 func (r *mailRig) start() {
 	r.t.Helper()
+	if err := r.startErr(); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// startErr is start, with New's error.
+func (r *mailRig) startErr() error {
+	r.t.Helper()
 	if r.cancel != nil {
 		r.cancel()
 		r.c.running.Wait()
@@ -487,7 +495,8 @@ func (r *mailRig) start() {
 		JobConfig: json.RawMessage(`{"model":"m"}`), Mail: cfg, Backup: r.backup,
 	})
 	if err != nil {
-		r.t.Fatal(err)
+		r.cancel = nil
+		return err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	go c.Run(ctx)
@@ -502,6 +511,7 @@ func (r *mailRig) start() {
 		c.running.Wait()
 	})
 	r.c, r.cancel = c, cancel
+	return nil
 }
 
 const testWorkerAddr = "ap@fountbox.com"

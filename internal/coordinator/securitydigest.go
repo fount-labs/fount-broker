@@ -13,7 +13,8 @@ const securityDigestLabel = "fount-coordinator-security/v1\x00"
 
 // securityDigest is what the vault's count binds a volume to (broker review
 // H2): the security sequence, the generation that made it, and every team's
-// log head and rotation marks. Those change only through commitSecurity,
+// log head and rotation marks, and each worker's tree version at its last
+// counted change (countedtree.go). Those change only through commitSecurity,
 // so a plain Save (billing, mints, workers, jobs, recovery waits) leaves it
 // as counted; anything a plain Save writes must stay out of it, or the next
 // boot reads that volume as a fork. A log's entries chain by hash, so its
@@ -39,6 +40,17 @@ func securityDigest(st *State) string {
 		u(uint64(len(t.Rotate)))
 		for _, w := range t.Rotate {
 			s(w)
+		}
+	}
+	// Appended only when there are any, so a state counted before workers'
+	// changes were has the digest it was counted with.
+	if len(st.Counted) > 0 {
+		s("counted")
+		workers := slices.Sorted(maps.Keys(st.Counted))
+		u(uint64(len(workers)))
+		for _, id := range workers {
+			s(id)
+			u(st.Counted[id])
 		}
 	}
 	return hex.EncodeToString(h.Sum(nil))

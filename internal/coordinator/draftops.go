@@ -282,7 +282,8 @@ func (a approveArgs) applyDraft(c *Coordinator, t *Tree, th *threadRecord, devic
 			return nil, effects{}, err
 		}
 		d.DraftRev++
-		d.Text, d.Files, d.Ask, d.Asks = text, files, nil, nil
+		d.Text, d.Files = text, files
+		dropAsks(t, d)
 		if err := c.buildDraft(t, th, mb, rs, e.ID, d, 1, now); err != nil {
 			return nil, effects{}, err
 		}
@@ -326,6 +327,7 @@ func (a discardArgs) applyDraft(c *Coordinator, t *Tree, th *threadRecord, devic
 	}
 	e.Draft.State, e.Rev = draftDiscarded, rev
 	e.Draft.Discarded = &decidedBy{By: c.approverName(th.WorkerID, device), At: now, Via: viaApp}
+	t.countChange()
 	return []string{e.ID}, effects{}, nil
 }
 
@@ -424,6 +426,9 @@ func (a threadModeArgs) applyDraft(c *Coordinator, t *Tree, th *threadRecord, _ 
 		th.ModeSet = ""
 	}
 	th.ReplyMode = rs.modeInForce(th)
+	if modeRank(th.ReplyMode) < modeRank(from) {
+		t.countChange()
+	}
 	if th.ReplyMode != from {
 		if err := th.event(rev, now, "mode_changed", map[string]string{"from": from, "to": th.ReplyMode}); err != nil {
 			return nil, effects{}, err

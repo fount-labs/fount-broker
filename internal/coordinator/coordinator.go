@@ -121,6 +121,11 @@ type Coordinator struct {
 	// was saved (teamrecovery.go). Under mu.
 	recoveryTick    time.Time
 	recoveryUnsaved time.Duration
+	// owed is each worker's tree version with a change the vault hasn't
+	// counted yet, and lastOwedCount when it last counted them
+	// (countedtree.go). Under mu.
+	owed          map[string]uint64
+	lastOwedCount time.Time
 }
 
 // now is the team log's time: lists' age, records' at and recoveries' wait.
@@ -868,6 +873,14 @@ func (c *Coordinator) changeThen(workerID, device string, fn func(*Tree) error, 
 	case held.Version != version || held.ManifestEpoch != t.ManifestEpoch():
 		held.Version, held.ManifestEpoch = version, t.ManifestEpoch()
 		err = c.state.Save(c.cfg.StateDir)
+	}
+	if err == nil && (t.counted || t.ledger) {
+		c.owe(workerID, version)
+	}
+	if err == nil && t.counted {
+		// Acknowledged only once counted. One that fails stays owed, and
+		// the backup loop counts it on its next pass.
+		err = c.countOwed()
 	}
 	c.mu.Unlock()
 	if err != nil {

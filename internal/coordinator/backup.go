@@ -185,6 +185,17 @@ func (c *Coordinator) openDurability() error {
 		return fmt.Errorf("%w: it is at the vault's count %d with another security state than generation %d counted; it is a fork", ErrVolumeRolledBack, seq, count.Writer)
 	case seq > count.Count && count.Writer != 0 && c.state.SecurityGen < count.Writer:
 		return fmt.Errorf("%w: its uncounted change %d is generation %d's, older than generation %d, which counted %d", ErrVolumeRolledBack, seq, c.state.SecurityGen, count.Writer, count.Count)
+	}
+	// A volume behind the newest backup of it was replayed to an earlier
+	// point, or lost writes: what it lost may have run (broker review M1).
+	if root, err := c.replayedVolume(ctx, roots); err != nil {
+		return err
+	} else if root != nil {
+		if err := c.treatAsRestored(root); err != nil {
+			return err
+		}
+	}
+	switch seq := c.state.SecuritySeq; {
 	case seq > count.Count:
 		log.Printf("backup: security change %d was saved and never counted; counting it now", seq)
 		if _, err := c.backupLocked(ctx); err != nil {
@@ -570,6 +581,7 @@ func (c *Coordinator) backupPass(ctx context.Context, now time.Time) bool {
 		c.retire(fmt.Errorf("%w: the vault is at generation %d", ErrVaultGeneration, count.Generation))
 		return false
 	}
+	c.countLedger(now)
 	if key, err := c.Backup(ctx); err != nil {
 		log.Printf("backup: %v", err)
 	} else if key != "" {

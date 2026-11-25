@@ -9,7 +9,8 @@ import (
 	"sync/atomic"
 )
 
-// commitSecurity makes a change to security state (a team's log) durable
+// commitSecurity makes a change to security state (a team's log, or the
+// workers' changes owed to the vault, countedtree.go) durable
 // before it is acknowledged (docs/membership-list.md §4.2), in this order:
 //
 //  1. state.json, with the change and the next security sequence, is
@@ -65,8 +66,11 @@ func (c *Coordinator) commitSecurity() error {
 	if d != nil {
 		c.state.SecurityGen = d.gen
 	}
+	// Workers' changes owed so far are counted with this one.
+	undo := c.foldOwed()
 	if err := c.state.Save(c.cfg.StateDir); err != nil {
 		c.state.SecuritySeq, c.state.SecurityGen = prev, prevGen
+		undo()
 		return err
 	}
 	if d == nil {
