@@ -225,17 +225,43 @@ func (f *FixedGeneration) Generation(context.Context) (mail.Generation, error) {
 // hung call must give it back. A variable so tests can shorten it.
 var bucketCallTimeout = time.Minute
 
-// boundedBucket is a bucket whose every call ends by bucketCallTimeout.
+// bucketFloorRate is the slowest sustained rate to the bucket, through the
+// enclave's S3 forwarder, that a tree object's call is given time for, in
+// bytes a second. A tree object is one stored file, up to maxFileBytes
+// sealed: at 4 MiB/s (about 34 Mbps) the largest gets 1 min + 128 s, with
+// the client's retries inside it (2026-11-25 round-5 check, R5-2). Below
+// that rate the largest object can't be backed up, and every pass stops
+// at it.
+const bucketFloorRate = 4 << 20
+
+// objectCallTimeout bounds a tree object's call of size bytes: a call's
+// minute, plus the time to move size at bucketFloorRate.
+func objectCallTimeout(size int) time.Duration {
+	return bucketCallTimeout + time.Duration(size)*time.Second/bucketFloorRate
+}
+
+// boundedBucket is a bucket whose every call ends by a deadline: a tree
+// object's Put or Get by objectCallTimeout, of its size or, for a Get whose
+// size isn't known until it is read, of the largest; every other call (a
+// root, List, Delete) by bucketCallTimeout.
 type boundedBucket struct{ b BackupBucket }
 
 func (b boundedBucket) Put(ctx context.Context, key string, data []byte) error {
-	ctx, cancel := context.WithTimeout(ctx, bucketCallTimeout)
+	limit := bucketCallTimeout
+	if strings.HasPrefix(key, backupObjectPrefix) {
+		limit = objectCallTimeout(len(data))
+	}
+	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	return b.b.Put(ctx, key, data)
 }
 
 func (b boundedBucket) Get(ctx context.Context, key string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, bucketCallTimeout)
+	limit := bucketCallTimeout
+	if strings.HasPrefix(key, backupObjectPrefix) {
+		limit = objectCallTimeout(maxFileBytes)
+	}
+	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	return b.b.Get(ctx, key)
 }

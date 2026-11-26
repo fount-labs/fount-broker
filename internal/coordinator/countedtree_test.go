@@ -631,6 +631,74 @@ func TestARebootAfterALostSwapAnswerAndASaveIsNotAFork(t *testing.T) {
 	}
 }
 
+// deadlineBucket records how long each call was given.
+type deadlineBucket struct {
+	BackupBucket
+	given map[string]time.Duration
+}
+
+func (b *deadlineBucket) note(ctx context.Context, call string) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		b.given[call] = -1
+		return
+	}
+	b.given[call] = time.Until(deadline)
+}
+
+func (b *deadlineBucket) Put(ctx context.Context, key string, data []byte) error {
+	b.note(ctx, "put "+key)
+	return nil
+}
+
+func (b *deadlineBucket) Get(ctx context.Context, key string) ([]byte, error) {
+	b.note(ctx, "get "+key)
+	return nil, ErrNotFound
+}
+
+func (b *deadlineBucket) List(ctx context.Context, prefix string) ([]string, error) {
+	b.note(ctx, "list "+prefix)
+	return nil, nil
+}
+
+func (b *deadlineBucket) Delete(ctx context.Context, key string) error {
+	b.note(ctx, "delete "+key)
+	return nil
+}
+
+// A tree object's Put or Get is given time for its size, up to the largest
+// a file can be, at bucketFloorRate on top of the minute; a root, a List
+// and a Delete get the minute (round-5 check R5-2).
+func TestABucketCallsDeadlineScalesWithATreeObjectsSize(t *testing.T) {
+	db := &deadlineBucket{given: map[string]time.Duration{}}
+	b := boundedBucket{db}
+	ctx := t.Context()
+	obj := backupObjectPrefix + "w1/o1"
+	root := rootKey(1, 1, time.Now())
+	_ = b.Put(ctx, obj, make([]byte, 64<<20))
+	_ = b.Put(ctx, obj+"small", []byte("x"))
+	_ = b.Put(ctx, root, make([]byte, 64<<20))
+	_, _ = b.Get(ctx, obj)
+	_, _ = b.Get(ctx, root)
+	_, _ = b.List(ctx, backupObjectPrefix)
+	_ = b.Delete(ctx, obj)
+	const slack = 5 * time.Second
+	for call, want := range map[string]time.Duration{
+		"put " + obj:                 bucketCallTimeout + 16*time.Second,
+		"put " + obj + "small":       bucketCallTimeout,
+		"put " + root:                bucketCallTimeout,
+		"get " + obj:                 bucketCallTimeout + 128*time.Second,
+		"get " + root:                bucketCallTimeout,
+		"list " + backupObjectPrefix: bucketCallTimeout,
+		"delete " + obj:              bucketCallTimeout,
+	} {
+		got, ok := db.given[call]
+		if !ok || got > want || got < want-slack {
+			t.Errorf("%s was given %v, want %v", call, got, want)
+		}
+	}
+}
+
 // hungBucket is a bucket whose calls, while hang is set, wait for their
 // ctx.
 type hungBucket struct {

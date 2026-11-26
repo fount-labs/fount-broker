@@ -109,11 +109,16 @@ sizes only. Every `Put` is `If-None-Match: *`, with S3 checking a SHA-256 of
 the body. An object is written whole or not at all and is never replaced. A
 retry that meets its own bytes succeeds; other bytes are an error.
 
-Every bucket call (a `Put`, `List`, `Get` or `Delete`) ends within a minute
-(`bucketCallTimeout`), so a hung call gives the backups' lock back and the
-counts waiting on it go through. That bounds a call, not a pass: a first
-backup of a large volume still uploads object by object, each under its own
-minute.
+Every bucket call ends by a deadline, so a hung call gives the backups' lock
+back and the counts waiting on it go through. A root, a `List` or a `Delete`
+gets a minute (`bucketCallTimeout`). A tree object's `Put` gets a minute plus
+its size at 4 MiB/s (`bucketFloorRate`, about 34 Mbps from the enclave
+through the forwarder), and its `Get` the same for the largest object
+(`maxFileBytes`, 512 MiB): 1 min + 128 s. The deadline includes the S3
+client's retries. Below that rate the largest objects can't be backed up,
+and each pass stops at the first of them. That bounds a call, not a pass: a
+first backup of a large volume still uploads object by object, each under
+its own deadline.
 
 ## Watching backups
 
