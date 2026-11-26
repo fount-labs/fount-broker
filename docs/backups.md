@@ -106,6 +106,12 @@ sizes only. Every `Put` is `If-None-Match: *`, with S3 checking a SHA-256 of
 the body. An object is written whole or not at all and is never replaced. A
 retry that meets its own bytes succeeds; other bytes are an error.
 
+Every bucket call (a `Put`, `List`, `Get` or `Delete`) ends within a minute
+(`bucketCallTimeout`), so a hung call gives the backups' lock back and the
+counts waiting on it go through. That bounds a call, not a pass: a first
+backup of a large volume still uploads object by object, each under its own
+minute.
+
 ## Watching backups
 
 `GET /control/backup` is on the control route, with `/control/runners` and
@@ -155,6 +161,13 @@ without them is the thing to catch. With them:
   coordinator still serves, and a running Tinfoil instance stays up, but a
   replay of its disk would bring back what was taken away since, and mail
   could run again.
+
+A count moves the vault's counter with a compare-and-swap. A swap that loses
+to a lower count of this generation that just landed (several counts in
+flight, a team change beside workers' take-aways) tries again from that count,
+for as long as the count rises below its own, with no cap on tries; each
+count's 30 s deadline bounds it in time. A count from another generation
+still retires this one.
 
 The status is in memory: a restart starts empty and fills in with the backup
 it takes at boot. The bucket name, credentials and contents are never in it.
