@@ -253,12 +253,17 @@ func TestACrashBetweenTheStateWriteAndTheCounter(t *testing.T) {
 	me, rev := newTestDevice(t), newTestDevice(t)
 	tt := soloTeam(t, c, "acme", me)
 	before := v.newest()
+	// The crash is at the swap: the volume and the bucket have the change.
+	crash := t.TempDir()
 	failed := false
 	v.vault.FailSwap = func(_, _, _ uint64) error {
 		if failed {
 			return nil
 		}
 		failed = true
+		if err := os.CopyFS(crash, os.DirFS(dir)); err != nil {
+			t.Error(err)
+		}
 		return errors.New("the vault is unreachable")
 	}
 	tt.set("m_rev", "maria", RoleReviewer, rev)
@@ -268,7 +273,7 @@ func TestACrashBetweenTheStateWriteAndTheCounter(t *testing.T) {
 	if logSeq(c, "acme") != 1 || v.count().Count != 1 {
 		t.Fatalf("an unacknowledged append took: log %d, vault %+v", logSeq(c, "acme"), v.count())
 	}
-	// The volume and the bucket have it: the crash is here.
+	dir = crash
 	st, err := LoadState(filepath.Join(dir, "state"))
 	if err != nil {
 		t.Fatal(err)
@@ -307,7 +312,8 @@ func TestAFailedCountDoesntStopTheNextChange(t *testing.T) {
 	if err := tt.push(me, "acme", nil); err != nil {
 		t.Fatal(err)
 	}
-	if v.count().Count != 3 || logSeq(c, "acme") != 2 {
+	// 2 was the failed change's, 3 the state without it (R5-1).
+	if v.count().Count != 4 || logSeq(c, "acme") != 2 {
 		t.Fatalf("vault %+v, log %d", v.count(), logSeq(c, "acme"))
 	}
 }

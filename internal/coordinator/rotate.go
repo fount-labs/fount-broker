@@ -240,8 +240,7 @@ func (c *Coordinator) rotated(team, workerID string) {
 	if len(t.Rotate) == 0 {
 		t.Rotate = nil
 	}
-	if err := c.commitSecurity(); err != nil {
-		t.Rotate = old
+	if err := c.commitSecurity(func() { t.Rotate = old }); err != nil {
 		log.Printf("team %s: keeping that worker %s rotated: %v", team, workerID, err)
 	}
 }

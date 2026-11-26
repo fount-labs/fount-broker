@@ -65,7 +65,10 @@ security sequence, the generation that made it, and each team's log head and
 rotation marks, with the counting generation as writer. A volume or backup
 at the vault's count with another digest is a fork and is refused, as is a
 volume one change ahead whose change is from a generation older than the
-last writer. Only Cloud vaults with version 2 answer it, so turn it on once
+last writer. A team change whose count got no clear answer may have been
+counted; once it is put back the state is saved at a fresh sequence, so the
+volume is ahead of that count, which a boot counts, not at it with another
+state. Only Cloud vaults with version 2 answer it, so turn it on once
 both serve it. Without it the counter binds the number alone.
 
 `--dev-vault <file>` stands in for the vault: a file holding the generation

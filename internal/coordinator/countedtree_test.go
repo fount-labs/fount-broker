@@ -594,6 +594,43 @@ func TestALostSwapAnswerIsCountedAgain(t *testing.T) {
 	}
 }
 
+// The round-5 check's probe A: a team change whose answer was lost, then a
+// plain save, then a reboot before any count. The rollback took a fresh
+// sequence, so the volume is ahead of the vault's count, not at it with
+// another state: the boot counts it, as after any crash before a count
+// (R5-1).
+func TestARebootAfterALostSwapAnswerAndASaveIsNotAFork(t *testing.T) {
+	r := newMailRig(t, MailConfig{})
+	v := newVaultRig(t, r.edge.authority)
+	v.key = r.key
+	la := &lostAnswer{StateCounter: v.vault}
+	r.backup = v.backups(v.next())
+	r.backup.Counter = la
+	r.start()
+	w, _ := r.worker()
+
+	la.lose.Store(true)
+	if err := soloTeamErr(t, r.c, "acme", newTestDevice(t)); !errors.Is(err, ErrNotDurable) {
+		t.Fatalf("a team change whose answer was lost: %v", err)
+	}
+	if err := r.c.PutFile(w.ID, "files/after.md", []byte("a plain save")); err != nil {
+		t.Fatal(err)
+	}
+	r.c.mu.Lock()
+	seq, digest := r.c.state.SecuritySeq, securityDigest(r.c.state)
+	r.c.mu.Unlock()
+	if got := v.count(); got.Count >= seq {
+		t.Fatalf("the volume is at %d, not ahead of the vault's count %d", seq, got.Count)
+	}
+	r.backup = v.backups(v.next())
+	if err := r.startErr(); err != nil {
+		t.Fatalf("a reboot after a lost answer and a save: %v", err)
+	}
+	if got := v.count(); got.Count != seq || got.Digest != digest {
+		t.Fatalf("the boot counted %d %.8s, the volume is %d %.8s", got.Count, got.Digest, seq, digest)
+	}
+}
+
 // hungBucket is a bucket whose calls, while hang is set, wait for their
 // ctx.
 type hungBucket struct {

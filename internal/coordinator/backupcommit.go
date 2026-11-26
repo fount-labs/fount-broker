@@ -26,13 +26,21 @@ import (
 // A restore below the counter is refused (Restore), and a coordinator of an
 // older generation can't move it, so it can't append; it is retired.
 //
-// A sequence number, once written, is never given again: when step 2 or 3
-// fails the caller puts its change back in memory, the volume still has it
+// A sequence number, once written, is never given again: on any error,
+// undo puts the caller's change back in memory, the volume still has it
 // until the next save, and the next change takes the number after. A crash
 // in that window leaves a volume one change ahead of the counter; the next
 // boot backs it up and counts it (openDurability), as a database keeps a
 // committed transaction whose acknowledgement was lost. A client that saw
 // the error finds its entry in the log, or appends again.
+//
+// A swap that fails without a definite answer may have landed: the vault
+// may count this sequence with the change in it. So once the change is put
+// back the state is saved again at a fresh sequence, and the volume is
+// ahead of any count this swap made, never at it with another state, which
+// boot would refuse as a fork (2026-11-25 round-5 check, R5-1). Should that
+// save fail, the volume keeps the change at the sequence the swap may have
+// counted, which a boot takes as counted, and countDue stays true.
 //
 // A team's log change and a key rotation hold c.mu through all three, as
 // the caller puts its change back under the same lock: at the rate people
@@ -43,7 +51,19 @@ import (
 //
 // Without Config.Backup (dev and tests) it is step 1 alone. Called with c.mu
 // held.
-func (c *Coordinator) commitSecurity() (err error) {
+func (c *Coordinator) commitSecurity(undo func()) (err error) {
+	swapped := false
+	defer func() {
+		if err == nil {
+			return
+		}
+		undo()
+		if swapped && errors.Is(err, ErrNotDurable) {
+			if _, serr := c.bumpSecurity(); serr != nil {
+				log.Printf("saving the state at a fresh sequence after an unclear count: %v", serr)
+			}
+		}
+	}()
 	if c.Retired() {
 		return ErrStaleCoordinator
 	}
@@ -73,6 +93,7 @@ func (c *Coordinator) commitSecurity() (err error) {
 	if _, err := c.backupLocked(ctx); err != nil {
 		return fmt.Errorf("%w: backing it up: %v", ErrNotDurable, err)
 	}
+	swapped = true
 	if err := c.swapCount(ctx, d.counted.Load(), c.state.SecuritySeq, securityDigest(c.state)); err != nil {
 		return err
 	}

@@ -796,7 +796,7 @@ func (c *Coordinator) commitEntry(team string, prior *teamState, entry TeamEntry
 	c.state.Teams[team] = &Team{ID: team, Log: log, Rotate: rotate, Billing: billing, Owner: owner, state: next}
 	mintedFor, minted := c.state.TeamMints[team]
 	delete(c.state.TeamMints, team)
-	if err := c.commitSecurity(); err != nil {
+	if err := c.commitSecurity(func() {
 		restoreReleases()
 		maps.Copy(c.state.Workers, oldWorkers)
 		maps.Copy(c.state.Jobs, oldJobs)
@@ -808,6 +808,7 @@ func (c *Coordinator) commitEntry(team string, prior *teamState, entry TeamEntry
 		if minted {
 			c.state.TeamMints[team] = mintedFor
 		}
+	}); err != nil {
 		return nil, err
 	}
 	for _, w := range removed {

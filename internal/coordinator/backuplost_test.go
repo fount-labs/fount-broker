@@ -30,7 +30,8 @@ func TestALostCountAnswerDoesntRetireTheCoordinator(t *testing.T) {
 	if err := tt.push(me, "acme", nil); err != nil {
 		t.Fatalf("the next change: %v", err)
 	}
-	if c.Retired() || v.count().Count != 3 {
+	// 3 is the state the lost change was put back from (R5-1).
+	if c.Retired() || v.count().Count != 4 {
 		t.Fatalf("retired %v, vault %+v", c.Retired(), v.count())
 	}
 }
