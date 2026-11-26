@@ -1,7 +1,18 @@
 dist/
-/cmd/*/fount-*
-!/cmd/*/fount-*.go
-/cmd/*/mail-*
-!/cmd/*/mail-*.go
+# Go builds of cmd/<name>, at the root or in cmd/<name>: no extension, or .exe.
 /fount-*
 /mail-*
+/cmd/*/fount-*
+/cmd/*/mail-*
+!/fount-*.*
+!/mail-*.*
+!/cmd/*/fount-*.*
+!/cmd/*/mail-*.*
+!/fount-*/
+!/mail-*/
+!/cmd/*/fount-*/
+!/cmd/*/mail-*/
+/fount-*.exe
+/mail-*.exe
+/cmd/*/fount-*.exe
+/cmd/*/mail-*.exe
